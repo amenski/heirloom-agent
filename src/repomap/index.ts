@@ -230,4 +230,141 @@ export class RepoMap {
     }
     return result;
   }
+
+  async getMap(conversation: string, tokenBudget: number): Promise<string> {
+    const result = await this.build();
+    if (result.symbols.length === 0) return "(empty repository)";
+
+    const identifiers = extractIdentifiers(conversation);
+    const fileMentions = extractFileMentions(conversation, result.symbols);
+
+    const fileScores = scoreFiles(result.symbols, result.fileSymbolCount, identifiers, fileMentions);
+    const ranked = [...fileScores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([file]) => file);
+
+    const formatted = formatRankedFiles(ranked, this.cache, tokenBudget);
+    return formatted || "(empty repository)";
+  }
 }
+
+function extractIdentifiers(text: string): Set<string> {
+  const ids = new Set<string>();
+  const words = text.match(/\b[a-zA-Z_]\w*\b/g);
+  if (!words) return ids;
+
+  for (const w of words) {
+    if (w.length < 3 || w.length > 40) continue;
+    if (/^(the|and|for|not|are|but|you|that|this|with|have|from|your|will|what|when|then|can|all|each|they|their|them|been|were|about|which|also|into|more|some|only|other|than|would|could|should|there|being)$/i.test(w)) continue;
+    ids.add(w);
+  }
+  return ids;
+}
+
+function extractFileMentions(text: string, symbols: SymbolDef[]): Set<string> {
+  const mentions = new Set<string>();
+  const symbolFiles = new Map<string, boolean>();
+  for (const s of symbols) {
+    symbolFiles.set(s.file, true);
+  }
+
+  const patterns = [
+    /([\w.\-/\\]+\.(?:ts|tsx|js|jsx|mts|mjs))/g,
+    /`([\w.\-/\\]+)`/g,
+    /([\w.\-/\\]+\/\w+\.\w+)/g,
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const candidate = match[1];
+      for (const f of symbolFiles.keys()) {
+        if (f.endsWith(candidate) || candidate.endsWith(f) || f.includes(candidate)) {
+          mentions.add(f);
+        }
+      }
+    }
+  }
+  return mentions;
+}
+
+function scoreFiles(
+  symbols: SymbolDef[],
+  fileSymbolCount: Map<string, number>,
+  identifiers: Set<string>,
+  fileMentions: Set<string>,
+): Map<string, number> {
+  const scores = new Map<string, number>();
+
+  for (const sym of symbols) {
+    let base = 0;
+
+    for (const id of identifiers) {
+      if (sym.name.toLowerCase().includes(id.toLowerCase())) {
+        base += 10;
+      }
+    }
+
+    if (fileMentions.has(sym.file)) {
+      base += 50;
+    }
+
+    if (!sym.exported) {
+      base *= 0.1;
+    }
+
+    const existing = scores.get(sym.file) ?? 0;
+    scores.set(sym.file, existing + base);
+  }
+
+  return scores;
+}
+
+function formatRankedFiles(
+  ranked: string[],
+  cache: Map<string, FileTags>,
+  tokenBudget: number,
+): string | null {
+  if (ranked.length === 0) return null;
+
+  const buffer: { file: string; text: string }[] = [];
+  for (const file of ranked) {
+    const tags = cache.get(file);
+    if (!tags) continue;
+
+    const publicSyms = tags.symbols.filter((s) => s.exported);
+    const privateSyms = tags.symbols.filter((s) => !s.exported);
+
+    const parts: string[] = [];
+    if (publicSyms.length > 0) {
+      parts.push(publicSyms.map((s) => `${s.kind} ${s.name}`).join(", "));
+    }
+    if (privateSyms.length > 0 && publicSyms.length === 0) {
+      parts.push(privateSyms.slice(0, 3).map((s) => `${s.kind} ${s.name}`).join(", "));
+    }
+
+    if (parts.length > 0) {
+      buffer.push({ file, text: `${file}: ${parts.join("; ")}` });
+    }
+  }
+
+  if (buffer.length === 0) return null;
+
+  let lo = 0;
+  let hi = buffer.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const slice = buffer.slice(0, mid);
+    const chars = slice.reduce((sum, e) => sum + e.text.length + 1, 0);
+    const tokens = Math.ceil(chars / 4);
+    if (tokens <= tokenBudget) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  if (lo === 0) return null;
+  return buffer.slice(0, lo).map((e) => e.text).join("\n");
+}
+

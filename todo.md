@@ -480,10 +480,10 @@
 
 ### 7.2 — PageRank ranking + context injection
 
-- [ ] Rank files/symbols by relevance to current conversation
-- [ ] Weight: mentioned identifiers ×10, chat files ×50, private symbols ×0.1
-- [ ] Binary search to fit ranked results within token budget
-- [ ] Inject top-N ranked files into system prompt
+- [x] Rank files/symbols by relevance to current conversation
+- [x] Weight: mentioned identifiers ×10, chat files ×50, private symbols ×0.1
+- [x] Binary search to fit ranked results within token budget
+- [x] Inject top-N ranked files into system prompt
 
 **Acceptance criteria**
 | # | Given | When | Then |
