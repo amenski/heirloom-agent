@@ -61,6 +61,13 @@ compaction:
 # contextWindow in its provider entry (a warning is printed)
 contextWindow: 128000
 
+# Keybindings (cli-spec.md). Actions: abort, cycle-approval, cycle-mode.
+# Reserved keys rejected at validation: ctrl+c, ctrl+d, enter, ctrl+m.
+keybindings:
+  abort: esc               # Ctrl+C always works as fallback
+  cycle-approval: shift+tab
+  cycle-mode: none         # unbound by default
+
 # MCP servers for external tool discovery
 mcp:
   playwright:

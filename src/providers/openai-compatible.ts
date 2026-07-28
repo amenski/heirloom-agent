@@ -67,7 +67,7 @@ export function createOpenAICompatibleProvider(config: {
     async *streamChat(
       messages: Message[],
       tools: ToolDef[],
-      options?: { temperature?: number; maxTokens?: number },
+      options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
     ): AsyncGenerator<StreamEvent> {
       try {
         const stream = await client.chat.completions.create({
@@ -78,6 +78,8 @@ export function createOpenAICompatibleProvider(config: {
           stream: true,
           temperature: options?.temperature,
           max_tokens: options?.maxTokens,
+        }, {
+          signal: options?.signal,
         });
 
         const toolCallAccum: Map<number, { id: string; name: string; args: string }> = new Map();

@@ -32,6 +32,10 @@ export function setCheckpointManager(cpm: CheckpointManager): void {
   ctx.checkpoint = cpm;
 }
 
+export function setSignal(signal: AbortSignal): void {
+  ctx.signal = signal;
+}
+
 export async function executeTool(call: ToolCall): Promise<ToolOutput> {
   return registry.execute(call, ctx);
 }

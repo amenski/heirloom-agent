@@ -92,20 +92,34 @@ starting with `/` is always a user message — no ambiguity.
 
 ---
 
-## Interrupt Semantics
+## Interrupt Semantics & Keybindings
 
-readline gives no Esc-key handling without raw mode, so Ctrl+C carries the
-interrupt role until the Ink TUI:
+Esc requires keypress events (`readline.emitKeypressEvents` + raw mode).
+Raw keypress listening is enabled **only while the agent is running** — no
+readline question is active then, so there's no conflict — and terminal
+state is restored in a `finally`; a crash must never leave the terminal in
+raw mode.
 
 | Key | When | Effect |
 |-----|------|--------|
-| Ctrl+C | Agent is streaming or running tools | Abort the turn: fire `AbortSignal` → provider stream closes, running tool gets `signal`, partial turn is **not** persisted (session-spec: writes happen only on turn completion). Prompt returns. |
-| Ctrl+C | At an idle prompt | Print `(use /exit or Ctrl+D to quit)` — never exit on a single Ctrl+C; accidental quits lose nothing but are annoying |
+| Esc | Agent is streaming or running tools | Abort the turn: fire `AbortSignal` → provider stream closes, running tool gets `signal`, partial turn is **not** persisted (session-spec: writes happen only on turn completion). Prompt returns. |
+| Ctrl+C | Agent running | Same as Esc (fallback abort) |
+| Ctrl+C | At an idle prompt | Print `(use /exit or Ctrl+D to quit)` — never exit on a single Ctrl+C |
 | Ctrl+D | At an idle prompt | Exit cleanly (= `/exit`) |
+| Shift+Tab | At an idle prompt | Cycle approval mode `manual → edits → all → manual` (permission-spec.md); prompt indicator updates immediately |
 
 The abort path is why `ToolContext.signal` exists (tool-spec.md): an aborted
 tool returns `COMMAND_FAILED: aborted by user` and the loop stops without
 feeding results back to the LLM.
+
+### Configurable bindings
+
+Defaults above; rebindable via `keybindings:` in config (config-spec.md).
+Actions: `abort`, `cycle-approval`, `cycle-mode` (cycles personas —
+**unbound by default**: blind persona cycling swaps the toolset, which
+should usually be deliberate; `/mode <slug>` is the primary path).
+Reserved and rejected at config validation: `ctrl+c`, `ctrl+d`, `enter`,
+and `ctrl+m` (indistinguishable from Enter in terminals).
 
 ---
 

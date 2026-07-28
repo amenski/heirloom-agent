@@ -829,11 +829,11 @@
 
 ### 15.1 — Headless mode, interrupts, I/O decoupling (cli-spec.md)
 
-- [ ] `-p "<prompt>"`: stream to stdout, exit on completion; `ask` → deny; `ask_followup_question` → print + exit 2
-- [ ] Exit codes 0/1/2; errors and warnings to stderr
-- [ ] Ctrl+C mid-turn: AbortSignal → stream closed, tool aborted, partial turn not persisted, prompt returns; idle Ctrl+C prints hint; Ctrl+D exits
-- [ ] Agent loop I/O decoupling: no `process.stdout` in `agent.ts` — output via injected callbacks (architecture tradeoff 6)
-- [ ] `bin` entry + `--help`/`--version`
+- [x] `-p "<prompt>"`: stream to stdout, exit on completion; `ask` → deny; `ask_followup_question` → print + exit 2
+- [x] Exit codes 0/1/2; errors and warnings to stderr
+- [x] Ctrl+C mid-turn: AbortSignal → stream closed, tool aborted, partial turn not persisted, prompt returns; idle Ctrl+C prints hint; Ctrl+D exits
+- [x] Agent loop I/O decoupling: no `process.stdout` in `agent.ts` — output via injected callbacks
+- [x] `bin` entry + `--help`/`--version`
 
 **Acceptance criteria**
 | # | Given | When | Then |

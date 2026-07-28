@@ -11,6 +11,6 @@ export interface Provider {
   streamChat(
     messages: Message[],
     tools: ToolDef[],
-    options?: { temperature?: number; maxTokens?: number },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
   ): AsyncGenerator<StreamEvent>;
 }

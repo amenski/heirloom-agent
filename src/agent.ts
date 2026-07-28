@@ -28,6 +28,13 @@ export interface AgentOptions {
   repomap?: RepoMap;
   memory?: string;
   memoryStore?: MemoryStore;
+  signal?: AbortSignal;
+  onText?: (chunk: string) => void;
+  onToolStart?: (name: string, args: Record<string, unknown>) => void;
+  onDiagnostic?: (msg: string) => void;
+  onRetry?: (msg: string) => void;
+  onCompacted?: (msg: string) => void;
+  onLoopDetected?: (msg: string) => void;
   onMaxTurns?: (messages: Message[]) => void;
 }
 
@@ -54,6 +61,7 @@ export async function runAgent(
   let turn = 0;
   let turnEnded = false;
   while (turn < maxTurns && !turnEnded) {
+    if (options.signal?.aborted) break;
     const seenCalls = new Map<string, number>();
     let failedStreak = 0;
     let warnedRepeat = false;
@@ -67,11 +75,12 @@ export async function runAgent(
     let content = "";
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
 
-    for await (const event of provider.streamChat(messages, tools)) {
+    try {
+    for await (const event of provider.streamChat(messages, tools, { signal: options.signal })) {
       switch (event.type) {
         case "text_delta":
           content += event.content;
-          process.stdout.write(event.content);
+          options.onText?.(event.content);
           break;
         case "tool_call_start":
           pendingCalls.set(event.id, { name: event.name, args: "" });
@@ -85,8 +94,15 @@ export async function runAgent(
           break;
       }
     }
+    } catch (err) {
+      if (err instanceof Error && (err.name === "AbortError" || (err as any).name === "AbortError")) {
+        options.onDiagnostic?.("aborted by user");
+        break;
+      }
+      throw err;
+    }
 
-    if (content) process.stdout.write("\n");
+    if (content) options.onText?.("\n");
 
     if (pendingCalls.size === 0) break;
 
@@ -123,13 +139,13 @@ export async function runAgent(
     diagnostics?.snapshot();
 
     for (const tc of toolCalls) {
-      console.log(`  [${tc.name}] ${JSON.stringify(tc.arguments).slice(0, 120)}`);
+      options.onToolStart?.(tc.name, tc.arguments);
 
       if (permissions) {
         const action = permissions.check(tc.name, tc.arguments);
         if (action === "deny") {
           const msg = `Permission denied for ${tc.name}`;
-          console.log("    denied");
+          options.onDiagnostic?.("denied");
           messages.push({ role: "tool", toolCallId: tc.id, content: msg });
           continue;
         }
@@ -151,7 +167,7 @@ export async function runAgent(
       if (result.error && errorReflector?.canRetry(tc.name, result.error)) {
         messages.push({ role: "tool", toolCallId: tc.id, content: `Error: ${result.error}` });
         messages.push({ role: "user", content: errorReflector.formatError(tc.name, result.error) });
-        console.log(`    [self-reflection: retrying]`);
+        options.onRetry?.("retrying");
         errorReflector.resetTurn();
       } else {
         messages.push({
@@ -168,7 +184,7 @@ export async function runAgent(
         });
         warnedRepeat = true;
       } else if (result.error && callCount >= 4 && warnedRepeat) {
-        console.log("[loop detected: ending turn]");
+        options.onLoopDetected?.("loop detected");
         turnEnded = true;
         break;
       }
@@ -191,11 +207,9 @@ export async function runAgent(
           role: "system",
           content: `Your last edit introduced these errors:\n\n${diagnosticErrors}`,
         });
-        console.log(`  [diagnostics: new errors detected]`);
+        options.onDiagnostic?.("new errors detected");
       }
     }
-
-    console.log("");
 
     if (compactor && compactor.needsCompaction(messages)) {
       const before = messages.length;
@@ -215,13 +229,13 @@ export async function runAgent(
         });
         messages.unshift({ role: "system", content: rebuiltPrompt });
       }
-      console.log(`  [compacted: ${before} → ${messages.length} messages]`);
+      options.onCompacted?.(`${before} → ${messages.length} messages`);
     }
     } catch (err) {
       if (errorRecovery) {
         const msg = errorRecovery.handleFatalError(err instanceof Error ? err : new Error(String(err)));
         messages.push({ role: "system", content: msg });
-        console.log(`\n  [fatal: ${msg}]`);
+        options.onDiagnostic?.(msg);
       } else {
         throw err;
       }
@@ -230,10 +244,7 @@ export async function runAgent(
   }
 
   if (turn >= maxTurns) {
-    if (options.onMaxTurns) {
-      options.onMaxTurns(messages);
-    }
-    console.log("[max turns reached. Session saved.]");
+    options.onMaxTurns?.(messages);
   }
 
   return messages;

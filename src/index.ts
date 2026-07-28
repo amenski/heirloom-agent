@@ -1,8 +1,11 @@
 import * as readline from "node:readline/promises";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { initPresets, createProvider } from "./providers/presets.js";
 import { runAgent } from "./agent.js";
-import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager } from "./tools/index.js";
-import { PermissionEngine } from "./permissions/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
+import { PermissionEngine, type ApprovalMode } from "./permissions/index.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
@@ -13,19 +16,79 @@ import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import type { Message } from "./types.js";
 
-function parseArgs(): { continue: boolean; sessionId?: string } {
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+interface CliArgs {
+  prompt?: string;
+  continue_: boolean;
+  sessionId?: string;
+  approveMode?: "edits" | "all";
+  mode?: string;
+  model?: string;
+}
+
+function parseArgs(): CliArgs {
   const args = process.argv.slice(2);
-  let continue_ = false;
-  let sessionId: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--continue" || args[i] === "-c") continue_ = true;
-    if (args[i] === "--session" && i + 1 < args.length) sessionId = args[++i];
+
+  if (args.includes("--help")) {
+    console.log(
+      "heirloom — AI coding assistant\n" +
+      "\n" +
+      "Usage:\n" +
+      "  heirloom                  Interactive session\n" +
+      "  heirloom -p \"<prompt>\"   Headless: run one task, print, exit\n" +
+      "  heirloom auth             Interactive provider setup wizard\n" +
+      "  heirloom auth list        Show configured providers\n" +
+      "  heirloom auth logout <n>  Remove a credential\n" +
+      "\n" +
+      "Flags:\n" +
+      "  -c, --continue         Resume the most recent session for this cwd\n" +
+      "  --session <id>         Resume a specific session\n" +
+      "  --mode <slug>          Start in the given mode\n" +
+      "  --model <provider/model> Override config/mode model\n" +
+      "  -p, --print <prompt>   Headless mode: run one task and exit\n" +
+      "  --approve <edits|all>  Set approval mode (for headless runs)\n" +
+      "  --help                 Show this help\n" +
+      "  --version              Show version\n"
+    );
+    process.exit(0);
   }
-  return { continue: continue_, sessionId };
+
+  if (args.includes("--version")) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
+      console.log(pkg.version);
+    } catch {
+      console.log("unknown");
+    }
+    process.exit(0);
+  }
+
+  const result: CliArgs = { continue_: false };
+
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "-p" || args[i] === "--print") && i + 1 < args.length) {
+      result.prompt = args[++i];
+    } else if (args[i] === "--approve" && i + 1 < args.length) {
+      const mode = args[++i];
+      if (mode === "edits" || mode === "all") result.approveMode = mode;
+    } else if (args[i] === "--mode" && i + 1 < args.length) {
+      result.mode = args[++i];
+    } else if (args[i] === "--model" && i + 1 < args.length) {
+      result.model = args[++i];
+    } else if (args[i] === "--continue" || args[i] === "-c") {
+      result.continue_ = true;
+    } else if (args[i] === "--session" && i + 1 < args.length) {
+      result.sessionId = args[++i];
+    }
+  }
+  return result;
 }
 
 async function main() {
   initPresets();
+
+  const args = parseArgs();
 
   if (process.argv[2] === "auth") {
     const sub = process.argv[3];
@@ -50,46 +113,45 @@ async function main() {
   let sessionId: string;
   let sessionMessages: Message[] = [];
 
-  const cliArgs = parseArgs();
-
-  if (cliArgs.sessionId) {
+  if (args.sessionId) {
     try {
-      const loaded = await sessionStore.loadEffective(cliArgs.sessionId);
-      sessionId = cliArgs.sessionId;
+      const loaded = await sessionStore.loadEffective(args.sessionId);
+      sessionId = args.sessionId;
       sessionMessages = loaded.messages;
-      console.log(`Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${loaded.meta.mode}`);
     } catch {
-      console.error(`Session not found: ${cliArgs.sessionId}`);
+      console.error(`Session not found: ${args.sessionId}`);
       process.exit(1);
     }
-  } else if (cliArgs.continue) {
+  } else if (args.continue_) {
     const sessions = await sessionStore.list();
     if (sessions.length > 0) {
       sessionId = sessions[0].id;
       try {
         const loaded = await sessionStore.loadEffective(sessionId);
         sessionMessages = loaded.messages;
-        console.log(`Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${loaded.meta.mode}`);
       } catch (err) {
         console.error(`Failed to load session ${sessionId}: ${(err as Error).message}`);
         process.exit(1);
       }
     } else {
-      console.log("No sessions found for this project. Starting new.");
-      sessionId = await sessionStore.create({ 
-        cwd: process.cwd(), 
+      sessionId = await sessionStore.create({
+        cwd: process.cwd(),
         provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-        model: "deepseek-chat",
-        mode: "code"
+        model: args.model || "deepseek-chat",
+        mode: args.mode || "code",
       });
     }
   } else {
     sessionId = await sessionStore.create({
       cwd: process.cwd(),
       provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-      model: "deepseek-chat",
-      mode: "code",
+      model: args.model || "deepseek-chat",
+      mode: args.mode || "code",
     });
+  }
+
+  if (args.approveMode) {
+    permissions.setApprovalMode(args.approveMode);
   }
 
   let checkpoints = new CheckpointManager(sessionId);
@@ -107,6 +169,66 @@ async function main() {
   registry.register({ def: loadSkillDef, handler: loadSkillHandler, groups: ["read"], always: true });
 
   let activeMode: ModeConfig | undefined;
+  if (args.mode) {
+    const mode = await modeLoader.load(args.mode);
+    if (mode) {
+      activeMode = mode;
+      await sessionStore.appendState(sessionId, { mode: args.mode });
+    }
+  }
+
+  let abortController = new AbortController();
+
+  const headlessCallbacks = {
+    onText: (c: string) => process.stdout.write(c),
+    onToolStart: () => {},
+    onDiagnostic: (m: string) => process.stderr.write(`[diagnostics: ${m}]\n`),
+    onRetry: () => {},
+    onCompacted: (m: string) => process.stderr.write(`[compacted: ${m}]\n`),
+    onLoopDetected: () => process.stderr.write("[loop detected]\n"),
+  };
+
+  const interactiveCallbacks = {
+    onText: (c: string) => process.stdout.write(c),
+    onToolStart: (name: string, args: Record<string, unknown>) =>
+      console.log(`  [${name}] ${JSON.stringify(args).slice(0, 120)}`),
+    onDiagnostic: (m: string) => console.log(`  [diagnostics: ${m}]`),
+    onRetry: (m: string) => console.log(`    [self-reflection: ${m}]`),
+    onCompacted: (m: string) => console.log(`  [compacted: ${m}]`),
+    onLoopDetected: (m: string) => console.log(`[${m}]`),
+    onMaxTurns: () => console.log("[max turns reached. Session saved.]"),
+  };
+
+  if (args.prompt) {
+    setSignal(abortController.signal);
+
+    process.on("SIGINT", () => {
+      abortController.abort();
+    });
+
+    try {
+      const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
+      await runAgent(args.prompt, {
+        provider,
+        tools,
+        executeTool,
+        permissions,
+        mode: activeMode,
+        compactor,
+        diagnostics,
+        skills,
+        memory: memoryInjection ?? undefined,
+        memoryStore,
+        signal: abortController.signal,
+        ...headlessCallbacks,
+        onMaxTurns: () => process.exit(2),
+      });
+      process.exit(0);
+    } catch (err) {
+      process.stderr.write(`Error: ${(err as Error).message}\n`);
+      process.exit(1);
+    }
+  }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -120,7 +242,14 @@ async function main() {
   };
   console.log("heirloom — type /exit to quit, /help for help\n");
 
+  process.on("SIGINT", () => {
+    abortController.abort();
+    abortController = new AbortController();
+  });
+
   while (true) {
+    setSignal(abortController.signal);
+
     const input = await rl.question(prompt());
     if (!input.trim()) continue;
 
@@ -131,7 +260,7 @@ async function main() {
 
     if (input === "/help") {
       console.log(
-        "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>\n" +
+        "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /new\n" +
           "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
       );
       continue;
@@ -275,7 +404,7 @@ async function main() {
       sessionId = await sessionStore.create({
         cwd: process.cwd(),
         provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-        model: "deepseek-chat",
+        model: args.model || "deepseek-chat",
         mode: activeMode?.slug || "code",
       });
       checkpoints = new CheckpointManager(sessionId);
@@ -299,6 +428,8 @@ async function main() {
         skills,
         memory: memoryInjection ?? undefined,
         memoryStore,
+        signal: abortController.signal,
+        ...interactiveCallbacks,
       });
       for (const msg of result.slice(2)) {
         if (msg.role !== "system") {
