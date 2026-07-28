@@ -528,9 +528,9 @@
 
 ### 8.2 — Layered error recovery
 
-- [ ] Layer 1: Parse error → requery with format correction template
-- [ ] Layer 2: Tool execution error → self-reflection (8.1)
-- [ ] Layer 3: Fatal error → save state, notify user
+- [x] Layer 1: Parse error → requery with format correction template
+- [x] Layer 2: Tool execution error → self-reflection (8.1)
+- [x] Layer 3: Fatal error → save state, notify user
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -596,10 +596,10 @@
 
 ### 9.3 — Orchestrator mode (Boomerang Tasks)
 
-- [ ] Orchestrator mode has only `new_task` tool
-- [ ] `new_task` spawns sub-agent with isolated context
-- [ ] Sub-agent completes → summary bubbles back to orchestrator
-- [ ] Parent never sees sub-agent file diffs or tool outputs
+- [x] Orchestrator mode has only `new_task` tool
+- [x] `new_task` spawns sub-agent with isolated context
+- [x] Sub-agent completes → summary bubbles back to orchestrator
+- [x] Parent never sees sub-agent file diffs or tool outputs
 
 **Acceptance criteria**
 | # | Given | When | Then |

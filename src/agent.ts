@@ -5,6 +5,7 @@ import type { ModeConfig } from "./modes/loader.js";
 import type { Compactor } from "./compaction/compactor.js";
 import type { DiagnosticRunner } from "./diagnostics/index.js";
 import type { ErrorReflector } from "./selfreflection/index.js";
+import type { ErrorRecovery } from "./errorrecovery/index.js";
 
 function buildSystemPrompt(mode?: ModeConfig): string {
   if (mode) {
@@ -36,6 +37,7 @@ export interface AgentOptions {
   compactor?: Compactor;
   diagnostics?: DiagnosticRunner;
   errorReflector?: ErrorReflector;
+  errorRecovery?: ErrorRecovery;
   maxTurns?: number;
 }
 
@@ -43,7 +45,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<Message[]> {
-  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, maxTurns = 20 } = options;
+  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20 } = options;
 
   let messages: Message[] = [
     { role: "system", content: buildSystemPrompt(options.mode) },
@@ -52,8 +54,10 @@ export async function runAgent(
 
   let turn = 0;
   while (turn < maxTurns) {
+    try {
     turn++;
     errorReflector?.resetTurn();
+    errorRecovery?.reset();
 
     let content = "";
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
@@ -82,15 +86,28 @@ export async function runAgent(
     if (pendingCalls.size === 0) break;
 
     const toolCalls: ToolCall[] = [];
+    let retryWithCorrection = false;
+
     for (const [id, tc] of pendingCalls) {
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(tc.args || "{}");
       } catch {
+        if (tc.args && errorRecovery) {
+          const correctionMsg = errorRecovery.handleParseError(tc.args);
+          if (correctionMsg) {
+            messages.push({ role: "assistant", content: content || null });
+            messages.push({ role: "system", content: correctionMsg });
+            retryWithCorrection = true;
+            break;
+          }
+        }
         args = { _raw: tc.args };
       }
       toolCalls.push({ id, name: tc.name, arguments: args });
     }
+
+    if (retryWithCorrection) continue;
 
     messages.push({
       role: "assistant",
@@ -148,6 +165,16 @@ export async function runAgent(
         messages.unshift({ role: "system", content: buildSystemPrompt(options.mode) });
       }
       console.log(`  [compacted: ${before} → ${messages.length} messages]`);
+    }
+    } catch (err) {
+      if (errorRecovery) {
+        const msg = errorRecovery.handleFatalError(err instanceof Error ? err : new Error(String(err)));
+        messages.push({ role: "system", content: msg });
+        console.log(`\n  [fatal: ${msg}]`);
+      } else {
+        throw err;
+      }
+      break;
     }
   }
 
