@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import type { Message, ToolDef } from "../types.js";
 import type { Provider, StreamEvent } from "./types.js";
+import { isRetryableStatus } from "./retry.js";
+import type { RetryableError } from "./retry.js";
 
 function mapMessages(messages: Message[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   return messages.map((m) => {
@@ -67,55 +69,64 @@ export function createOpenAICompatibleProvider(config: {
       tools: ToolDef[],
       options?: { temperature?: number; maxTokens?: number },
     ): AsyncGenerator<StreamEvent> {
-      const stream = await client.chat.completions.create({
-        model,
-        messages: mapMessages(messages),
-        tools: mapTools(tools),
-        tool_choice: "auto",
-        stream: true,
-        temperature: options?.temperature,
-        max_tokens: options?.maxTokens,
-      });
+      try {
+        const stream = await client.chat.completions.create({
+          model,
+          messages: mapMessages(messages),
+          tools: mapTools(tools),
+          tool_choice: "auto",
+          stream: true,
+          temperature: options?.temperature,
+          max_tokens: options?.maxTokens,
+        });
 
-      const toolCallAccum: Map<number, { id: string; name: string; args: string }> = new Map();
-      const started: Set<number> = new Set();
-      let finishReason = "stop";
+        const toolCallAccum: Map<number, { id: string; name: string; args: string }> = new Map();
+        const started: Set<number> = new Set();
+        let finishReason = "stop";
 
-      for await (const chunk of stream) {
-        const choice = chunk.choices[0];
-        if (choice?.finish_reason) {
-          finishReason = choice.finish_reason;
-        }
-
-        const delta = choice?.delta;
-        if (!delta) continue;
-
-        if (delta.content) {
-          yield { type: "text_delta", content: delta.content };
-        }
-
-        for (const tc of delta.tool_calls ?? []) {
-          const idx = tc.index;
-          if (!toolCallAccum.has(idx)) {
-            toolCallAccum.set(idx, { id: tc.id ?? "", name: tc.function?.name ?? "", args: "" });
-          }
-          const entry = toolCallAccum.get(idx)!;
-          if (tc.id) entry.id = tc.id;
-          if (tc.function?.name) entry.name = tc.function.name;
-          if (tc.function?.arguments) entry.args += tc.function.arguments;
-
-          if (!started.has(idx) && entry.id && entry.name) {
-            started.add(idx);
-            yield { type: "tool_call_start", id: entry.id, name: entry.name };
+        for await (const chunk of stream) {
+          const choice = chunk.choices[0];
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason;
           }
 
-          if (tc.function?.arguments) {
-            yield { type: "tool_call_delta", id: entry.id, arguments: tc.function.arguments };
+          const delta = choice?.delta;
+          if (!delta) continue;
+
+          if (delta.content) {
+            yield { type: "text_delta", content: delta.content };
+          }
+
+          for (const tc of delta.tool_calls ?? []) {
+            const idx = tc.index;
+            if (!toolCallAccum.has(idx)) {
+              toolCallAccum.set(idx, { id: tc.id ?? "", name: tc.function?.name ?? "", args: "" });
+            }
+            const entry = toolCallAccum.get(idx)!;
+            if (tc.id) entry.id = tc.id;
+            if (tc.function?.name) entry.name = tc.function.name;
+            if (tc.function?.arguments) entry.args += tc.function.arguments;
+
+            if (!started.has(idx) && entry.id && entry.name) {
+              started.add(idx);
+              yield { type: "tool_call_start", id: entry.id, name: entry.name };
+            }
+
+            if (tc.function?.arguments) {
+              yield { type: "tool_call_delta", id: entry.id, arguments: tc.function.arguments };
+            }
           }
         }
+
+        yield { type: "done", finishReason };
+      } catch (err: any) {
+        const status = err.status;
+        const retryable = status ? isRetryableStatus(status) : false;
+        const error = new Error(err.message || "Unknown provider error") as RetryableError;
+        error.status = status;
+        error.retryable = retryable;
+        throw error;
       }
-
-      yield { type: "done", finishReason };
     },
   };
 }

@@ -1,5 +1,6 @@
 import { createOpenAICompatibleProvider } from "./openai-compatible.js";
 import { registerAdapter, getAdapter } from "./registry.js";
+import { createRetryingProvider } from "./retry.js";
 import type { Provider } from "./types.js";
 
 export interface ProviderPreset {
@@ -55,9 +56,11 @@ export function createProvider(name: string): Provider {
     throw new Error(`Provider "${name}" requires ${preset.keyEnv} to be set`);
   }
 
-  return getAdapter(preset.api, {
-    baseUrl: preset.baseUrl,
-    apiKey,
-    model: preset.defaultModel,
-  });
+  return createRetryingProvider(
+    getAdapter(preset.api, {
+      baseUrl: preset.baseUrl,
+      apiKey,
+      model: preset.defaultModel,
+    }),
+  );
 }

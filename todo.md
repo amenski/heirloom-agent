@@ -650,10 +650,10 @@
 
 ### 10.2 — Resume + session CLI
 
-- [ ] `--continue`/`-c` (most recent for cwd), `--session <id>`
-- [ ] `/sessions` (id, 60-char first-message excerpt, age, count), `/new`
-- [ ] Effective conversation: last `compaction` marker → summary + messages after `replacesThrough`
-- [ ] One-line recap on resume
+- [x] `--continue`/`-c` (most recent for cwd), `--session <id>`
+- [x] `/sessions` (id, 60-char first-message excerpt, age, count), `/new`
+- [x] Effective conversation: last `compaction` marker → summary + messages after `replacesThrough`
+- [x] One-line recap on resume
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -724,9 +724,9 @@
 
 ### 12.2 — `heirloom auth` wizard
 
-- [ ] `heirloom auth` (wizard), `auth list`, `auth logout <name>`
-- [ ] Presets: DeepSeek, OpenRouter, Groq, Together, Ollama, OpenAI, Anthropic; "custom" asks baseUrl and writes provider entry to config
-- [ ] Writes `~/.heirloom/credentials.yaml` with mode `0600`
+- [x] `heirloom auth` (wizard), `auth list`, `auth logout <name>`
+- [x] Presets: DeepSeek, OpenRouter, Groq, Together, Ollama, OpenAI, Anthropic; "custom" asks baseUrl and writes provider entry to config
+- [x] Writes `~/.heirloom/credentials.yaml` with mode `0600`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -747,11 +747,11 @@
 
 ### 13.1 — Permission overlay (permission-spec.md)
 
-- [ ] Overlay `manual | edits | all` on rule resolution; only upgrades `ask` → `allow`; `deny` absolute in every mode
-- [ ] `edits`: auto-allow only edit-group tools targeting paths inside workingDir
-- [ ] `/approve [mode]` — show/set + list session rules; prompt indicator `heirloom [code ⚡edits] >`
-- [ ] Ask prompt answers `y / a / n`; `a` appends generalized in-memory session rule
-- [ ] `--approve <edits|all>` flag; headless `ask` → deny unless set
+- [x] Overlay `manual | edits | all` on rule resolution; only upgrades `ask` → `allow`; `deny` absolute in every mode
+- [x] `edits`: auto-allow only edit-group tools targeting paths inside workingDir
+- [x] `/approve [mode]` — show/set + list session rules; prompt indicator `heirloom [code ⚡edits] >`
+- [x] Ask prompt answers `y / a / n`; `a` appends generalized in-memory session rule
+- [x] `--approve <edits|all>` flag; headless `ask` → deny unless set
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -774,10 +774,10 @@
 
 ### 14.1 — Provider retry policy
 
-- [ ] Adapters throw typed errors `{ status?, retryable }` (429/5xx/network → retryable)
-- [ ] Loop retries: backoff 1s → 2s → 4s, max 3, visible `[provider error, retry n/3]`
-- [ ] Mid-stream failure discards partial turn, retries whole call
-- [ ] Fatal (401/403/404) fails immediately naming the config to fix
+- [x] Adapters throw typed errors `{ status?, retryable }` (429/5xx/network → retryable)
+- [x] Loop retries: backoff 1s → 2s → 4s, max 3, visible `[provider error, retry n/3]`
+- [x] Mid-stream failure discards partial turn, retries whole call
+- [x] Fatal (401/403/404) fails immediately naming the config to fix
 
 **Acceptance criteria**
 | # | Given | When | Then |
