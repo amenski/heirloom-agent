@@ -8,8 +8,8 @@
 
 ### 1.1 — Canonical type system
 
-- [ ] Create `src/types.ts` with `Message`, `ToolDef`, `ToolCall`, `ToolOutput`
-- [ ] Zero SDK imports — all types are provider-agnostic
+- [x] Create `src/types.ts` with `Message`, `ToolDef`, `ToolCall`, `ToolOutput`
+- [x] Zero SDK imports — all types are provider-agnostic
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -27,8 +27,8 @@
 
 ### 1.2 — Provider interface + StreamEvent
 
-- [ ] Create `src/providers/types.ts` with `Provider` interface and `StreamEvent` union
-- [ ] `StreamEvent` covers: `text_delta`, `tool_call_start`, `tool_call_delta`, `done`
+- [x] Create `src/providers/types.ts` with `Provider` interface and `StreamEvent` union
+- [x] `StreamEvent` covers: `text_delta`, `tool_call_start`, `tool_call_delta`, `done`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -47,10 +47,10 @@
 
 ### 1.3 — DeepSeek provider adapter
 
-- [ ] Create `src/providers/deepseek.ts`
-- [ ] `mapMessages()` — canonical → OpenAI `ChatCompletionMessageParam[]`
-- [ ] `mapTools()` — canonical → OpenAI `ChatCompletionTool[]`
-- [ ] `streamChat()` — OpenAI streaming → `AsyncGenerator<StreamEvent>`
+- [x] Create `src/providers/deepseek.ts`
+- [x] `mapMessages()` — canonical → OpenAI `ChatCompletionMessageParam[]`
+- [x] `mapTools()` — canonical → OpenAI `ChatCompletionTool[]`
+- [x] `streamChat()` — OpenAI streaming → `AsyncGenerator<StreamEvent>`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -69,9 +69,9 @@
 
 ### 1.4 — ReAct agent loop
 
-- [ ] Create `src/agent.ts` — `runAgent(userMessage, options)`
-- [ ] `buildSystemPrompt(mode?)` — constructs system prompt with mode-specific prefix
-- [ ] Streaming consumption: accumulate text, track tool calls by ID, execute after `done`
+- [x] Create `src/agent.ts` — `runAgent(userMessage, options)`
+- [x] `buildSystemPrompt(mode?)` — constructs system prompt with mode-specific prefix
+- [x] Streaming consumption: accumulate text, track tool calls by ID, execute after `done`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -92,8 +92,8 @@
 
 ### 1.5 — CLI entry point
 
-- [ ] Create `src/index.ts` — readline loop, `/exit`, `/help`, `/clear` commands
-- [ ] Wire provider + agent + tools together
+- [x] Create `src/index.ts` — readline loop, `/exit`, `/help`, `/clear` commands
+- [x] Wire provider + agent + tools together
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -112,8 +112,8 @@
 
 ### 1.6 — Basic tools (Phase 1 set)
 
-- [ ] Create `src/tools/index.ts` — 5 tools: `read_file`, `write_file`, `run_bash`, `list_files`, `search`
-- [ ] `executeTool(call)` — dispatches by name, returns `ToolOutput`
+- [x] Create `src/tools/index.ts` — 5 tools: `read_file`, `write_file`, `run_bash`, `list_files`, `search`
+- [x] `executeTool(call)` — dispatches by name, returns `ToolOutput`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -138,8 +138,8 @@
 
 ### 2.1 — ToolRegistry class
 
-- [ ] Create `src/tools/registry.ts` — `ToolRegistry` with `register()`, `getByMode()`, `execute()`
-- [ ] Tool handlers receive `ToolContext` (workingDir, sessionId, askUser, signal)
+- [x] Create `src/tools/registry.ts` — `ToolRegistry` with `register()`, `getByMode()`, `execute()`
+- [x] Tool handlers receive `ToolContext` (workingDir, sessionId, askUser, signal)
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -158,13 +158,13 @@
 
 ### 2.2 — Edit tools (6 strategies)
 
-- [ ] Create `src/tools/edit.ts` — `apply_diff`, `apply_patch`, `search_replace`, `edit_file`, `write_to_file`, `edit`
-- [ ] `apply_diff` — surgical first-occurrence patch using unified diff format
-- [ ] `apply_patch` — multi-file unified diff application
-- [ ] `search_replace` — global find-and-replace across file
-- [ ] `edit_file` — search-and-replace with occurrence count validation
-- [ ] `write_to_file` — full file rewrite
-- [ ] `edit` — exact string match → replacement (opencode-style)
+- [x] Create `src/tools/edit.ts` — `apply_diff`, `apply_patch`, `search_replace`, `edit_file`, `write_to_file`, `edit`
+- [x] `apply_diff` — surgical first-occurrence patch using unified diff format
+- [x] `apply_patch` — multi-file unified diff application
+- [x] `search_replace` — global find-and-replace across file
+- [x] `edit_file` — search-and-replace with occurrence count validation
+- [x] `write_to_file` — full file rewrite
+- [x] `edit` — exact string match → replacement (opencode-style)
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -189,8 +189,8 @@
 
 ### 2.3 — File tools
 
-- [ ] Extract `read_file`, `list_files` into `src/tools/files.ts`
-- [ ] Add `glob` tool for pattern-based file search
+- [x] Extract `read_file`, `list_files` into `src/tools/files.ts`
+- [x] Add `glob` tool for pattern-based file search
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -209,9 +209,9 @@
 
 ### 2.4 — Bash + Search tools
 
-- [ ] Extract `run_bash`, `search` into `src/tools/bash.ts` and `src/tools/search.ts`
-- [ ] `run_bash` — add `timeout` parameter, capture stderr
-- [ ] `search` — add `fileTypes` filter, return file:line:content format
+- [x] Extract `run_bash`, `search` into `src/tools/bash.ts` and `src/tools/search.ts`
+- [x] `run_bash` — add `timeout` parameter, capture stderr
+- [x] `search` — add `fileTypes` filter, return file:line:content format
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -233,10 +233,10 @@
 
 ### 3.1 — Permission engine
 
-- [ ] Create `src/permissions/engine.ts` — `PermissionEngine` class
-- [ ] Pattern-based rules: `{ tool, pattern?, action }` with last-match-wins
-- [ ] Actions: `allow`, `ask`, `deny`
-- [ ] Default: `ask` for all tools
+- [x] Create `src/permissions/engine.ts` — `PermissionEngine` class
+- [x] Pattern-based rules: `{ tool, pattern?, action }` with last-match-wins
+- [x] Actions: `allow`, `ask`, `deny`
+- [x] Default: `ask` for all tools
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -259,10 +259,10 @@
 
 ### 3.2 — Mode system
 
-- [ ] YAML-defined mode files in `~/.heirloom/modes/` and project `.heirloom/modes/`
-- [ ] Mode schema: `slug`, `name`, `roleDefinition`, `groups`, `fileRegex`, `customInstructions`
-- [ ] Built-in modes: `code`, `ask`, `architect`, `debug`, `orchestrator`
-- [ ] Tool gating by mode groups: `read`, `edit`, `command`, `mcp`, `workflow`
+- [x] YAML-defined mode files in `~/.heirloom/modes/` and project `.heirloom/modes/`
+- [x] Mode schema: `slug`, `name`, `roleDefinition`, `groups`, `fileRegex`, `customInstructions`
+- [x] Built-in modes: `code`, `ask`, `architect`, `debug`, `orchestrator`
+- [x] Tool gating by mode groups: `read`, `edit`, `command`, `mcp`, `workflow`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -285,9 +285,9 @@
 
 ### 3.3 — Mode CLI integration
 
-- [ ] `/mode <slug>` command switches active mode
-- [ ] Mode name shown in prompt: `heirloom [code] >`
-- [ ] Sticky model per mode — each mode remembers last-used provider/model
+- [x] `/mode <slug>` command switches active mode
+- [x] Mode name shown in prompt: `heirloom [code] >`
+- [x] Sticky model per mode — each mode remembers last-used provider/model
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -308,9 +308,9 @@
 
 ### 4.1 — Token estimation + budget
 
-- [ ] Create `src/compaction/budget.ts` — estimate tokens from `Message[]`
-- [ ] Budget: 70% conversation, 20% output reserve, 10% safety buffer
-- [ ] `shouldCompact(messages, contextWindow)` — returns boolean
+- [x] Create `src/compaction/budget.ts` — estimate tokens from `Message[]`
+- [x] Budget: 70% conversation, 20% output reserve, 10% safety buffer
+- [x] `shouldCompact(messages, contextWindow)` — returns boolean
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -330,10 +330,10 @@
 
 ### 4.2 — Summarization engine
 
-- [ ] Create `src/compaction/compactor.ts` — `Compactor` class
-- [ ] `compact(messages)` — summarize old messages, keep recent ones
-- [ ] Uses same provider (or cheaper model) to generate summary
-- [ ] Summary includes: files changed, decisions made, key observations
+- [x] Create `src/compaction/compactor.ts` — `Compactor` class
+- [x] `compact(messages)` — summarize old messages, keep recent ones
+- [x] Uses same provider (or cheaper model) to generate summary
+- [x] Summary includes: files changed, decisions made, key observations
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -354,9 +354,9 @@
 
 ### 4.3 — Auto-compaction trigger
 
-- [ ] Integrate compaction into agent loop
-- [ ] After each tool execution, check budget
-- [ ] If over threshold, compact before next LLM call
+- [x] Integrate compaction into agent loop
+- [x] After each tool execution, check budget
+- [x] If over threshold, compact before next LLM call
 
 **Acceptance criteria**
 | # | Given | When | Then |
