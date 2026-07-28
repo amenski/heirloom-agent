@@ -21,6 +21,7 @@ const ctx: ToolContext = {
   sessionId: "default",
   askUser: async () => true,
   signal: new AbortController().signal,
+  fileMtimes: new Map(),
 };
 
 export function setSessionId(id: string): void {

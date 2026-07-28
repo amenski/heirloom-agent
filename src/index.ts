@@ -9,6 +9,8 @@ import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
 import { authWizard, authList, authLogout } from "./auth/wizard.js";
 import { SessionStore } from "./sessions/store.js";
+import { MemoryStore } from "./memory/store.js";
+import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import type { Message } from "./types.js";
 
 function parseArgs(): { continue: boolean; sessionId?: string } {
@@ -95,6 +97,15 @@ async function main() {
   setSessionId(sessionId);
   setCheckpointManager(checkpoints);
 
+  const memoryStore = new MemoryStore();
+  await memoryStore.init();
+  const memoryInjection = await memoryStore.getInjection();
+
+  const skillLoader = new SkillLoader();
+  let skills = await skillLoader.load();
+  const { def: loadSkillDef, handler: loadSkillHandler } = createLoadSkillTool(skills);
+  registry.register({ def: loadSkillDef, handler: loadSkillHandler, groups: ["read"], always: true });
+
   let activeMode: ModeConfig | undefined;
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -120,9 +131,31 @@ async function main() {
 
     if (input === "/help") {
       console.log(
-        "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints\n" +
+        "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>\n" +
           "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
       );
+      continue;
+    }
+
+    if (input === "/skills") {
+      if (skills.length === 0) {
+        console.log("No skills available.");
+      } else {
+        for (const s of skills) {
+          console.log(`  ${s.name} — ${s.description || "no description"}`);
+        }
+      }
+      continue;
+    }
+
+    if (input.startsWith("/skill ")) {
+      const name = input.slice(7).trim();
+      const skill = skills.find(s => s.name === name);
+      if (skill) {
+        console.log(skill.content);
+      } else {
+        console.log(`Unknown skill: ${name}. Try /skills to list available skills.`);
+      }
       continue;
     }
 
@@ -253,7 +286,7 @@ async function main() {
     }
 
     try {
-      const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : TOOL_DEFS;
+      const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
       await sessionStore.appendMessage(sessionId, { role: "user", content: input });
       const result = await runAgent(input, {
         provider,
@@ -263,12 +296,22 @@ async function main() {
         mode: activeMode,
         compactor,
         diagnostics,
+        skills,
+        memory: memoryInjection ?? undefined,
+        memoryStore,
       });
       for (const msg of result.slice(2)) {
         if (msg.role !== "system") {
           await sessionStore.appendMessage(sessionId, msg);
         }
       }
+
+      await memoryStore.appendSession({
+        date: new Date().toISOString().slice(0, 10),
+        tasks: [input],
+        decisions: [],
+        files: [],
+      });
     } catch (err) {
       console.error(`\nError: ${(err as Error).message}`);
     }

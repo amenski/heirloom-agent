@@ -9,6 +9,7 @@ export interface ToolContext {
   askUser(question: string): Promise<boolean>;
   signal: AbortSignal;
   checkpoint?: CheckpointManager;
+  fileMtimes?: Map<string, number>;
 }
 
 export interface ToolRegistration {

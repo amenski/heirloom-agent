@@ -792,9 +792,9 @@
 
 ### 14.2 — Loop detection + maxTurns pause
 
-- [ ] Identical tool+arguments 3× per turn → corrective system message; recurrence → end turn
-- [ ] 5 consecutive failed tool calls → same escalation
-- [ ] `maxTurns` hit → print progress (todo list if present), persist session, return to prompt; next input continues with fresh budget
+- [x] Identical tool+arguments 3× per turn → corrective system message; recurrence → end turn
+- [x] 5 consecutive failed tool calls → same escalation
+- [x] `maxTurns` hit → print progress (todo list if present), persist session, return to prompt; next input continues with fresh budget
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -809,9 +809,9 @@
 
 ### 14.3 — Stale-file detection, compaction fidelity, config validation
 
-- [ ] Track mtime per file at `read_file`; edit tools return `FILE_MODIFIED` when target changed since read or never read
-- [ ] Compaction fidelity check (subsystems §2): files/pending/task verified mechanically; regenerate once; then defer compaction
-- [ ] Startup schema validation of config + mode YAML: invalid value → fail fast naming file+field; unknown fields → warn
+- [x] Track mtime per file at `read_file`; edit tools return `FILE_MODIFIED` when target changed since read or never read
+- [x] Compaction fidelity check (subsystems §2): files/pending/task verified mechanically; regenerate once; then defer compaction
+- [x] Startup schema validation of config + mode YAML: invalid value → fail fast naming file+field; unknown fields → warn
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -851,11 +851,11 @@
 
 ### 16.1 — Cross-tool skill loading (skill-spec.md)
 
-- [ ] Search paths in precedence: `.heirloom/skills` → `.agents/skills` → `~/.heirloom/skills` → `~/.agents/skills`; first name-match wins
-- [ ] Skills index in system prompt section [7]; `mode`-restricted skills filtered per mode
-- [ ] `load_skill` tool — body as tool output; unknown name → `FILE_NOT_FOUND` listing available skills
-- [ ] `/skills`, `/skill <name>` commands
-- [ ] Unknown frontmatter fields ignored (`license`, `metadata`, …)
+- [x] Search paths in precedence: `.heirloom/skills` → `.agents/skills` → `~/.heirloom/skills` → `~/.agents/skills`; first name-match wins
+- [x] Skills index in system prompt section [7]; `mode`-restricted skills filtered per mode
+- [x] `load_skill` tool — body as tool output; unknown name → `FILE_NOT_FOUND` listing available skills
+- [x] `/skills`, `/skill <name>` commands
+- [x] Unknown frontmatter fields ignored (`license`, `metadata`, …)
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -898,10 +898,10 @@
 
 ### 18.1 — Persistent memory (subsystems §1)
 
-- [ ] `~/.heirloom/memory/` layout: `MEMORY.md` index, `_global/`, `<project-slug>/` (sessions.md, decisions.md, patterns.md, pitfalls.md)
-- [ ] Session-end write: compaction `decisions[]` → candidate facts through the derivability filter; `sessions.md` append
-- [ ] Session-start injection ≤ 1,024 tokens (index-first budget fill)
-- [ ] "remember X" → immediate write, bypasses filter
+- [x] `~/.heirloom/memory/` layout: `MEMORY.md` index, `_global/`, `<project-slug>/` (sessions.md, decisions.md, patterns.md, pitfalls.md)
+- [x] Session-end write: compaction `decisions[]` → candidate facts through the derivability filter; `sessions.md` append
+- [x] Session-start injection ≤ 1,024 tokens (index-first budget fill)
+- [x] "remember X" → immediate write, bypasses filter
 
 **Acceptance criteria**
 | # | Given | When | Then |

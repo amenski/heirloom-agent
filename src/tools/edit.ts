@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler, ToolContext } from "./types.js";
@@ -18,6 +18,22 @@ function replaceAllLiterals(str: string, search: string, replacement: string): s
   if (search === "") return str;
   const parts = str.split(search);
   return parts.join(replacement);
+}
+
+async function checkStaleFile(path: string, ctx: ToolContext): Promise<ToolOutput | null> {
+  if (!ctx.fileMtimes?.has(path)) return null;
+  const recordedMtime = ctx.fileMtimes.get(path)!;
+  let currentMtime: number;
+  try {
+    const s = await stat(path);
+    currentMtime = s.mtimeMs;
+  } catch {
+    return null;
+  }
+  if (currentMtime > recordedMtime + 1000) {
+    return { content: "FILE_MODIFIED: file was changed externally since last read. Re-read before editing.", error: "FILE_MODIFIED" };
+  }
+  return null;
 }
 
 const editHandler: ToolHandler = async (args, ctx) => {
@@ -53,6 +69,8 @@ const editHandler: ToolHandler = async (args, ctx) => {
   const newContent = content.slice(0, idx) + newString + content.slice(idx + oldString.length);
 
   try {
+    const stale = await checkStaleFile(path, ctx);
+    if (stale) return stale;
     await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `Replaced 1 occurrence in ${path}` };
@@ -98,6 +116,8 @@ const applyDiffHandler: ToolHandler = async (args, ctx) => {
   }
 
   try {
+    const stale = await checkStaleFile(path, ctx);
+    if (stale) return stale;
     await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `Diff applied successfully to ${path}` };
@@ -201,6 +221,12 @@ const applyPatchHandler: ToolHandler = async (args, ctx) => {
   await ctx.checkpoint?.save();
 
   for (const [filePath, diffText] of sections) {
+    const stale = await checkStaleFile(filePath, ctx);
+    if (stale) {
+      results.push(`${filePath}: FILE_MODIFIED - file was changed externally since last read`);
+      continue;
+    }
+
     let content: string;
     try {
       content = await readFile(filePath, "utf-8");
@@ -283,6 +309,8 @@ const searchReplaceHandler: ToolHandler = async (args, ctx) => {
   const newContent = replaceAllLiterals(content, search, replace);
 
   try {
+    const stale = await checkStaleFile(path, ctx);
+    if (stale) return stale;
     await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `${count} occurrences replaced in ${path}` };
@@ -339,6 +367,8 @@ const editFileHandler: ToolHandler = async (args, ctx) => {
   const newContent = replaceAllLiterals(content, search, replace);
 
   try {
+    const stale = await checkStaleFile(path, ctx);
+    if (stale) return stale;
     await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `${count} occurrences replaced in ${path}` };
@@ -368,6 +398,8 @@ const writeToFileHandler: ToolHandler = async (args, ctx) => {
   const content = args.content as string;
 
   try {
+    const stale = await checkStaleFile(path, ctx);
+    if (stale) return stale;
     await ctx.checkpoint?.save();
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, "utf-8");

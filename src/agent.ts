@@ -8,6 +8,7 @@ import type { ErrorReflector } from "./selfreflection/index.js";
 import type { ErrorRecovery } from "./errorrecovery/index.js";
 import type { SkillDef } from "./skills/index.js";
 import type { RepoMap } from "./repomap/index.js";
+import type { MemoryStore } from "./memory/store.js";
 import { buildSystemPrompt } from "./prompt.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
@@ -26,6 +27,8 @@ export interface AgentOptions {
   skills?: SkillDef[];
   repomap?: RepoMap;
   memory?: string;
+  memoryStore?: MemoryStore;
+  onMaxTurns?: (messages: Message[]) => void;
 }
 
 export async function runAgent(
@@ -49,7 +52,13 @@ export async function runAgent(
   ];
 
   let turn = 0;
-  while (turn < maxTurns) {
+  let turnEnded = false;
+  while (turn < maxTurns && !turnEnded) {
+    const seenCalls = new Map<string, number>();
+    let failedStreak = 0;
+    let warnedRepeat = false;
+    let warnedFailures = false;
+
     try {
     turn++;
     errorReflector?.resetTurn();
@@ -127,6 +136,18 @@ export async function runAgent(
       }
 
       const result = await executeTool(tc);
+
+      const callKey = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+      const callCount = (seenCalls.get(callKey) || 0) + 1;
+      seenCalls.set(callKey, callCount);
+
+      if (result.error) {
+        failedStreak++;
+      } else {
+        failedStreak = 0;
+        warnedFailures = false;
+      }
+
       if (result.error && errorReflector?.canRetry(tc.name, result.error)) {
         messages.push({ role: "tool", toolCallId: tc.id, content: `Error: ${result.error}` });
         messages.push({ role: "user", content: errorReflector.formatError(tc.name, result.error) });
@@ -138,6 +159,28 @@ export async function runAgent(
           toolCallId: tc.id,
           content: result.error ? `Error: ${result.error}` : result.content,
         });
+      }
+
+      if (result.error && callCount >= 3 && !warnedRepeat) {
+        messages.push({
+          role: "system",
+          content: `You have called ${tc.name} with identical arguments ${callCount} times. All calls failed with: ${result.error}. Change your approach.`,
+        });
+        warnedRepeat = true;
+      } else if (result.error && callCount >= 4 && warnedRepeat) {
+        console.log("[loop detected: ending turn]");
+        turnEnded = true;
+        break;
+      }
+
+      if (failedStreak >= 5 && !warnedFailures) {
+        messages.push({
+          role: "system",
+          content: "5 consecutive tool calls have failed. Review your approach before continuing.",
+        });
+        warnedFailures = true;
+        turnEnded = true;
+        break;
       }
     }
 
@@ -184,6 +227,13 @@ export async function runAgent(
       }
       break;
     }
+  }
+
+  if (turn >= maxTurns) {
+    if (options.onMaxTurns) {
+      options.onMaxTurns(messages);
+    }
+    console.log("[max turns reached. Session saved.]");
   }
 
   return messages;

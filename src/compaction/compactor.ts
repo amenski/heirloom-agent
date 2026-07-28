@@ -14,6 +14,9 @@ Format your summary as a single paragraph that captures the essential context.
 Be concise. Omit tool output details — just note what was done and the outcome.`;
 
 export class Compactor {
+  private lastChangedFiles: Set<string> = new Set();
+  private fidelityRegenerationCount = 0;
+
   constructor(
     private provider: Provider,
     private contextWindow: number = 128000,
@@ -21,6 +24,10 @@ export class Compactor {
 
   needsCompaction(messages: Message[]): boolean {
     return shouldCompact(messages, this.contextWindow);
+  }
+
+  trackFiles(files: string[]): void {
+    for (const f of files) this.lastChangedFiles.add(f);
   }
 
   async compact(messages: Message[]): Promise<Message[]> {
@@ -32,7 +39,22 @@ export class Compactor {
 
     if (old.length === 0) return messages;
 
-    const summaryContent = await this.summarize(old);
+    let summaryContent = await this.summarize(old, this.lastChangedFiles);
+
+    const changedFiles = [...this.lastChangedFiles];
+    if (changedFiles.length > 0) {
+      const fidelityOk = this.fidelityCheck(summaryContent, changedFiles);
+      if (!fidelityOk && this.fidelityRegenerationCount < 1) {
+        this.fidelityRegenerationCount++;
+        summaryContent = await this.summarize(old, this.lastChangedFiles);
+      } else if (!fidelityOk) {
+        console.warn("[compaction] Fidelity check failed, deferring compaction");
+        return messages;
+      }
+    }
+
+    this.lastChangedFiles.clear();
+    this.fidelityRegenerationCount = 0;
 
     const summary: Message = {
       role: "system",
@@ -42,7 +64,7 @@ export class Compactor {
     return [summary, ...recent];
   }
 
-  private async summarize(messages: Message[]): Promise<string> {
+  private async summarize(messages: Message[], changedFiles?: Set<string>): Promise<string> {
     const conversation = messages.map(m => {
       if (m.role === "tool") {
         return `[tool result: ${m.content.slice(0, 200)}]`;
@@ -54,8 +76,14 @@ export class Compactor {
       return `${m.role}: ${m.content || ""}`;
     }).join("\n");
 
+    let prompt = COMPACTION_PROMPT;
+    if (changedFiles && changedFiles.size > 0) {
+      const fileList = [...changedFiles].join(", ");
+      prompt += `\nFiles modified in this session: ${fileList}\nMake sure your summary mentions these files.`;
+    }
+
     const summaryMessages: Message[] = [
-      { role: "system", content: COMPACTION_PROMPT },
+      { role: "system", content: prompt },
       { role: "user", content: conversation },
     ];
 
@@ -68,5 +96,10 @@ export class Compactor {
     }
 
     return result || "Conversation summarized.";
+  }
+
+  private fidelityCheck(summary: string, files: string[]): boolean {
+    const missing = files.filter(f => !summary.includes(f));
+    return missing.length === 0;
   }
 }

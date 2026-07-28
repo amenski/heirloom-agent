@@ -1,12 +1,15 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import type { ToolDef } from "../types.js";
+import type { ToolHandler } from "../tools/types.js";
 
 export interface SkillDef {
   name: string;
   description: string;
   triggers: string[];
   content: string;
+  mode?: string;
 }
 
 function unquote(s: string): string {
@@ -135,8 +138,9 @@ async function scanDir(dir: string): Promise<SkillDef[]> {
       if (Array.isArray(frontmatter.triggers)) {
         triggers = frontmatter.triggers.map((t) => String(t));
       }
+      const mode = (frontmatter.mode as string) || undefined;
 
-      skills.push({ name, description, triggers, content });
+      skills.push({ name, description, triggers, content, mode });
     } catch (err) {
       console.warn(
         `[skills] Failed to read ${skillPath}: ${(err as Error).message}`
@@ -154,7 +158,9 @@ export class SkillLoader {
 
     const dirs = [
       join(process.cwd(), ".heirloom", "skills"),
+      join(process.cwd(), ".agents", "skills"),
       join(homedir(), ".heirloom", "skills"),
+      join(homedir(), ".agents", "skills"),
     ];
 
     for (const dir of dirs) {
@@ -189,4 +195,30 @@ export class SkillLoader {
     matched.sort((a, b) => b.triggerLen - a.triggerLen);
     return matched.map((m) => m.skill);
   }
+}
+
+export function createLoadSkillTool(skills: SkillDef[]): { def: ToolDef; handler: ToolHandler } {
+  const def: ToolDef = {
+    name: "load_skill",
+    description: "Load the full content of a skill by name. Returns the skill's instructions.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The name of the skill to load" },
+      },
+      required: ["name"],
+    },
+  };
+
+  const handler: ToolHandler = async (args) => {
+    const name = args.name as string;
+    const skill = skills.find(s => s.name === name);
+    if (!skill) {
+      const available = skills.map(s => s.name).join(", ");
+      return { content: `Unknown skill: ${name}. Available: ${available}`, error: "FILE_NOT_FOUND" };
+    }
+    return { content: skill.content };
+  };
+
+  return { def, handler };
 }
