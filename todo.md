@@ -617,6 +617,303 @@
 
 ---
 
+## Phase 10: Session Persistence
+
+> From session-spec.md. Contract changes from the same spec pass also touch
+> earlier phases: adapter error shape (1.3), FILE_MODIFIED on edit tools
+> (2.2), approval overlay in the permission engine (3.1), per-model context
+> windows (4.1), system prompt (1.4).
+
+### 10.1 — Session store (JSONL)
+
+- [ ] Create `src/sessions/store.ts` — append-only JSONL at `~/.heirloom/sessions/<project-slug>/<id>.jsonl`
+- [ ] Record types: `meta` (first line, versioned), `message`, `state`, `compaction`
+- [ ] Session ID: `<compact ISO UTC>-<4 hex>`; filename is the ID
+- [ ] Append only after a message/turn completes — never mid-stream
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | A completed turn | appended | file is valid JSONL, one record per line |
+| AC2 | Crash mid-turn | session reloaded | in-flight turn absent, all prior turns intact |
+| AC3 | Torn final line (incomplete JSON) | loaded | dropped with warning, rest loads |
+| AC4 | `meta.version` higher than known | loaded | refuses with clear error, no misparse |
+
+**Edge cases**
+- `/mode` or model switch mid-session — append `state` record, last wins on load
+- System prompt is never persisted — rebuilt on load from current config
+- Project-slug collision — tolerated; true `cwd` lives in `meta`
+
+**Deps:** 1.4 | **Priority:** P1 | **Est:** 2h
+
+---
+
+### 10.2 — Resume + session CLI
+
+- [ ] `--continue`/`-c` (most recent for cwd), `--session <id>`
+- [ ] `/sessions` (id, 60-char first-message excerpt, age, count), `/new`
+- [ ] Effective conversation: last `compaction` marker → summary + messages after `replacesThrough`
+- [ ] One-line recap on resume
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | Two sessions for this cwd | `-c` | newer one loads (string-sorted ID) |
+| AC2 | Session with a compaction record | resumed | LLM sees summary + tail, full transcript untouched on disk |
+| AC3 | `/new` mid-session | invoked | current session saved, fresh one started |
+
+**Edge cases**
+- No sessions for cwd + `-c` — start new with notice, not an error
+- `restore full` (Phase 5) — appends `{"truncateAt": N}` state record, never deletes lines
+
+**Deps:** 10.1, 1.5 | **Priority:** P1 | **Est:** 1.5h
+
+---
+
+## Phase 11: System Prompt Assembly
+
+### 11.1 — Implement system-prompt.md
+
+- [ ] Replace placeholder `buildSystemPrompt` with the 9-section assembly (role → base → tool guide → mode custom → environment → project → skills → memory → repomap)
+- [ ] Base rules, edit-tool guide, shell guide verbatim from the spec
+- [ ] Environment block: cwd, platform, date, git branch/state
+- [ ] Project instructions: `.heirloom/instructions.md`, `AGENTS.md` fallback
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | `ask` mode | prompt built | no edit/shell guides — ~40% smaller than `code` |
+| AC2 | Empty sections (no memory, no repomap) | prompt built | omitted entirely, no empty headers |
+| AC3 | Both instruction files exist | prompt built | `.heirloom/instructions.md` wins |
+| AC4 | Same mode, same session | two turns | identical prefix (sections 1–7) for provider caching |
+
+**Edge cases**
+- Not a git repo — `git: not a git repository`, no error
+- Spec/code divergence — treated as a bug in one of them (doc's contract)
+
+**Deps:** 3.2 | **Priority:** P1 | **Est:** 1.5h
+
+---
+
+## Phase 12: Provider Registry + Auth
+
+### 12.1 — Providers map + adapter registry
+
+- [ ] Rename `deepseek.ts` → `openai-compatible.ts`; factory takes `{ baseUrl, apiKey }`
+- [ ] Adapter registry: `api: openai-compatible | anthropic`; unknown → startup config error
+- [ ] Merge built-in presets (deepseek, openai, anthropic) with config `providers:`
+- [ ] Key resolution: env var (`apiKeyEnv`) → `~/.heirloom/credentials.yaml`; injected — adapters never read `process.env`
+- [ ] Per-model `contextWindow` feeds compaction budget; global fallback warns
+- [ ] Model refs split on first slash: `openrouter/anthropic/claude-x` → provider `openrouter`
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | OpenRouter entry in config + key set | used | works with zero code changes |
+| AC2 | Key unset everywhere | first LLM call | error names the missing env var / auth command |
+| AC3 | Model with slashes in ID | `--model` parsed | first-slash split, rest is model ID |
+| AC4 | Model without `contextWindow` | budget computed | global fallback used, warning printed |
+
+**Edge cases**
+- `apiKeyEnv: null` (Ollama) — no key required, no warning
+- Config overrides a built-in preset — override wins (config precedence chain)
+
+**Deps:** 1.3 | **Priority:** P1 | **Est:** 2h
+
+---
+
+### 12.2 — `heirloom auth` wizard
+
+- [ ] `heirloom auth` (wizard), `auth list`, `auth logout <name>`
+- [ ] Presets: DeepSeek, OpenRouter, Groq, Together, Ollama, OpenAI, Anthropic; "custom" asks baseUrl and writes provider entry to config
+- [ ] Writes `~/.heirloom/credentials.yaml` with mode `0600`
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | Preset chosen | wizard completes | only the key was typed; provider usable |
+| AC2 | `auth list` | run | shows each provider + key source (env / credentials / none) |
+| AC3 | `auth logout openrouter` | run | credentials entry removed, config entry untouched |
+
+**Edge cases**
+- Credentials file exists world-readable — warn and chmod 600
+- Pasted key with surrounding whitespace — trim
+
+**Deps:** 12.1 | **Priority:** P2 | **Est:** 1.5h
+
+---
+
+## Phase 13: Approval Modes
+
+### 13.1 — Permission overlay (permission-spec.md)
+
+- [ ] Overlay `manual | edits | all` on rule resolution; only upgrades `ask` → `allow`; `deny` absolute in every mode
+- [ ] `edits`: auto-allow only edit-group tools targeting paths inside workingDir
+- [ ] `/approve [mode]` — show/set + list session rules; prompt indicator `heirloom [code ⚡edits] >`
+- [ ] Ask prompt answers `y / a / n`; `a` appends generalized in-memory session rule
+- [ ] `--approve <edits|all>` flag; headless `ask` → deny unless set
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | `rm *: deny` + approval `all` | `rm -rf` attempted | denied — deny survives every overlay |
+| AC2 | Approval `edits` | `edit` inside cwd / `run_bash` | edit runs silently, bash still prompts |
+| AC3 | `a` answered on `npm install x` | third `npm install` call | no prompt (session rule `npm install *`) |
+| AC4 | New session | started | approval mode is `manual`, no session rules |
+
+**Edge cases**
+- Edit tool targeting a path outside workingDir in `edits` — prompts anyway
+- Entering `all` — one-line warning naming the workingDir
+- Session rules die with the session — never written to config
+
+**Deps:** 3.1 | **Priority:** P1 | **Est:** 2h
+
+---
+
+## Phase 14: Robustness Hardening
+
+### 14.1 — Provider retry policy
+
+- [ ] Adapters throw typed errors `{ status?, retryable }` (429/5xx/network → retryable)
+- [ ] Loop retries: backoff 1s → 2s → 4s, max 3, visible `[provider error, retry n/3]`
+- [ ] Mid-stream failure discards partial turn, retries whole call
+- [ ] Fatal (401/403/404) fails immediately naming the config to fix
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | 429 then success | streamed | retry notice shown, turn completes |
+| AC2 | Stream cut at 50% | retried | no duplicate text in final conversation; session has no partial turn |
+| AC3 | Bad API key | first call | immediate failure naming provider + key source |
+
+**Deps:** 12.1 | **Priority:** P1 | **Est:** 1.5h
+
+---
+
+### 14.2 — Loop detection + maxTurns pause
+
+- [ ] Identical tool+arguments 3× per turn → corrective system message; recurrence → end turn
+- [ ] 5 consecutive failed tool calls → same escalation
+- [ ] `maxTurns` hit → print progress (todo list if present), persist session, return to prompt; next input continues with fresh budget
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | Same failing `edit` 3× | detected | system message names repetition + last error |
+| AC2 | Still repeating after warning | detected | turn ends, user informed |
+| AC3 | `maxTurns` reached mid-task | hit | session persisted, "continue?" prompt, no work lost |
+
+**Deps:** 8.2 | **Priority:** P2 | **Est:** 1h
+
+---
+
+### 14.3 — Stale-file detection, compaction fidelity, config validation
+
+- [ ] Track mtime per file at `read_file`; edit tools return `FILE_MODIFIED` when target changed since read or never read
+- [ ] Compaction fidelity check (subsystems §2): files/pending/task verified mechanically; regenerate once; then defer compaction
+- [ ] Startup schema validation of config + mode YAML: invalid value → fail fast naming file+field; unknown fields → warn
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | User edits file in own editor after agent read it | agent edits | `FILE_MODIFIED`, no write, hint to re-read |
+| AC2 | Summary missing a changed file | fidelity check | regenerated once; second miss → compaction deferred |
+| AC3 | `api: grpc` in providers | startup | exits naming file and field |
+| AC4 | Unknown config field | startup | warning only, boots normally |
+
+**Deps:** 2.2, 4.2 | **Priority:** P1 | **Est:** 2h
+
+---
+
+## Phase 15: CLI Hardening
+
+### 15.1 — Headless mode, interrupts, I/O decoupling (cli-spec.md)
+
+- [ ] `-p "<prompt>"`: stream to stdout, exit on completion; `ask` → deny; `ask_followup_question` → print + exit 2
+- [ ] Exit codes 0/1/2; errors and warnings to stderr
+- [ ] Ctrl+C mid-turn: AbortSignal → stream closed, tool aborted, partial turn not persisted, prompt returns; idle Ctrl+C prints hint; Ctrl+D exits
+- [ ] Agent loop I/O decoupling: no `process.stdout` in `agent.ts` — output via injected callbacks (architecture tradeoff 6)
+- [ ] `bin` entry + `--help`/`--version`
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | `-p` with sufficient allow rules | run | completes, exit 0, output pipeable |
+| AC2 | `-p` needing user input | run | question printed, exit 2 |
+| AC3 | Ctrl+C during tool execution | pressed | child process killed, session has no partial turn |
+| AC4 | Unknown `/command` | typed | error + `/help` hint, never sent to LLM |
+
+**Deps:** 10.1, 13.1 | **Priority:** P2 | **Est:** 2h
+
+---
+
+## Phase 16: Skills Alignment
+
+### 16.1 — Cross-tool skill loading (skill-spec.md)
+
+- [ ] Search paths in precedence: `.heirloom/skills` → `.agents/skills` → `~/.heirloom/skills` → `~/.agents/skills`; first name-match wins
+- [ ] Skills index in system prompt section [7]; `mode`-restricted skills filtered per mode
+- [ ] `load_skill` tool — body as tool output; unknown name → `FILE_NOT_FOUND` listing available skills
+- [ ] `/skills`, `/skill <name>` commands
+- [ ] Unknown frontmatter fields ignored (`license`, `metadata`, …)
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | Skill installed via `npx skills add` into `~/.agents` | startup | appears in `/skills` and index, loads unchanged |
+| AC2 | Same slug in project and global | loaded | project wins |
+| AC3 | `load_skill("nope")` | called | error lists available names |
+
+**Edge cases**
+- Missing `description` — skip with warning, others load
+- `.skill-lock.json` — never read or written by heirloom
+
+**Deps:** 9.2, 11.1 | **Priority:** P2 | **Est:** 1.5h
+
+---
+
+## Phase 17: Test Harness
+
+### 17.1 — Vitest + golden tasks (conventions.md)
+
+- [ ] Vitest; `npm test` = `vitest run`
+- [ ] Unit targets: 6 edit strategies, permission engine + approval overlay, registry mode-gating, compaction budget + fidelity check, session loader (torn line / state folding / compaction reconstruction)
+- [ ] `fixtures/` projects + golden tasks G1–G6; runnable via `-p --approve all`
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | `npm test` | run | green; covers the five unit targets |
+| AC2 | G2 (planted failing test) | run headless | agent fixes it, exit 0, no out-of-scope file touched |
+
+**Edge cases**
+- Provider adapters and agent loop deliberately not unit-tested — golden tasks cover them
+- Golden tasks manual until harness scripted
+
+**Deps:** 15.1 | **Priority:** P1 | **Est:** 3h
+
+---
+
+## Phase 18: Memory
+
+### 18.1 — Persistent memory (subsystems §1)
+
+- [ ] `~/.heirloom/memory/` layout: `MEMORY.md` index, `_global/`, `<project-slug>/` (sessions.md, decisions.md, patterns.md, pitfalls.md)
+- [ ] Session-end write: compaction `decisions[]` → candidate facts through the derivability filter; `sessions.md` append
+- [ ] Session-start injection ≤ 1,024 tokens (index-first budget fill)
+- [ ] "remember X" → immediate write, bypasses filter
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | Session with 2 decisions ends | memory written | decision files updated, sessions.md prepended |
+| AC2 | Fact derivable from repo (code structure) | filtered | not written to memory |
+| AC3 | 60 memory files | session starts | injection stays ≤ 1,024 tokens, index always included |
+
+**Deps:** 10.1, 4.2 | **Priority:** P3 | **Est:** 2h
+
+---
+
 ## Non-Functional Requirements
 
 ### NFR1: Performance
