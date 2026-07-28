@@ -1,0 +1,19 @@
+import type { ToolDef, ToolCall, ToolOutput } from "../types.js";
+
+export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutput>;
+
+export interface ToolContext {
+  workingDir: string;
+  sessionId: string;
+  askUser(question: string): Promise<boolean>;
+  signal: AbortSignal;
+}
+
+export interface ToolRegistration {
+  def: ToolDef;
+  handler: ToolHandler;
+  groups: ToolGroup[];
+  always?: boolean;
+}
+
+export type ToolGroup = "read" | "edit" | "command" | "mcp" | "workflow";
