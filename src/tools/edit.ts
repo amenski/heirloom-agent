@@ -423,6 +423,8 @@ const writeToFileDef: ToolDef = {
   },
 };
 
+export { editHandler, applyDiffHandler, applyPatchHandler, searchReplaceHandler, editFileHandler, writeToFileHandler };
+
 export function registerEdits(registry: ToolRegistry): void {
   registry.register({ def: editDef, handler: editHandler, groups: ["edit"] });
   registry.register({ def: applyDiffDef, handler: applyDiffHandler, groups: ["edit"] });

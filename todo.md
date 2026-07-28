@@ -876,9 +876,9 @@
 
 ### 17.1 — Vitest + golden tasks (conventions.md)
 
-- [ ] Vitest; `npm test` = `vitest run`
-- [ ] Unit targets: 6 edit strategies, permission engine + approval overlay, registry mode-gating, compaction budget + fidelity check, session loader (torn line / state folding / compaction reconstruction)
-- [ ] `fixtures/` projects + golden tasks G1–G6; runnable via `-p --approve all`
+- [x] Vitest; `npm test` = `vitest run`
+- [x] Unit targets: 6 edit strategies, permission engine + approval overlay, registry mode-gating, compaction budget + fidelity check, session loader (torn line / state folding / compaction reconstruction)
+- [x] `fixtures/` projects + golden tasks G1–G6; runnable via `-p --approve all`
 
 **Acceptance criteria**
 | # | Given | When | Then |
