@@ -505,9 +505,9 @@
 
 ### 8.1 — Self-reflection loop
 
-- [ ] After tool execution fails, feed error back to LLM for one retry
-- [ ] Retry count: max 1 per turn, max 3 total per conversation
-- [ ] Error format: `"Your {tool_name} call failed: {error_message}. Try a different approach."`
+- [x] After tool execution fails, feed error back to LLM for one retry
+- [x] Retry count: max 1 per turn, max 3 total per conversation
+- [x] Error format: `"Your {tool_name} call failed: {error_message}. Try a different approach."`
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -551,10 +551,10 @@
 
 ### 9.1 — MCP client
 
-- [ ] Create `src/mcp/client.ts` — MCP client for tool discovery
-- [ ] `listTools(serverConfig)` — connect to MCP server, fetch tool list
-- [ ] Convert MCP tools to heirloom `ToolDef[]`
-- [ ] `callTool(serverConfig, toolName, args)` — execute MCP tool
+- [x] Create `src/mcp/client.ts` — MCP client for tool discovery
+- [x] `listTools(serverConfig)` — connect to MCP server, fetch tool list
+- [x] Convert MCP tools to heirloom `ToolDef[]`
+- [x] `callTool(serverConfig, toolName, args)` — execute MCP tool
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -574,9 +574,9 @@
 
 ### 9.2 — Skill loader
 
-- [ ] Progressive disclosure: skills indexed by description, loaded on demand
-- [ ] Skill format: `SKILL.md` with frontmatter (name, description, triggers)
-- [ ] `~/.heirloom/skills/` and `.heirloom/skills/` scanned at startup
+- [x] Progressive disclosure: skills indexed by description, loaded on demand
+- [x] Skill format: `SKILL.md` with frontmatter (name, description, triggers)
+- [x] `~/.heirloom/skills/` and `.heirloom/skills/` scanned at startup
 
 **Acceptance criteria**
 | # | Given | When | Then |

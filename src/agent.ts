@@ -4,6 +4,7 @@ import type { PermissionEngine } from "./permissions/index.js";
 import type { ModeConfig } from "./modes/loader.js";
 import type { Compactor } from "./compaction/compactor.js";
 import type { DiagnosticRunner } from "./diagnostics/index.js";
+import type { ErrorReflector } from "./selfreflection/index.js";
 
 function buildSystemPrompt(mode?: ModeConfig): string {
   if (mode) {
@@ -34,6 +35,7 @@ export interface AgentOptions {
   mode?: ModeConfig;
   compactor?: Compactor;
   diagnostics?: DiagnosticRunner;
+  errorReflector?: ErrorReflector;
   maxTurns?: number;
 }
 
@@ -41,7 +43,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<Message[]> {
-  const { provider, tools, executeTool, permissions, compactor, diagnostics, maxTurns = 20 } = options;
+  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, maxTurns = 20 } = options;
 
   let messages: Message[] = [
     { role: "system", content: buildSystemPrompt(options.mode) },
@@ -51,6 +53,7 @@ export async function runAgent(
   let turn = 0;
   while (turn < maxTurns) {
     turn++;
+    errorReflector?.resetTurn();
 
     let content = "";
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
@@ -111,11 +114,18 @@ export async function runAgent(
       }
 
       const result = await executeTool(tc);
-      messages.push({
-        role: "tool",
-        toolCallId: tc.id,
-        content: result.error ? `Error: ${result.error}` : result.content,
-      });
+      if (result.error && errorReflector?.canRetry(tc.name, result.error)) {
+        messages.push({ role: "tool", toolCallId: tc.id, content: `Error: ${result.error}` });
+        messages.push({ role: "user", content: errorReflector.formatError(tc.name, result.error) });
+        console.log(`    [self-reflection: retrying]`);
+        errorReflector.resetTurn();
+      } else {
+        messages.push({
+          role: "tool",
+          toolCallId: tc.id,
+          content: result.error ? `Error: ${result.error}` : result.content,
+        });
+      }
     }
 
     if (diagnostics?.available) {
