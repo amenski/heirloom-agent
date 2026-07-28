@@ -9,9 +9,19 @@ and skill-spec.md — this doc is now the authority; the others defer to it.
 ## Invocation
 
 ```
-heirloom [flags]              # interactive session (the normal case)
+heirloom [flags]               # interactive session (the normal case)
 heirloom -p "<prompt>" [flags] # headless: run one task, print, exit
+heirloom auth                  # interactive provider setup wizard
+heirloom auth list             # show configured providers + key sources
+heirloom auth logout <name>    # remove a credential
 ```
+
+`auth` is the guided path for connecting LLM APIs (opencode's `auth login`
+pattern): choose a preset (DeepSeek, OpenRouter, Groq, Together, Ollama,
+OpenAI, Anthropic) or "custom" (asks for a baseUrl), paste the key, and it
+writes `~/.heirloom/credentials.yaml` (0600) plus, for custom endpoints, the
+provider entry in config. Manual YAML editing (config-spec.md) remains the
+escape hatch. Arrives Phase 3 with the config layer.
 
 - Today (Phase 1): `npm start` runs `tsx src/index.ts`.
 - Target: a `bin` entry in package.json (`"heirloom": "dist/index.js"`) so
@@ -27,6 +37,7 @@ heirloom -p "<prompt>" [flags] # headless: run one task, print, exit
 | `--mode <slug>` | Start in the given mode | Phase 3 |
 | `--model <provider/model>` | Override config/mode model | Phase 3 |
 | `-p`, `--print <prompt>` | Headless mode (below) | with golden-task harness |
+| `--approve <edits\|all>` | Set approval mode (permission-spec.md); mainly for headless runs | Phase 3 |
 | `--help`, `--version` | The obvious | Phase 2 |
 
 Flags sit at the top of the config precedence chain (config-spec.md).
@@ -39,7 +50,8 @@ agent completes or hits `maxTurns`. Exists primarily so golden tasks
 
 - **Permissions fail closed.** There is no user to ask, so any tool call
   that resolves to `ask` is **denied** with `PERMISSION_DENIED: headless
-  session — rule resolved to ask`. Headless runs need explicit `allow` rules.
+  session — rule resolved to ask`. Headless runs need explicit `allow` rules
+  or `--approve <edits|all>` (deny rules still hold — permission-spec.md).
 - `ask_followup_question` in headless → the question is printed and the run
   ends with exit code 2. An agent that needs to ask cannot finish headless.
 - No session file is written unless `--session`/`-c` is also passed.
@@ -65,6 +77,7 @@ lands (matching todo.md):
 | `/exit` | Quit (also Ctrl+D) | 1 |
 | `/clear` | Clear conversation, keep session file | 1 |
 | `/mode <slug>` | Switch mode; prompt shows `heirloom [code] >` | 3 |
+| `/approve [manual\|edits\|all]` | Show or set approval mode; lists session rules (permission-spec.md) | 3 |
 | `/compact` | Force compaction now | 4 |
 | `/checkpoint` | Manual checkpoint | 5 |
 | `/restore [files\|full]` | Restore last checkpoint | 5 |

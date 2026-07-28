@@ -72,6 +72,13 @@ All edit tools are **atomic per call**: on any error the file(s) are
 untouched. Success output always includes the replacement/hunk count so the
 LLM can sanity-check the effect.
 
+All edit tools also perform **stale-file detection** (subsystems.md §6): the
+session records mtime at every `read_file`; if the target changed on disk
+since the model last read it → `FILE_MODIFIED: /abs/path changed on disk
+since last read` + hint "re-read the file before editing", and nothing is
+written. A file never read this session → same error (which also enforces
+the read-before-write prompt rule mechanically).
+
 ### `edit(path, old_string, new_string)`
 The default editing tool. `old_string` must match the file byte-for-byte
 (whitespace included) and occur **exactly once**.
@@ -107,9 +114,10 @@ Multi-file unified diff (`--- a/… / +++ b/…` headers). Supports file creatio
 ### `write_to_file(path, content)`
 Full-file write. Creates parent directories.
 - Success: `Wrote /abs/path (120 lines)`.
-- The read-before-overwrite rule is enforced by the system prompt, not the
-  tool — the tool cannot know what the model has read. (Phase 6 diagnostics
-  may add a warning for blind overwrites.)
+- Creating a **new** file needs no prior read. Overwriting an **existing**
+  file is subject to stale-file detection like every edit tool: unread or
+  changed since read → `FILE_MODIFIED`. Blind overwrites are mechanically
+  impossible, not just prompt-discouraged.
 
 ---
 
@@ -156,6 +164,7 @@ reject.
 | `FILE_NOT_FOUND` | read_file, list_files, all edit tools |
 | `DIFF_NO_MATCH` | edit, search_replace, apply_diff, apply_patch |
 | `COUNT_MISMATCH` | edit (>1 match), edit_file |
+| `FILE_MODIFIED` | all edit tools (stale-file detection) |
 | `COMMAND_FAILED` | run_bash, any aborted tool |
 | `TIMEOUT` | run_bash |
 | `PERMISSION_DENIED` | permission engine (any tool) |

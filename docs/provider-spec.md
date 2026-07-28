@@ -3,6 +3,22 @@
 Every provider adapter must implement the `Provider` interface defined in
 `src/providers/types.ts`. This document defines the contract.
 
+## Adapters vs Providers
+
+An **adapter** implements a wire format: `openai-compatible`, `anthropic`.
+A **provider** is a config entry binding an adapter to a base URL, API key,
+and model list (config-spec.md, `providers:` map).
+
+DeepSeek is not its own adapter — it's the `openai-compatible` adapter plus
+a base URL, shipped as a built-in config preset. (`src/providers/deepseek.ts`
+already is the OpenAI SDK with a base URL; the rename to
+`openai-compatible.ts` makes the reality explicit.) Consequences:
+
+- New OpenAI-compatible service (OpenRouter, Groq, Ollama, …): **zero code**,
+  config only.
+- New wire format (a genuinely different API shape): one adapter file — the
+  rule below.
+
 ## Interface
 
 ```typescript
@@ -48,16 +64,22 @@ Adapters must convert canonical `Message` types to the provider's native format:
 2. **Idempotent.** Calling `streamChat` with the same inputs produces the same
    sequence of StreamEvents (modulo LLM non-determinism).
 
-3. **Error surface.** Adapter errors are thrown as exceptions. The agent loop
-   catches them. Adapters do not silently swallow errors.
+3. **Error surface.** Adapter errors are thrown as exceptions carrying
+   `{ status?: number, retryable: boolean }` so the agent loop can apply its
+   retry policy (subsystems.md §6): 429/5xx/network → `retryable: true`;
+   auth/bad-model/invalid-request → `retryable: false`. Adapters never retry
+   internally and never silently swallow errors — retries are the loop's
+   job, once, in one place.
 
 4. **Stateless.** Providers hold no conversation state. The agent loop manages
    the message array.
 
-5. **API key from environment.** Each adapter reads its own env var:
-   - DeepSeek: `DEEPSEEK_API_KEY`
-   - Anthropic: `ANTHROPIC_API_KEY`
-   - OpenAI: `OPENAI_API_KEY`
+5. **Keys are injected, not discovered.** The config layer resolves the key
+   (env var named by `apiKeyEnv`, else `~/.heirloom/credentials.yaml` —
+   config-spec.md) and passes key + baseUrl to the adapter factory:
+   `createOpenAICompatibleProvider({ baseUrl, apiKey })`. Adapters never
+   read `process.env` and never hardcode env-var names — that's what keeps
+   one adapter serving many providers.
 
 6. **Tool call accumulation.** Streaming deltas may arrive in any order.
    `tool_call_start` must NOT be yielded until both `id` and `name` are known.
@@ -66,10 +88,15 @@ Adapters must convert canonical `Message` types to the provider's native format:
 
 ## Adding a New Provider
 
-1. Create `src/providers/<name>.ts`
-2. Implement `create<Name>Provider(): Provider`
+**OpenAI-compatible service:** add a `providers:` entry in config
+(config-spec.md). No code.
+
+**New wire format (new adapter):**
+1. Create `src/providers/<api-name>.ts`
+2. Implement `create<ApiName>Provider(opts): Provider` (opts: baseUrl, apiKey)
 3. Map messages (canonical → native) and tools (canonical → native)
 4. Stream and convert to `StreamEvent`
-5. No changes to `src/types.ts`, `src/agent.ts`, or any other file
+5. Register the `api:` name in the adapter registry — the only shared file
+   that changes. Nothing in `src/types.ts` or `src/agent.ts` moves.
 
-That's the test: a new provider is one file.
+That's the test: a new adapter is one file plus one registry line.

@@ -195,11 +195,15 @@ safe — you can always undo.
 - Default: `ask` for all tools. User must explicitly allow.
 - Broad rules first, narrow rules last (insertion order matters, like opencode).
 - Shadow Git repo is per-session, distinct from the user's Git repo.
+- The shadow repo honors the project's `.gitignore` (plus always-excludes
+  `.git/`, `node_modules/`) — otherwise every checkpoint commits dependency
+  trees and checkpointing becomes unusably slow on real repos.
 - Two restore modes: files-only (compare approaches) and full (complete reset).
 
 **References:**
 - opencode's `PermissionRuleset` with last-match-wins
 - RooCode's checkpoint system (shadow Git repo)
+- Claude Code's permission modes → approval modes (see [permission-spec.md](./permission-spec.md))
 
 ---
 
