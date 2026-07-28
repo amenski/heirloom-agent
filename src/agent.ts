@@ -1,8 +1,18 @@
 import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall, ToolDef, ToolOutput } from "./types.js";
+import type { PermissionEngine } from "./permissions/index.js";
+import type { ModeConfig } from "./modes/loader.js";
 
-function buildSystemPrompt(mode?: string): string {
-  const base = `You are heirloom, a helpful AI coding assistant. You have access to tools that let you read files, write files, run shell commands, list directories, and search code.
+function buildSystemPrompt(mode?: ModeConfig): string {
+  if (mode) {
+    let prompt = mode.roleDefinition;
+    if (mode.customInstructions) {
+      prompt += "\n\n" + mode.customInstructions;
+    }
+    return prompt;
+  }
+
+  return `You are heirloom, a helpful AI coding assistant. You have access to tools that let you read files, write files, run shell commands, list directories, and search code.
 
 Rules:
 - Use tools when you need to read, write, or discover information on the filesystem.
@@ -10,11 +20,6 @@ Rules:
 - Be concise. Answer directly without unnecessary preamble.
 - If you don't know something, say so rather than guessing.
 - You can run bash commands but avoid destructive operations unless the user explicitly asks.`;
-
-  if (mode) {
-    return `${base}\n\nMode: ${mode}`;
-  }
-  return base;
 }
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
@@ -23,7 +28,8 @@ export interface AgentOptions {
   provider: Provider;
   tools: ToolDef[];
   executeTool: ToolExecutor;
-  mode?: string;
+  permissions?: PermissionEngine;
+  mode?: ModeConfig;
   maxTurns?: number;
 }
 
@@ -31,7 +37,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<Message[]> {
-  const { provider, tools, executeTool, maxTurns = 20 } = options;
+  const { provider, tools, executeTool, permissions, maxTurns = 20 } = options;
 
   const messages: Message[] = [
     { role: "system", content: buildSystemPrompt(options.mode) },
@@ -87,6 +93,17 @@ export async function runAgent(
 
     for (const tc of toolCalls) {
       console.log(`  [${tc.name}] ${JSON.stringify(tc.arguments).slice(0, 120)}`);
+
+      if (permissions) {
+        const action = permissions.check(tc.name, tc.arguments);
+        if (action === "deny") {
+          const msg = `Permission denied for ${tc.name}`;
+          console.log("    denied");
+          messages.push({ role: "tool", toolCallId: tc.id, content: msg });
+          continue;
+        }
+      }
+
       const result = await executeTool(tc);
       messages.push({
         role: "tool",

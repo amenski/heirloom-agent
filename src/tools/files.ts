@@ -29,7 +29,6 @@ const readFileDef: ToolDef = {
 
 const listFilesHandler: ToolHandler = async (args) => {
   const path = (args.path as string) || ".";
-  const { readdir } = await import("node:fs/promises");
   try {
     const entries = await readdir(path, { withFileTypes: true });
     return { content: entries.map((e) => `${e.isDirectory() ? "dir" : "file"}  ${e.name}`).join("\n") };

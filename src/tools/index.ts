@@ -12,6 +12,7 @@ registerBash(registry);
 registerSearch(registry);
 registerEdits(registry);
 
+export { registry };
 export const TOOL_DEFS = registry.getAllDefs();
 
 const defaultCtx: ToolContext = {
