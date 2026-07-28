@@ -3,6 +3,7 @@ import type { Message, ToolCall, ToolDef, ToolOutput } from "./types.js";
 import type { PermissionEngine } from "./permissions/index.js";
 import type { ModeConfig } from "./modes/loader.js";
 import type { Compactor } from "./compaction/compactor.js";
+import type { DiagnosticRunner } from "./diagnostics/index.js";
 
 function buildSystemPrompt(mode?: ModeConfig): string {
   if (mode) {
@@ -32,6 +33,7 @@ export interface AgentOptions {
   permissions?: PermissionEngine;
   mode?: ModeConfig;
   compactor?: Compactor;
+  diagnostics?: DiagnosticRunner;
   maxTurns?: number;
 }
 
@@ -39,7 +41,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<Message[]> {
-  const { provider, tools, executeTool, permissions, compactor, maxTurns = 20 } = options;
+  const { provider, tools, executeTool, permissions, compactor, diagnostics, maxTurns = 20 } = options;
 
   let messages: Message[] = [
     { role: "system", content: buildSystemPrompt(options.mode) },
@@ -93,6 +95,8 @@ export async function runAgent(
       toolCalls,
     });
 
+    diagnostics?.snapshot();
+
     for (const tc of toolCalls) {
       console.log(`  [${tc.name}] ${JSON.stringify(tc.arguments).slice(0, 120)}`);
 
@@ -112,6 +116,17 @@ export async function runAgent(
         toolCallId: tc.id,
         content: result.error ? `Error: ${result.error}` : result.content,
       });
+    }
+
+    if (diagnostics?.available) {
+      const diagnosticErrors = await diagnostics.check();
+      if (diagnosticErrors) {
+        messages.push({
+          role: "system",
+          content: `Your last edit introduced these errors:\n\n${diagnosticErrors}`,
+        });
+        console.log(`  [diagnostics: new errors detected]`);
+      }
     }
 
     console.log("");

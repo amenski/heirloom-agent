@@ -6,6 +6,7 @@ import { PermissionEngine } from "./permissions/index.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
+import { DiagnosticRunner } from "./diagnostics/index.js";
 
 async function main() {
   const provider = createDeepSeekProvider();
@@ -15,6 +16,7 @@ async function main() {
 
   const sessionId = `session-${Date.now()}`;
   const checkpoints = new CheckpointManager(sessionId);
+  const diagnostics = new DiagnosticRunner();
   setSessionId(sessionId);
   setCheckpointManager(checkpoints);
 
@@ -123,6 +125,7 @@ async function main() {
         permissions,
         mode: activeMode,
         compactor,
+        diagnostics,
       });
     } catch (err) {
       console.error(`\nError: ${(err as Error).message}`);

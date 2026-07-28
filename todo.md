@@ -428,10 +428,10 @@
 
 ### 6.1 — Post-write diagnostic check
 
-- [ ] After every `write_file` / edit tool execution, wait 500ms
-- [ ] Run language-appropriate linter: `tsc --noEmit` for TS, `cargo check` for Rust, etc.
-- [ ] Compare diagnostics before vs after write
-- [ ] Feed only NEW errors back to LLM
+- [x] After every `write_file` / edit tool execution, wait 500ms
+- [x] Run language-appropriate linter: `tsc --noEmit` for TS, `cargo check` for Rust, etc.
+- [x] Compare diagnostics before vs after write
+- [x] Feed only NEW errors back to LLM
 
 **Acceptance criteria**
 | # | Given | When | Then |
