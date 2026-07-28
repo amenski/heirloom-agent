@@ -242,7 +242,7 @@ gives us a working CLI in ~40 lines. Future: replace with Ink (React for
 terminals) for syntax highlighting, streaming with virtual diff, and TUI
 controls like opencode.
 
-**Commands:**
+**Commands** (full reference: [cli-spec.md](./cli-spec.md)):
 - `/exit` — quit
 - `/help` — show commands
 - `/mode <slug>` — switch mode
