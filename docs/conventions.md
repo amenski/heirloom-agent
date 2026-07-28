@@ -51,9 +51,39 @@
 - Feature branches for multi-commit work
 
 ## Testing
-- Phase 1-2: manual verification against acceptance criteria
-- Phase 3+: add unit tests for permissions, tool registry, edit strategies
-- No test framework decided yet — lightweight (Node test runner or Vitest)
+
+### Framework
+Vitest (decided 2026-07-28): ESM-native (matches `"type": "module"`),
+zero-config TypeScript, watch mode. `npm test` runs `vitest run`.
+
+### Unit tests (from Phase 2)
+Highest-value targets, in priority order:
+1. **Edit strategies** — each of the 6 tools against fixture files: clean
+   match, no match, count mismatch, multi-file patch atomicity (tool-spec.md).
+2. **Permission engine** — insertion order, last-match-wins, glob patterns.
+3. **ToolRegistry** — mode gating returns exactly the allowed tool subset.
+4. **Compaction budget** — threshold math, tier classification, fidelity check.
+5. **Session loader** — torn last line, state-record folding, compaction
+   reconstruction.
+
+Provider adapters and the agent loop are covered by golden tasks, not unit
+tests — mocking an LLM tests the mock.
+
+### Golden tasks (agent-level evals)
+Small end-to-end tasks under `fixtures/`, re-run after any prompt or loop
+change (see system-prompt.md, "Changing the Prompt"). Manual for now; a
+harness is post-MVP.
+
+| # | Task | Verifies |
+|---|------|----------|
+| G1 | "What does src/agent.ts do?" in ask mode | read-only gating, no writes |
+| G2 | Fix a planted failing test in `fixtures/calc` | ReAct edit + verify cycle |
+| G3 | Add a `--json` flag to `fixtures/cli` | multi-step feature, edit-tool selection |
+| G4 | Rename a function used across 3 files | apply_patch / cross-file edits |
+| G5 | "Why does `fixtures/leaky` grow memory?" | search + read diagnosis, no edits |
+| G6 | Task long enough to trigger compaction, then finish | compaction fidelity (Phase 4+) |
+
+Pass = correct outcome **and** no out-of-scope file modified.
 
 ## Tool design
 - Every tool returns `ToolOutput`, never throws.

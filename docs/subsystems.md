@@ -64,6 +64,20 @@ from canonical types. The agent loop never touches an SDK import.
 2. During conversation: search memory by tag/slug when user mentions related concepts
 3. On session end: append session summary to `sessions.md`, update decision files
 
+**Write policy (who decides what's durable):**
+- At session end, the compactor's structured summary (§2) is the source:
+  each `decisions[]` entry is a candidate memory fact; `files[]` and
+  `errors_resolved[]` go to `sessions.md` only.
+- The LLM proposes, a filter disposes: skip facts derivable from the repo
+  (code structure, git history, anything in docs/) and facts that only
+  mattered to this one conversation.
+- The user saying "remember X" bypasses the filter — written immediately.
+
+**Injection cap:** memory injected at session start is budgeted at 1,024
+tokens, filled index-first then top-relevance facts until full (same
+budget-fill mechanism as RepoMap, §4f). Facts beyond the cap remain
+reachable via explicit search over the memory directory.
+
 **Future:** Add LanceDB for semantic search when memory exceeds ~50 files.
 Start with grep over markdown — it's fast enough for hundreds of files.
 
@@ -145,6 +159,22 @@ compacted:
 
 This structured format means the LLM doesn't have to re-derive what happened
 — it can read the decision log, check which files changed, and resume.
+
+### Fidelity Check — Don't Trust the Summary
+
+A summary that silently drops an unresolved error or a changed file is worse
+than no compaction. After generating the summary, verify it mechanically (no
+LLM call):
+
+1. Every file path in the messages being compacted (T3 records) appears in `files[]`.
+2. Every todo item not marked complete appears in `pending[]`.
+3. `task` is non-empty and derived from T1.
+
+On failure: regenerate once, naming the misses. On second failure: defer
+compaction and keep the messages verbatim — a deferred compaction is
+recoverable, a lossy one is not. Backstop: sessions are append-only
+(session-spec.md), so compaction can only ever degrade the model's recall,
+never destroy the transcript.
 
 ### When to Compact
 
@@ -235,6 +265,20 @@ After EVERY tool action, the agent asks itself:
 3. Does the output change the plan? If yes → update todo list
 
 This is Aider's self-reflection pattern, formalized.
+
+### Who Owns the Loop
+
+The loop shape (ReAct + Plan + Reflect) is core engine code, not user
+configuration. Users shape *behavior* — through modes, custom instructions,
+skills, and permissions — never by swapping loop implementations. No shipping
+agent (opencode, Aider, RooCode, Claude Code) exposes loop choice; the loop
+is the product, and a pluggable loop is an abstraction with one implementation.
+
+Planning intensity is at the model's discretion, not a config knob:
+`update_todo_list` (tool-spec.md) is always available, and the system prompt
+says to plan multi-step tasks and skip planning for trivial ones. Fallback if
+model discretion proves unreliable: a `planning: always | auto | off` mode
+field — deferred until observed need.
 
 ### Error Taxonomy for Structured Reflection
 

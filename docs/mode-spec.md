@@ -37,6 +37,7 @@ These tools bypass mode gates — they're always accessible:
 - `attempt_completion` — signal task completion
 - `switch_mode` — change to another mode
 - `new_task` — delegate to a sub-agent
+- `update_todo_list` — create/update the task plan (see tool-spec.md)
 
 ## Built-in Modes
 

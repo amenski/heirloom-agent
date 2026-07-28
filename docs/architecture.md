@@ -345,3 +345,13 @@ src/
 5. **readline vs Ink TUI.** readline is 40 lines; Ink is a framework. Phase 1
    ships with readline because the engine is the priority. Decision: start with
    readline, migrate to Ink when the engine stabilizes.
+
+6. **Single process vs client/server.** opencode runs a local server; the TUI
+   is just a client. That enables IDE integration, shared sessions, and
+   multiple frontends — at the cost of a protocol layer and two lifecycles.
+   Decision: single process. Heirloom is a personal agent; the extra moving
+   parts buy nothing yet. Guardrail: the agent loop must never import readline
+   or write to stdout directly (I/O stays in Layer 7, passed in as callbacks),
+   so a server frontend remains a Layer 7 swap, not a rewrite.
+   *Note: `runAgent` currently violates this — it writes to `process.stdout`
+   directly. Fix when touching agent.ts in Phase 2.*
