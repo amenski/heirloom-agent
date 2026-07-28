@@ -847,6 +847,40 @@
 
 ---
 
+### 15.2 — Interactive loop fixes (review findings, 2026-07-29)
+
+> Found by code review of the current CLI. The first two are correctness
+> bugs, not polish.
+
+- [ ] **Conversation continuity** — `runAgent` gains `history?: Message[]`; interactive loop threads the running conversation through it and updates it from the result. Today every prompt starts a fresh conversation (`src/agent.ts` builds `[system, user]` only) and resume loads `sessionMessages` then never uses them (`src/index.ts`).
+- [ ] **Persist on completion only** — the user message is appended to the session store *before* `runAgent` (`src/index.ts`); an aborted/crashed turn leaves an orphan user message on disk, violating session-spec. Persist user + new messages together after a successful turn. Suggested shape: `runAgent` returns `{ messages, newMessages, stopReason: "done" | "aborted" | "max_turns" }` — callers: index.ts + orchestrator.
+- [ ] **Esc to abort + Shift+Tab approval cycle** (cli-spec.md keybindings): `emitKeypressEvents(stdin)`; raw mode enabled only while the agent runs, restored in `finally`; Esc/Ctrl+C keypress → abort; Shift+Tab at idle prompt cycles `manual → edits → all` and redraws the prompt in place (`rl.prompt(true)` preserves the typed line).
+- [ ] **Ctrl+D exits cleanly** — `rl.question` rejects on close; wrap in try/catch → "Bye." Idle Ctrl+C prints the hint instead of nothing.
+- [ ] **Unknown `/command` guard** — any input starting with `/` that matches no handler currently falls through to the LLM as a user message; must error with a `/help` hint instead (cli-spec).
+- [ ] **Resume recap line** — `--session`/`-c` no longer print `Resumed <id> · N messages · mode: <m>` (10.2 AC); restore it.
+- [ ] **Prompt render fix** — with no active mode the prompt shows `heirloom [] > `; render `heirloom > ` when there's nothing in the brackets.
+- [ ] **Headless exit codes via stopReason** — map `done`→0, `max_turns`→2, `aborted`→1 instead of the `onMaxTurns: () => process.exit(2)` callback.
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | "my name is X" then "what's my name?" | second prompt runs | the model answers from history — conversation persists across prompts |
+| AC2 | `-c` resume then a follow-up question about the prior conversation | agent runs | resumed messages are in context |
+| AC3 | Esc pressed mid-stream | turn aborts | prompt returns; session file contains **no** trace of the aborted turn (no orphan user message) |
+| AC4 | `/clear` then a follow-up | agent runs | history is empty; session file keeps prior records |
+| AC5 | `/typo` entered | handled | error + `/help` hint; nothing sent to the LLM |
+| AC6 | Shift+Tab at idle prompt with text typed | pressed | approval cycles, prompt redraws, typed text preserved |
+| AC7 | Crash or abort at any point | terminal inspected | not left in raw mode |
+
+**Edge cases**
+- Compaction inside `runAgent` shrinks `messages` — next-turn history must be the *post-compaction* array (also keeps memory bounded), while `newMessages` still carries everything to persist
+- Non-TTY stdin — keypress handling skipped entirely; `process.on("SIGINT")` abort remains the fallback
+- Keybinding config block (`keybindings:` in config.yaml) deferred until a config-file loader exists — defaults hardcoded for now
+
+**Deps:** 15.1, 10.2 | **Priority:** P1 | **Est:** 3h
+
+---
+
 ## Phase 16: Skills Alignment
 
 ### 16.1 — Cross-tool skill loading (skill-spec.md)
@@ -911,6 +945,67 @@
 | AC3 | 60 memory files | session starts | injection stays ≤ 1,024 tokens, index always included |
 
 **Deps:** 10.1, 4.2 | **Priority:** P3 | **Est:** 2h
+
+---
+
+## Phase 19: Audit Fixes (spec-vs-implementation gaps, 2026-07-29)
+
+> Found by auditing checked boxes against the specs. Items 19.1–19.2 are the
+> difference between "demo" and "usable"; 19.1 is a safety gap.
+
+### 19.1 — Interactive ask prompting (permission-spec)
+
+- [ ] `agent.ts` handles only `deny` today; `ask` (the default for every tool) silently executes. Implement the ask prompt: `Allow? (y)es once · (a)llow for session · (n)o`
+- [ ] `y` → run once; `a` → run + `permissions.addSessionRule()` with a generalized pattern (`npm install *` for bash, dirname for edit tools), echoed to the user; `n` → tool result `PERMISSION_DENIED: denied by user`
+- [ ] Wire `ToolContext.askUser` to a real prompt (currently a stub returning `true`)
+- [ ] Headless: `ask` → deny (spec already; verify it holds once ask prompting exists)
+
+**Acceptance criteria**
+| # | Given | When | Then |
+|---|-------|------|------|
+| AC1 | Default rules, `run_bash` requested | interactive | prompt appears; `n` feeds PERMISSION_DENIED to the model, agent adjusts |
+| AC2 | `a` answered for `npm install x` | third `npm install` | no prompt |
+| AC3 | Approval mode `edits` | edit inside cwd / bash | edit silent, bash prompts |
+
+**Deps:** 13.1 | **Priority:** P0 | **Est:** 2h
+
+---
+
+### 19.2 — Config file loader (config-spec)
+
+- [ ] Load `~/.heirloom/config.yaml` + project `.heirloom/config.yaml` (project wins); nothing reads them today — providers map, permission rules, compaction settings, keybindings are all dead schema
+- [ ] `providers:` entries merge over built-in presets → the OpenRouter worked example actually works
+- [ ] `permissions:` rules feed the engine (insertion order preserved)
+- [ ] Startup validation per subsystems §6: invalid value → fail fast naming file+field; unknown fields → warn
+- [ ] `keybindings:` block consumed once 15.2 lands
+
+**Deps:** 12.1, 14.3 | **Priority:** P1 | **Est:** 2h
+
+---
+
+### 19.3 — Wire runtime compaction into the session file (session-spec)
+
+- [ ] When the agent loop compacts, call `sessionStore.appendCompaction(sessionId, replacesThrough, summary)` — implemented and tested in the store but never invoked, so disk and memory diverge and resume replays full history
+- [ ] `replacesThrough` computed against persisted message indices, not in-memory array positions
+
+**Deps:** 10.1, 4.3 | **Priority:** P1 | **Est:** 1h
+
+---
+
+### 19.4 — Golden-task fixtures (conventions.md)
+
+- [ ] `fixtures/` does not exist despite 17.1 checked. Create `fixtures/calc` (planted failing test, G2), `fixtures/cli` (flag-addition target, G3), `fixtures/leaky` (memory-growth diagnosis, G5)
+- [ ] `docs/` or fixture READMEs record each golden task's pass criteria; runnable via `-p --approve all`
+
+**Deps:** 17.1 | **Priority:** P2 | **Est:** 2h
+
+---
+
+### 19.5 — Memory session-log noise
+
+- [ ] `memoryStore.appendSession` fires after every turn with empty `decisions`/`files` (`src/index.ts`); spec (subsystems §1/§5) says once at session end with the compaction summary as source. Move to exit path (`/exit`, `/new`, SIGTERM) and populate from the last compaction summary when available
+
+**Deps:** 18.1 | **Priority:** P2 | **Est:** 1h
 
 ---
 
