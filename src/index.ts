@@ -1,16 +1,23 @@
 import * as readline from "node:readline/promises";
 import { createDeepSeekProvider } from "./providers/deepseek.js";
 import { runAgent } from "./agent.js";
-import { executeTool, TOOL_DEFS, registry } from "./tools/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
+import { CheckpointManager } from "./checkpoints/index.js";
 
 async function main() {
   const provider = createDeepSeekProvider();
   const modeLoader = new ModeLoader();
   const permissions = PermissionEngine.defaults();
   const compactor = new Compactor(provider);
+
+  const sessionId = `session-${Date.now()}`;
+  const checkpoints = new CheckpointManager(sessionId);
+  setSessionId(sessionId);
+  setCheckpointManager(checkpoints);
+
   let activeMode: ModeConfig | undefined;
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

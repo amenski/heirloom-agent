@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ToolOutput, ToolDef } from "../types.js";
-import type { ToolHandler } from "./types.js";
+import type { ToolHandler, ToolContext } from "./types.js";
 import { ToolRegistry } from "./registry.js";
 
 function countOccurrences(str: string, search: string): number {
@@ -20,7 +20,7 @@ function replaceAllLiterals(str: string, search: string, replacement: string): s
   return parts.join(replacement);
 }
 
-const editHandler: ToolHandler = async (args) => {
+const editHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
   const oldString = args.oldString as string;
   const newString = args.newString as string;
@@ -53,6 +53,7 @@ const editHandler: ToolHandler = async (args) => {
   const newContent = content.slice(0, idx) + newString + content.slice(idx + oldString.length);
 
   try {
+    await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `Replaced 1 occurrence in ${path}` };
   } catch (err: unknown) {
@@ -75,7 +76,7 @@ const editDef: ToolDef = {
   },
 };
 
-const applyDiffHandler: ToolHandler = async (args) => {
+const applyDiffHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
   const diff = (args.diff as string).trim();
 
@@ -97,6 +98,7 @@ const applyDiffHandler: ToolHandler = async (args) => {
   }
 
   try {
+    await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `Diff applied successfully to ${path}` };
   } catch (err: unknown) {
@@ -186,7 +188,7 @@ const applyDiffDef: ToolDef = {
   },
 };
 
-const applyPatchHandler: ToolHandler = async (args) => {
+const applyPatchHandler: ToolHandler = async (args, ctx) => {
   const patch = args.patch as string;
 
   if (!patch.trim()) {
@@ -195,6 +197,8 @@ const applyPatchHandler: ToolHandler = async (args) => {
 
   const sections = splitMultiFileDiff(patch);
   const results: string[] = [];
+
+  await ctx.checkpoint?.save();
 
   for (const [filePath, diffText] of sections) {
     let content: string;
@@ -252,7 +256,7 @@ const applyPatchDef: ToolDef = {
   },
 };
 
-const searchReplaceHandler: ToolHandler = async (args) => {
+const searchReplaceHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
   const search = args.search as string;
   const replace = (args.replace as string) ?? "";
@@ -279,6 +283,7 @@ const searchReplaceHandler: ToolHandler = async (args) => {
   const newContent = replaceAllLiterals(content, search, replace);
 
   try {
+    await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `${count} occurrences replaced in ${path}` };
   } catch (err: unknown) {
@@ -301,7 +306,7 @@ const searchReplaceDef: ToolDef = {
   },
 };
 
-const editFileHandler: ToolHandler = async (args) => {
+const editFileHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
   const search = args.search as string;
   const replace = (args.replace as string) ?? "";
@@ -334,6 +339,7 @@ const editFileHandler: ToolHandler = async (args) => {
   const newContent = replaceAllLiterals(content, search, replace);
 
   try {
+    await ctx.checkpoint?.save();
     await writeFile(path, newContent, "utf-8");
     return { content: `${count} occurrences replaced in ${path}` };
   } catch (err: unknown) {
@@ -357,11 +363,12 @@ const editFileDef: ToolDef = {
   },
 };
 
-const writeToFileHandler: ToolHandler = async (args) => {
+const writeToFileHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
   const content = args.content as string;
 
   try {
+    await ctx.checkpoint?.save();
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, "utf-8");
     return { content: `Wrote ${content.split("\n").length} lines to ${path}` };

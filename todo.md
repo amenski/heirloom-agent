@@ -378,10 +378,10 @@
 
 ### 5.1 — Shadow Git repository
 
-- [ ] Create `src/checkpoints/index.ts` — `CheckpointManager` class
-- [ ] Shadow Git repo at `~/.heirloom/checkpoints/{sessionId}/`
-- [ ] `save()` — `git add -A && git commit` before every file modification
-- [ ] `restore(type)` — `"files"` (revert workspace only) or `"full"` (revert + purge conversation)
+- [x] Create `src/checkpoints/index.ts` — `CheckpointManager` class
+- [x] Shadow Git repo at `~/.heirloom/checkpoints/{sessionId}/`
+- [x] `save()` — `git add -A && git commit` before every file modification
+- [x] `restore(type)` — `"files"` (revert workspace only) or `"full"` (revert + purge conversation)
 
 **Acceptance criteria**
 | # | Given | When | Then |

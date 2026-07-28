@@ -1,4 +1,5 @@
 import type { ToolDef, ToolCall, ToolOutput } from "../types.js";
+import type { CheckpointManager } from "../checkpoints/index.js";
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutput>;
 
@@ -7,6 +8,7 @@ export interface ToolContext {
   sessionId: string;
   askUser(question: string): Promise<boolean>;
   signal: AbortSignal;
+  checkpoint?: CheckpointManager;
 }
 
 export interface ToolRegistration {
