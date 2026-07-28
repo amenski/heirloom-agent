@@ -36,7 +36,7 @@ async function main() {
 
     if (input === "/help") {
       console.log(
-        "Commands: /exit, /help, /mode <name>, /clear, /modes\n" +
+        "Commands: /exit, /help, /mode <name>, /clear, /modes, /checkpoint, /restore [files|full], /checkpoints\n" +
           "Set DEEPSEEK_API_KEY to use.",
       );
       continue;
@@ -63,6 +63,53 @@ async function main() {
         console.log(`Switched to ${mode.name} mode.`);
       } else {
         console.log(`Unknown mode: ${slug}. Try /modes to list available modes.`);
+      }
+      continue;
+    }
+
+    if (input === "/checkpoint") {
+      const hash = await checkpoints.save("manual checkpoint");
+      if (hash) {
+        console.log(`Checkpoint saved: ${hash.slice(0, 7)}`);
+      } else {
+        console.log("No changes to save.");
+      }
+      continue;
+    }
+
+    if (input === "/restore files") {
+      const result = await checkpoints.restore("files");
+      if (result.restored) {
+        console.log(`Workspace restored to checkpoint ${result.checkpointHash!.slice(0, 7)}.`);
+      } else {
+        console.log("No checkpoints to restore from.");
+      }
+      continue;
+    }
+
+    if (input === "/restore full --yes") {
+      const result = await checkpoints.restore("full");
+      if (result.restored) {
+        console.log(`Workspace restored to checkpoint ${result.checkpointHash!.slice(0, 7)}.`);
+      } else {
+        console.log("No checkpoints to restore from.");
+      }
+      continue;
+    }
+
+    if (input === "/restore full") {
+      console.log("Full restore is destructive. Use /restore full --yes to confirm.");
+      continue;
+    }
+
+    if (input === "/checkpoints") {
+      const entries = checkpoints.list();
+      if (entries.length === 0) {
+        console.log("No checkpoints recorded.");
+      } else {
+        for (const e of entries) {
+          console.log(`  ${e.hash.slice(0, 7)}  ${e.message}  (${e.timestamp})`);
+        }
       }
       continue;
     }

@@ -405,9 +405,9 @@
 
 ### 5.2 — Checkpoint CLI integration
 
-- [ ] `/checkpoint` — manual checkpoint
-- [ ] `/restore [files|full]` — restore to last checkpoint
-- [ ] `/checkpoints` — list checkpoints with timestamps and file counts
+- [x] `/checkpoint` — manual checkpoint
+- [x] `/restore [files|full]` — restore to last checkpoint
+- [x] `/checkpoints` — list checkpoints with timestamps and file counts
 
 **Acceptance criteria**
 | # | Given | When | Then |
