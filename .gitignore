@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.js
+*.d.ts
+!src/**/*.js
+!src/**/*.d.ts
+.idea/
+.DS_Store
