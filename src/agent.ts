@@ -6,25 +6,9 @@ import type { Compactor } from "./compaction/compactor.js";
 import type { DiagnosticRunner } from "./diagnostics/index.js";
 import type { ErrorReflector } from "./selfreflection/index.js";
 import type { ErrorRecovery } from "./errorrecovery/index.js";
-
-function buildSystemPrompt(mode?: ModeConfig): string {
-  if (mode) {
-    let prompt = mode.roleDefinition;
-    if (mode.customInstructions) {
-      prompt += "\n\n" + mode.customInstructions;
-    }
-    return prompt;
-  }
-
-  return `You are heirloom, a helpful AI coding assistant. You have access to tools that let you read files, write files, run shell commands, list directories, and search code.
-
-Rules:
-- Use tools when you need to read, write, or discover information on the filesystem.
-- Always use absolute paths.
-- Be concise. Answer directly without unnecessary preamble.
-- If you don't know something, say so rather than guessing.
-- You can run bash commands but avoid destructive operations unless the user explicitly asks.`;
-}
+import type { SkillDef } from "./skills/index.js";
+import type { RepoMap } from "./repomap/index.js";
+import { buildSystemPrompt } from "./prompt.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
@@ -39,6 +23,9 @@ export interface AgentOptions {
   errorReflector?: ErrorReflector;
   errorRecovery?: ErrorRecovery;
   maxTurns?: number;
+  skills?: SkillDef[];
+  repomap?: RepoMap;
+  memory?: string;
 }
 
 export async function runAgent(
@@ -47,8 +34,17 @@ export async function runAgent(
 ): Promise<Message[]> {
   const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20 } = options;
 
+  const systemPrompt = await buildSystemPrompt({
+    mode: options.mode,
+    workingDir: process.cwd(),
+    skills: options.skills,
+    repomap: options.repomap,
+    memory: options.memory,
+    conversation: userMessage,
+  });
+
   let messages: Message[] = [
-    { role: "system", content: buildSystemPrompt(options.mode) },
+    { role: "system", content: systemPrompt },
     { role: "user", content: userMessage },
   ];
 
@@ -162,7 +158,19 @@ export async function runAgent(
       const before = messages.length;
       messages = await compactor.compact(messages);
       if (messages[0]?.role !== "system") {
-        messages.unshift({ role: "system", content: buildSystemPrompt(options.mode) });
+        const convo = messages
+          .map((m) => (typeof m.content === "string" ? m.content : ""))
+          .filter(Boolean)
+          .join("\n");
+        const rebuiltPrompt = await buildSystemPrompt({
+          mode: options.mode,
+          workingDir: process.cwd(),
+          skills: options.skills,
+          repomap: options.repomap,
+          memory: options.memory,
+          conversation: convo,
+        });
+        messages.unshift({ role: "system", content: rebuiltPrompt });
       }
       console.log(`  [compacted: ${before} → ${messages.length} messages]`);
     }

@@ -1,5 +1,5 @@
 import * as readline from "node:readline/promises";
-import { createDeepSeekProvider } from "./providers/deepseek.js";
+import { initPresets, createProvider } from "./providers/presets.js";
 import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
@@ -9,7 +9,8 @@ import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
 
 async function main() {
-  const provider = createDeepSeekProvider();
+  initPresets();
+  const provider = createProvider(process.env.HEIRLOOM_PROVIDER || "deepseek");
   const modeLoader = new ModeLoader();
   const permissions = PermissionEngine.defaults();
   const compactor = new Compactor(provider);
@@ -39,7 +40,7 @@ async function main() {
     if (input === "/help") {
       console.log(
         "Commands: /exit, /help, /mode <name>, /clear, /modes, /checkpoint, /restore [files|full], /checkpoints\n" +
-          "Set DEEPSEEK_API_KEY to use.",
+          "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
       );
       continue;
     }

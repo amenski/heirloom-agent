@@ -626,10 +626,10 @@
 
 ### 10.1 — Session store (JSONL)
 
-- [ ] Create `src/sessions/store.ts` — append-only JSONL at `~/.heirloom/sessions/<project-slug>/<id>.jsonl`
-- [ ] Record types: `meta` (first line, versioned), `message`, `state`, `compaction`
-- [ ] Session ID: `<compact ISO UTC>-<4 hex>`; filename is the ID
-- [ ] Append only after a message/turn completes — never mid-stream
+- [x] Create `src/sessions/store.ts` — append-only JSONL at `~/.heirloom/sessions/<project-slug>/<id>.jsonl`
+- [x] Record types: `meta` (first line, versioned), `message`, `state`, `compaction`
+- [x] Session ID: `<compact ISO UTC>-<4 hex>`; filename is the ID
+- [x] Append only after a message/turn completes — never mid-stream
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -674,10 +674,10 @@
 
 ### 11.1 — Implement system-prompt.md
 
-- [ ] Replace placeholder `buildSystemPrompt` with the 9-section assembly (role → base → tool guide → mode custom → environment → project → skills → memory → repomap)
-- [ ] Base rules, edit-tool guide, shell guide verbatim from the spec
-- [ ] Environment block: cwd, platform, date, git branch/state
-- [ ] Project instructions: `.heirloom/instructions.md`, `AGENTS.md` fallback
+- [x] Replace placeholder `buildSystemPrompt` with the 9-section assembly (role → base → tool guide → mode custom → environment → project → skills → memory → repomap)
+- [x] Base rules, edit-tool guide, shell guide verbatim from the spec
+- [x] Environment block: cwd, platform, date, git branch/state
+- [x] Project instructions: `.heirloom/instructions.md`, `AGENTS.md` fallback
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -699,12 +699,12 @@
 
 ### 12.1 — Providers map + adapter registry
 
-- [ ] Rename `deepseek.ts` → `openai-compatible.ts`; factory takes `{ baseUrl, apiKey }`
-- [ ] Adapter registry: `api: openai-compatible | anthropic`; unknown → startup config error
-- [ ] Merge built-in presets (deepseek, openai, anthropic) with config `providers:`
-- [ ] Key resolution: env var (`apiKeyEnv`) → `~/.heirloom/credentials.yaml`; injected — adapters never read `process.env`
-- [ ] Per-model `contextWindow` feeds compaction budget; global fallback warns
-- [ ] Model refs split on first slash: `openrouter/anthropic/claude-x` → provider `openrouter`
+- [x] Rename `deepseek.ts` → `openai-compatible.ts`; factory takes `{ baseUrl, apiKey }`
+- [x] Adapter registry: `api: openai-compatible | anthropic`; unknown → startup config error
+- [x] Merge built-in presets (deepseek, openai, anthropic) with config `providers:`
+- [x] Key resolution: env var (`apiKeyEnv`) → `~/.heirloom/credentials.yaml`; injected — adapters never read `process.env`
+- [x] Per-model `contextWindow` feeds compaction budget; global fallback warns
+- [x] Model refs split on first slash: `openrouter/anthropic/claude-x` → provider `openrouter`
 
 **Acceptance criteria**
 | # | Given | When | Then |
