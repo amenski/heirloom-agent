@@ -2,6 +2,7 @@ import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall, ToolDef, ToolOutput } from "./types.js";
 import type { PermissionEngine } from "./permissions/index.js";
 import type { ModeConfig } from "./modes/loader.js";
+import type { Compactor } from "./compaction/compactor.js";
 
 function buildSystemPrompt(mode?: ModeConfig): string {
   if (mode) {
@@ -30,6 +31,7 @@ export interface AgentOptions {
   executeTool: ToolExecutor;
   permissions?: PermissionEngine;
   mode?: ModeConfig;
+  compactor?: Compactor;
   maxTurns?: number;
 }
 
@@ -37,9 +39,9 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<Message[]> {
-  const { provider, tools, executeTool, permissions, maxTurns = 20 } = options;
+  const { provider, tools, executeTool, permissions, compactor, maxTurns = 20 } = options;
 
-  const messages: Message[] = [
+  let messages: Message[] = [
     { role: "system", content: buildSystemPrompt(options.mode) },
     { role: "user", content: userMessage },
   ];
@@ -113,6 +115,15 @@ export async function runAgent(
     }
 
     console.log("");
+
+    if (compactor && compactor.needsCompaction(messages)) {
+      const before = messages.length;
+      messages = await compactor.compact(messages);
+      if (messages[0]?.role !== "system") {
+        messages.unshift({ role: "system", content: buildSystemPrompt(options.mode) });
+      }
+      console.log(`  [compacted: ${before} → ${messages.length} messages]`);
+    }
   }
 
   return messages;

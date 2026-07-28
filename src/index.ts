@@ -4,11 +4,13 @@ import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
+import { Compactor } from "./compaction/compactor.js";
 
 async function main() {
   const provider = createDeepSeekProvider();
   const modeLoader = new ModeLoader();
   const permissions = PermissionEngine.defaults();
+  const compactor = new Compactor(provider);
   let activeMode: ModeConfig | undefined;
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -66,6 +68,7 @@ async function main() {
         executeTool,
         permissions,
         mode: activeMode,
+        compactor,
       });
     } catch (err) {
       console.error(`\nError: ${(err as Error).message}`);
