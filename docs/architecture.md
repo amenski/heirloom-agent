@@ -16,6 +16,8 @@ testable. No layer depends on implementation details of another.
 
 ---
 
+_See [subsystems.md](./subsystems.md) for deep dives on memory, context management, ReAct variants, compaction strategy, and token optimization._
+
 ## Architecture: 7 Layers
 
 Inspired by how opencode, RooCode, Aider, and SWE-agent decompose the problem:
