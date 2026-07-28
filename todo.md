@@ -455,10 +455,10 @@
 
 ### 7.1 — Tree-sitter symbol extraction
 
-- [ ] Create `src/repomap/index.ts` — `RepoMap` class
-- [ ] Parse codebase with tree-sitter, extract symbol definitions + references
-- [ ] Build symbol→reference graph
-- [ ] Cache per-file tags by mtime
+- [x] Create `src/repomap/index.ts` — `RepoMap` class
+- [x] Parse codebase with tree-sitter, extract symbol definitions + references
+- [x] Build symbol→reference graph
+- [x] Cache per-file tags by mtime
 
 **Acceptance criteria**
 | # | Given | When | Then |
