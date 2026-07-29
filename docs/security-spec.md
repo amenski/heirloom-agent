@@ -40,7 +40,7 @@ bypassed (auto-approval, headless).
 | T6 | **Workspace-containment bypass** — `startsWith` prefix bug + symlinks | **BUG, open** | See "Known defects" |
 | T7 | **Allow-rule bypass via command chaining** — `git status; rm -rf ~` matches `git *` | **BUG, open** | See "Known defects" |
 | T8 | Runaway cost | Mitigated | maxTurns, loop detection; optional per-session token budget (future) |
-| T9 | Secrets copied into shadow checkpoint repo | Mitigated by design | Shadow repo honors `.gitignore` (architecture L5) — `.env` is typically ignored; verify in tests |
+| T9 | Secrets copied into shadow checkpoint repo | **Verified** | Shadow repo honors `.gitignore` (architecture L5) — `git add -A` with `--work-tree` respects the workspace `.gitignore`. Verified 2026-07-29: `.env` files gitignored in the workspace are absent from shadow-Git checkpoint snapshots (see `src/checkpoints/security.test.ts`). |
 | T10 | MCP tool-description rug pull | **Open** (Phase 9 surface) | Pin tool definitions at connect; description/schema change → warning + re-approval |
 
 ## Known Defects (fix before relying on the permission system)

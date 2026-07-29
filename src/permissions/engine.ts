@@ -10,14 +10,46 @@ export interface PermissionRule {
 
 export type ApprovalMode = "manual" | "edits" | "all";
 
+const GUARDED_PATTERNS = [
+  { tool: "run_bash", pattern: /^(curl|wget|nc|ssh|scp|ftp|sftp|telnet|rsync|nmap)\b/ },
+  { tool: "run_bash", pattern: /rm\s+(-\w*r\w*f\w*|--recursive)/ },
+  { tool: "run_bash", pattern: /\bsudo\b/ },
+  { tool: "run_bash", pattern: /git\s+(push\s+--force|reset\s+--hard)/ },
+  { tool: "read_file", pattern: /\.env[.\w]*$/ },
+  { tool: "read_file", pattern: /id_rsa[.\w]*$/ },
+  { tool: "read_file", pattern: /\.pem$/ },
+  { tool: "read_file", pattern: /\.ssh\// },
+  { tool: "read_file", pattern: /\.aws\// },
+  { tool: "read_file", pattern: /credentials\.yaml$/ },
+  { tool: "read_file", pattern: /credentials\.json$/ },
+  { tool: "run_bash", pattern: /cat\s+.*\.env/ },
+  { tool: "run_bash", pattern: /cat\s+.*\/\.ssh\// },
+  { tool: "run_bash", pattern: /cat\s+.*\/\.aws\// },
+];
+
+const CHAIN_OPERATORS = /(\n|&&|\|\||[;|](?![=|>]))/;
+
+function splitCommands(command: string): string[] {
+  return command
+    .split(CHAIN_OPERATORS)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function hasSubshell(command: string): boolean {
+  return /\$\(.*?\)/.test(command) || /`[^`]+`/.test(command);
+}
+
 export class PermissionEngine {
   private rules: PermissionRule[] = [];
   private _approvalMode: ApprovalMode = "manual";
   private _sessionRules: PermissionRule[] = [];
   private _workingDir: string;
+  private _isHeadless: boolean;
 
-  constructor(workingDir?: string) {
+  constructor(workingDir?: string, isHeadless = false) {
     this._workingDir = workingDir ?? process.cwd();
+    this._isHeadless = isHeadless;
   }
 
   get approvalMode(): ApprovalMode {
@@ -41,14 +73,43 @@ export class PermissionEngine {
   }
 
   check(tool: string, args?: Record<string, unknown>): PermissionAction {
+    if (tool === "run_bash") {
+      return this.checkBashCommand(String(args?.command ?? ""));
+    }
+
+    const action = this.matchRules(tool, args);
+
+    if (action === "deny") return "deny";
+
+    if (this.isGuarded(tool, args)) {
+      if (action === "allow") return "allow";
+      if (this._isHeadless) return "deny";
+      return "ask";
+    }
+
+    return this.applyApprovalMode(tool, args, action);
+  }
+
+  private matchRules(
+    tool: string,
+    args?: Record<string, unknown>,
+  ): PermissionAction {
     const allRules = [...this.rules, ...this._sessionRules];
     let action: PermissionAction = "ask";
     for (const rule of allRules) {
       if (!this.matchTool(rule.tool, tool)) continue;
-      if (rule.pattern && args && !this.matchPattern(rule.pattern, args)) continue;
+      if (rule.pattern && args && !this.matchPattern(rule.pattern, args))
+        continue;
       action = rule.action;
     }
+    return action;
+  }
 
+  private applyApprovalMode(
+    tool: string,
+    args: Record<string, unknown> | undefined,
+    action: PermissionAction,
+  ): PermissionAction {
     if (action === "ask" && this._approvalMode !== "manual") {
       if (this._approvalMode === "all") {
         return "allow";
@@ -59,8 +120,63 @@ export class PermissionEngine {
         }
       }
     }
-
     return action;
+  }
+
+  private checkBashCommand(command: string): PermissionAction {
+    if (hasSubshell(command)) return "ask";
+
+    const segments = splitCommands(command);
+
+    if (segments.length <= 1) {
+      const action = this.matchRules("run_bash", { command });
+
+      if (action === "deny") return "deny";
+
+      if (this.isGuarded("run_bash", { command })) {
+        if (action === "allow") return "allow";
+        if (this._isHeadless) return "deny";
+        return "ask";
+      }
+
+      return this.applyApprovalMode("run_bash", { command }, action);
+    }
+
+    for (const segment of segments) {
+      if (/^(&&|\|\||[;|])$/.test(segment)) continue;
+
+      const segmentAction = this.matchRules("run_bash", {
+        command: segment,
+      });
+
+      if (segmentAction === "deny") return "deny";
+
+      if (this.isGuarded("run_bash", { command: segment })) {
+        if (segmentAction === "allow") continue;
+        if (this._isHeadless) return "deny";
+        return "ask";
+      }
+
+      if (segmentAction !== "allow") {
+        if (this._approvalMode === "all") continue;
+        return "ask";
+      }
+    }
+
+    return "allow";
+  }
+
+  private isGuarded(tool: string, args?: Record<string, unknown>): boolean {
+    if (!args) return false;
+    const path = String(args.path || args.filePath || "");
+    const cmd = String(args.command || "");
+
+    for (const guard of GUARDED_PATTERNS) {
+      if (guard.tool !== tool) continue;
+      const target = guard.tool === "run_bash" ? cmd : path;
+      if (guard.pattern.test(target)) return true;
+    }
+    return false;
   }
 
   private matchTool(ruleTool: string, tool: string): boolean {
@@ -105,8 +221,8 @@ export class PermissionEngine {
     return resolved.startsWith(this._workingDir);
   }
 
-  static defaults(workingDir?: string): PermissionEngine {
-    const engine = new PermissionEngine(workingDir);
+  static defaults(workingDir?: string, isHeadless = false): PermissionEngine {
+    const engine = new PermissionEngine(workingDir, isHeadless);
     engine.addRule({ tool: "*", action: "ask" });
     return engine;
   }

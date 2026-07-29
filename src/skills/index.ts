@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ToolDef } from "../types.js";
 import type { ToolHandler } from "../tools/types.js";
+import { checkSkillTrust } from "./trust.js";
 
 export interface SkillDef {
   name: string;
@@ -10,6 +11,7 @@ export interface SkillDef {
   triggers: string[];
   content: string;
   mode?: string;
+  sourcePath: string;
 }
 
 function unquote(s: string): string {
@@ -140,7 +142,7 @@ async function scanDir(dir: string): Promise<SkillDef[]> {
       }
       const mode = (frontmatter.mode as string) || undefined;
 
-      skills.push({ name, description, triggers, content, mode });
+      skills.push({ name, description, triggers, content, mode, sourcePath: skillPath });
     } catch (err) {
       console.warn(
         `[skills] Failed to read ${skillPath}: ${(err as Error).message}`
@@ -152,7 +154,7 @@ async function scanDir(dir: string): Promise<SkillDef[]> {
 }
 
 export class SkillLoader {
-  async load(): Promise<SkillDef[]> {
+  async load(options?: { headless?: boolean }): Promise<SkillDef[]> {
     const allSkills: SkillDef[] = [];
     const seen = new Set<string>();
 
@@ -167,6 +169,19 @@ export class SkillLoader {
       const skills = await scanDir(dir);
       for (const skill of skills) {
         if (!seen.has(skill.name)) {
+          const trustResult = checkSkillTrust(skill.sourcePath, skill.name);
+
+          if (options?.headless && trustResult.status !== "trusted") {
+            process.stderr.write(`[warn] Skipping untrusted skill in headless: ${skill.name} (${trustResult.status})\n`);
+            continue;
+          }
+
+          if (trustResult.status === "new") {
+            console.log(`  [skill] ${trustResult.name} loaded (first time) — ${trustResult.sourcePath}`);
+          } else if (trustResult.status === "changed") {
+            console.log(`  [skill] ${trustResult.name} changed — ${trustResult.sourcePath}`);
+          }
+
           seen.add(skill.name);
           allSkills.push(skill);
         }

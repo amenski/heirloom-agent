@@ -294,7 +294,7 @@ async function main() {
     process.exit(1);
   }
   const modeLoader = new ModeLoader();
-  const permissions = PermissionEngine.defaults();
+  const permissions = PermissionEngine.defaults(undefined, !!args.prompt);
   if (configResult.config.permissions) {
     feedPermissions(permissions, configResult.config.permissions);
   }
@@ -312,7 +312,7 @@ async function main() {
     args: Record<string, unknown>,
   ): Promise<boolean> {
     const rlAsk = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const argStr = JSON.stringify(args).slice(0, 200);
+    const argStr = JSON.stringify(args);
     const promptStr = `  ${toolName} ${argStr}\n  Allow? (y)es once · (a)llow for session · (n)o  `;
     const answer = (await rlAsk.question(promptStr)).trim().toLowerCase();
     rlAsk.close();
@@ -420,7 +420,7 @@ async function main() {
   }
 
   const skillLoader = new SkillLoader();
-  let skills = await skillLoader.load();
+  let skills = await skillLoader.load({ headless: !!args.prompt });
   const { def: loadSkillDef, handler: loadSkillHandler } = createLoadSkillTool(skills);
   registry.register({ def: loadSkillDef, handler: loadSkillHandler, groups: ["read"], always: true });
 
