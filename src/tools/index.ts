@@ -19,7 +19,7 @@ export const TOOL_DEFS = registry.getAllDefs();
 const ctx: ToolContext = {
   workingDir: process.cwd(),
   sessionId: "default",
-  askUser: async () => true,
+  askUser: undefined,
   signal: new AbortController().signal,
   fileMtimes: new Map(),
 };

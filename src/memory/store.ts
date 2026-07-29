@@ -36,6 +36,7 @@ export class MemoryStore {
     tasks: string[];
     decisions: string[];
     files: string[];
+    summary?: string;
   }): Promise<void> {
     const file = join(this.projectDir, "sessions.md");
     const header = `## ${entries.date}\n`;
@@ -46,6 +47,8 @@ export class MemoryStore {
       body += `- Decisions:\n${entries.decisions.map((d) => `  - ${d}`).join("\n")}\n`;
     if (entries.files.length > 0)
       body += `- Files: ${entries.files.join(", ")}\n`;
+    if (entries.summary)
+      body += `- Summary: ${entries.summary}\n`;
 
     let existing = "";
     try {

@@ -16,18 +16,24 @@ Be concise. Omit tool output details — just note what was done and the outcome
 export class Compactor {
   private lastChangedFiles: Set<string> = new Set();
   private fidelityRegenerationCount = 0;
+  private sessionFiles: Set<string> = new Set();
+  private lastSummary: string | null = null;
 
   constructor(
     private provider: Provider,
     private contextWindow: number = 128000,
+    private threshold?: number,
   ) {}
 
   needsCompaction(messages: Message[]): boolean {
-    return shouldCompact(messages, this.contextWindow);
+    return shouldCompact(messages, this.contextWindow, this.threshold);
   }
 
   trackFiles(files: string[]): void {
-    for (const f of files) this.lastChangedFiles.add(f);
+    for (const f of files) {
+      this.lastChangedFiles.add(f);
+      this.sessionFiles.add(f);
+    }
   }
 
   async compact(messages: Message[]): Promise<Message[]> {
@@ -54,6 +60,7 @@ export class Compactor {
     }
 
     this.lastChangedFiles.clear();
+    this.lastSummary = summaryContent;
     this.fidelityRegenerationCount = 0;
 
     const summary: Message = {
@@ -62,6 +69,10 @@ export class Compactor {
     };
 
     return [summary, ...recent];
+  }
+
+  getLastCompaction(): { summary: string | null; files: string[] } {
+    return { summary: this.lastSummary, files: [...this.sessionFiles] };
   }
 
   private async summarize(messages: Message[], changedFiles?: Set<string>): Promise<string> {

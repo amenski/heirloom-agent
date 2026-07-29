@@ -955,10 +955,10 @@
 
 ### 19.1 — Interactive ask prompting (permission-spec)
 
-- [ ] `agent.ts` handles only `deny` today; `ask` (the default for every tool) silently executes. Implement the ask prompt: `Allow? (y)es once · (a)llow for session · (n)o`
-- [ ] `y` → run once; `a` → run + `permissions.addSessionRule()` with a generalized pattern (`npm install *` for bash, dirname for edit tools), echoed to the user; `n` → tool result `PERMISSION_DENIED: denied by user`
-- [ ] Wire `ToolContext.askUser` to a real prompt (currently a stub returning `true`)
-- [ ] Headless: `ask` → deny (spec already; verify it holds once ask prompting exists)
+- [x] `agent.ts` handles only `deny` today; `ask` (the default for every tool) silently executes. Implement the ask prompt: `Allow? (y)es once · (a)llow for session · (n)o`
+- [x] `y` → run once; `a` → run + `permissions.addSessionRule()` with a generalized pattern (`npm install *` for bash, dirname for edit tools), echoed to the user; `n` → tool result `PERMISSION_DENIED: denied by user`
+- [x] Wire `ToolContext.askUser` to a real prompt (currently a stub returning `true`)
+- [x] Headless: `ask` → deny (spec already; verify it holds once ask prompting exists)
 
 **Acceptance criteria**
 | # | Given | When | Then |
@@ -973,11 +973,11 @@
 
 ### 19.2 — Config file loader (config-spec)
 
-- [ ] Load `~/.heirloom/config.yaml` + project `.heirloom/config.yaml` (project wins); nothing reads them today — providers map, permission rules, compaction settings, keybindings are all dead schema
-- [ ] `providers:` entries merge over built-in presets → the OpenRouter worked example actually works
-- [ ] `permissions:` rules feed the engine (insertion order preserved)
-- [ ] Startup validation per subsystems §6: invalid value → fail fast naming file+field; unknown fields → warn
-- [ ] `keybindings:` block consumed once 15.2 lands
+- [x] Load `~/.heirloom/config.yaml` + project `.heirloom/config.yaml` (project wins); nothing reads them today — providers map, permission rules, compaction settings, keybindings are all dead schema
+- [x] `providers:` entries merge over built-in presets → the OpenRouter worked example actually works
+- [x] `permissions:` rules feed the engine (insertion order preserved)
+- [x] Startup validation per subsystems §6: invalid value → fail fast naming file+field; unknown fields → warn
+- [x] `keybindings:` block consumed once 15.2 lands
 
 **Deps:** 12.1, 14.3 | **Priority:** P1 | **Est:** 2h
 
@@ -985,8 +985,8 @@
 
 ### 19.3 — Wire runtime compaction into the session file (session-spec)
 
-- [ ] When the agent loop compacts, call `sessionStore.appendCompaction(sessionId, replacesThrough, summary)` — implemented and tested in the store but never invoked, so disk and memory diverge and resume replays full history
-- [ ] `replacesThrough` computed against persisted message indices, not in-memory array positions
+- [x] When the agent loop compacts, call `sessionStore.appendCompaction(sessionId, replacesThrough, summary)` — implemented and tested in the store but never invoked, so disk and memory diverge and resume replays full history
+- [x] `replacesThrough` computed against persisted message indices, not in-memory array positions
 
 **Deps:** 10.1, 4.3 | **Priority:** P1 | **Est:** 1h
 
@@ -994,8 +994,8 @@
 
 ### 19.4 — Golden-task fixtures (conventions.md)
 
-- [ ] `fixtures/` does not exist despite 17.1 checked. Create `fixtures/calc` (planted failing test, G2), `fixtures/cli` (flag-addition target, G3), `fixtures/leaky` (memory-growth diagnosis, G5)
-- [ ] `docs/` or fixture READMEs record each golden task's pass criteria; runnable via `-p --approve all`
+- [x] `fixtures/` does not exist despite 17.1 checked. Create `fixtures/calc` (planted failing test, G2), `fixtures/cli` (flag-addition target, G3), `fixtures/leaky` (memory-growth diagnosis, G5)
+- [x] `docs/` or fixture READMEs record each golden task's pass criteria; runnable via `-p --approve all`
 
 **Deps:** 17.1 | **Priority:** P2 | **Est:** 2h
 
@@ -1003,7 +1003,7 @@
 
 ### 19.5 — Memory session-log noise
 
-- [ ] `memoryStore.appendSession` fires after every turn with empty `decisions`/`files` (`src/index.ts`); spec (subsystems §1/§5) says once at session end with the compaction summary as source. Move to exit path (`/exit`, `/new`, SIGTERM) and populate from the last compaction summary when available
+- [x] `memoryStore.appendSession` fires after every turn with empty `decisions`/`files` (`src/index.ts`); spec (subsystems §1/§5) says once at session end with the compaction summary as source. Move to exit path (`/exit`, `/new`, SIGTERM) and populate from the last compaction summary when available
 
 **Deps:** 18.1 | **Priority:** P2 | **Est:** 1h
 

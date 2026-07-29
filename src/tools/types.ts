@@ -6,7 +6,7 @@ export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => P
 export interface ToolContext {
   workingDir: string;
   sessionId: string;
-  askUser(question: string): Promise<boolean>;
+  askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
   signal: AbortSignal;
   checkpoint?: CheckpointManager;
   fileMtimes?: Map<string, number>;

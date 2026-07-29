@@ -1,11 +1,11 @@
 import * as readline from "node:readline/promises";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { initPresets, createProvider } from "./providers/presets.js";
+import { initPresets, createProvider, setConfigProviders } from "./providers/presets.js";
 import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
-import { PermissionEngine, type ApprovalMode } from "./permissions/index.js";
+import { PermissionEngine, type ApprovalMode, type PermissionAction } from "./permissions/index.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
@@ -14,6 +14,7 @@ import { authWizard, authList, authLogout } from "./auth/wizard.js";
 import { SessionStore } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
+import { loadConfig, type PermissionConfigValue } from "./config/loader.js";
 import type { Message } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -85,10 +86,49 @@ function parseArgs(): CliArgs {
   return result;
 }
 
+function extractDecisions(summary: string | null): string[] {
+  if (!summary) return [];
+  const decisions: string[] = [];
+  const sentences = summary.split(/(?<=[.!?])\s+/);
+  for (const s of sentences) {
+    if (/\b(decided|decision|chose|opted|selected|agreed|resolved|concluded|determined)\b/i.test(s)) {
+      decisions.push(s.trim());
+    }
+  }
+  return decisions;
+}
+
 async function main() {
   initPresets();
 
   const args = parseArgs();
+
+  const configResult = loadConfig();
+  if (configResult.errors.length > 0) {
+    for (const e of configResult.errors) {
+      process.stderr.write(`Error: ${e}\n`);
+    }
+    process.exit(1);
+  }
+  for (const w of configResult.warnings) {
+    process.stderr.write(`Warning: ${w}\n`);
+  }
+
+  if (configResult.config.providers) {
+    setConfigProviders(configResult.config.providers);
+  }
+
+  function feedPermissions(engine: PermissionEngine, perms: Record<string, PermissionConfigValue>): void {
+    for (const [tool, value] of Object.entries(perms)) {
+      if (typeof value === "string") {
+        engine.addRule({ tool, action: value as PermissionAction });
+      } else if (typeof value === "object") {
+        for (const [pattern, action] of Object.entries(value)) {
+          engine.addRule({ tool, pattern, action: action as PermissionAction });
+        }
+      }
+    }
+  }
 
   if (process.argv[2] === "auth") {
     const sub = process.argv[3];
@@ -104,10 +144,57 @@ async function main() {
     process.exit(0);
   }
 
-  const provider = createProvider(process.env.HEIRLOOM_PROVIDER || "deepseek");
+  const provider = createProvider(
+    process.env.HEIRLOOM_PROVIDER || configResult.config.provider || "deepseek",
+    args.model ?? configResult.config.model ?? undefined,
+  );
   const modeLoader = new ModeLoader();
   const permissions = PermissionEngine.defaults();
-  const compactor = new Compactor(provider);
+  if (configResult.config.permissions) {
+    feedPermissions(permissions, configResult.config.permissions);
+  }
+
+  const contextWindow =
+    configResult.config.contextWindow ?? 128000;
+  const compactor = new Compactor(
+    provider,
+    contextWindow,
+    configResult.config.compaction?.threshold,
+  );
+
+  async function interactiveAskUser(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<boolean> {
+    const rlAsk = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const argStr = JSON.stringify(args).slice(0, 200);
+    const promptStr = `  ${toolName} ${argStr}\n  Allow? (y)es once · (a)llow for session · (n)o  `;
+    const answer = (await rlAsk.question(promptStr)).trim().toLowerCase();
+    rlAsk.close();
+
+    if (answer === "n" || answer === "no") {
+      return false;
+    }
+
+    if (answer === "a" || answer === "allow") {
+      let pattern = "*";
+      if (toolName === "run_bash" && typeof args.command === "string") {
+        const firstWord = args.command.split(/\s+/)[0];
+        pattern = firstWord ? `${firstWord} *` : "*";
+      } else if (typeof args.filePath === "string") {
+        const dir = dirname(args.filePath);
+        pattern = dir === "." || dir === "/" ? "*" : `${dir}/*`;
+      } else if (typeof args.path === "string") {
+        const dir = dirname(args.path);
+        pattern = dir === "." || dir === "/" ? "*" : `${dir}/*`;
+      }
+      permissions.addSessionRule({ tool: toolName, pattern, action: "allow" });
+      console.log(`  (added session rule: ${toolName} ${pattern})`);
+      return true;
+    }
+
+    return true;
+  }
 
   const sessionStore = new SessionStore();
   let sessionId: string;
@@ -162,6 +249,21 @@ async function main() {
   const memoryStore = new MemoryStore();
   await memoryStore.init();
   const memoryInjection = await memoryStore.getInjection();
+  const sessionUserInputs: string[] = [];
+
+  async function logSessionEnd() {
+    const { summary, files } = compactor.getLastCompaction();
+    const decisions = extractDecisions(summary);
+    if (sessionUserInputs.length > 0 || files.length > 0 || summary) {
+      await memoryStore.appendSession({
+        date: new Date().toISOString().slice(0, 10),
+        tasks: [...sessionUserInputs],
+        decisions,
+        files,
+        summary: summary ?? undefined,
+      });
+    }
+  }
 
   const skillLoader = new SkillLoader();
   let skills = await skillLoader.load();
@@ -219,12 +321,18 @@ async function main() {
         skills,
         memory: memoryInjection ?? undefined,
         memoryStore,
+        sessionStore,
+        sessionId,
         signal: abortController.signal,
         ...headlessCallbacks,
-        onMaxTurns: () => process.exit(2),
+        onMaxTurns: () => {
+          logSessionEnd().finally(() => process.exit(2));
+        },
       });
+      await logSessionEnd();
       process.exit(0);
     } catch (err) {
+      try { await logSessionEnd(); } catch {}
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);
     }
@@ -247,13 +355,22 @@ async function main() {
     abortController = new AbortController();
   });
 
+  process.on("SIGTERM", () => {
+    logSessionEnd().finally(() => process.exit(0));
+  });
+
   while (true) {
     setSignal(abortController.signal);
 
     const input = await rl.question(prompt());
+    if (input === null) {
+      await logSessionEnd();
+      break;
+    }
     if (!input.trim()) continue;
 
     if (input === "/exit") {
+      await logSessionEnd();
       console.log("Bye.");
       break;
     }
@@ -401,6 +518,8 @@ async function main() {
     }
 
     if (input === "/new") {
+      await logSessionEnd();
+      sessionUserInputs.length = 0;
       sessionId = await sessionStore.create({
         cwd: process.cwd(),
         provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
@@ -417,6 +536,7 @@ async function main() {
     try {
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
       await sessionStore.appendMessage(sessionId, { role: "user", content: input });
+      sessionUserInputs.push(input);
       const result = await runAgent(input, {
         provider,
         tools,
@@ -428,21 +548,17 @@ async function main() {
         skills,
         memory: memoryInjection ?? undefined,
         memoryStore,
+        sessionStore,
+        sessionId,
         signal: abortController.signal,
         ...interactiveCallbacks,
+        askUser: interactiveAskUser,
       });
       for (const msg of result.slice(2)) {
         if (msg.role !== "system") {
           await sessionStore.appendMessage(sessionId, msg);
         }
       }
-
-      await memoryStore.appendSession({
-        date: new Date().toISOString().slice(0, 10),
-        tasks: [input],
-        decisions: [],
-        files: [],
-      });
     } catch (err) {
       console.error(`\nError: ${(err as Error).message}`);
     }

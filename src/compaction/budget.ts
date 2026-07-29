@@ -13,8 +13,13 @@ export function estimateTokens(messages: Message[]): number {
   return Math.ceil(total / 4);
 }
 
-export function shouldCompact(messages: Message[], contextWindow: number): boolean {
+export function shouldCompact(
+  messages: Message[],
+  contextWindow: number,
+  threshold?: number,
+): boolean {
+  const ratio = threshold ?? 0.7;
+  const cutoff = contextWindow * ratio;
   const used = estimateTokens(messages);
-  const threshold = contextWindow * 0.7;
-  return used >= threshold;
+  return used >= cutoff;
 }

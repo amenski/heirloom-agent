@@ -9,9 +9,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "js-yaml": "^5.2.2",
     "openai": "^4.104.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",

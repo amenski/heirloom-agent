@@ -254,6 +254,16 @@ export class SessionStore {
     return { meta: loaded.meta, messages: effectiveMessages };
   }
 
+  async getMessageCount(sessionId: string): Promise<number> {
+    const records = await this.readRecords(sessionId);
+    if (!records) return 0;
+    let count = 0;
+    for (const rec of records) {
+      if (rec.type === "message") count++;
+    }
+    return count;
+  }
+
   async list(): Promise<SessionListItem[]> {
     let entries: string[];
     try {

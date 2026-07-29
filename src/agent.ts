@@ -9,6 +9,7 @@ import type { ErrorRecovery } from "./errorrecovery/index.js";
 import type { SkillDef } from "./skills/index.js";
 import type { RepoMap } from "./repomap/index.js";
 import type { MemoryStore } from "./memory/store.js";
+import type { SessionStore, CompactionSummary } from "./sessions/store.js";
 import { buildSystemPrompt } from "./prompt.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
@@ -28,6 +29,8 @@ export interface AgentOptions {
   repomap?: RepoMap;
   memory?: string;
   memoryStore?: MemoryStore;
+  sessionStore?: SessionStore;
+  sessionId?: string;
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
@@ -36,6 +39,7 @@ export interface AgentOptions {
   onCompacted?: (msg: string) => void;
   onLoopDetected?: (msg: string) => void;
   onMaxTurns?: (messages: Message[]) => void;
+  askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
 }
 
 export async function runAgent(
@@ -149,6 +153,22 @@ export async function runAgent(
           messages.push({ role: "tool", toolCallId: tc.id, content: msg });
           continue;
         }
+        if (action === "ask") {
+          if (options.askUser) {
+            const allowed = await options.askUser(tc.name, tc.arguments);
+            if (!allowed) {
+              const msg = "PERMISSION_DENIED: denied by user";
+              options.onDiagnostic?.("denied");
+              messages.push({ role: "tool", toolCallId: tc.id, content: msg });
+              continue;
+            }
+          } else {
+            const msg = "PERMISSION_DENIED: headless — rule resolved to ask";
+            options.onDiagnostic?.("denied");
+            messages.push({ role: "tool", toolCallId: tc.id, content: msg });
+            continue;
+          }
+        }
       }
 
       const result = await executeTool(tc);
@@ -212,6 +232,9 @@ export async function runAgent(
     }
 
     if (compactor && compactor.needsCompaction(messages)) {
+      const persistedCount = options.sessionStore && options.sessionId
+        ? await options.sessionStore.getMessageCount(options.sessionId)
+        : 0;
       const before = messages.length;
       messages = await compactor.compact(messages);
       if (messages[0]?.role !== "system") {
@@ -228,6 +251,20 @@ export async function runAgent(
           conversation: convo,
         });
         messages.unshift({ role: "system", content: rebuiltPrompt });
+      }
+      if (options.sessionStore && options.sessionId && persistedCount > 0) {
+        const { summary, files } = compactor.getLastCompaction();
+        const compactionSummary: CompactionSummary = {
+          task: summary ?? "Conversation summarized.",
+          decisions: [],
+          files,
+          errors_resolved: [],
+        };
+        await options.sessionStore.appendCompaction(
+          options.sessionId,
+          persistedCount - 1,
+          compactionSummary,
+        );
       }
       options.onCompacted?.(`${before} → ${messages.length} messages`);
     }

@@ -4,5 +4,7 @@ dist/
 *.d.ts
 !src/**/*.js
 !src/**/*.d.ts
+!fixtures/**/*.js
 .idea/
 .DS_Store
+todo.md
