@@ -106,7 +106,25 @@ openrouter: sk-or-...
 deepseek: sk-...
 ```
 
-## Adding a Provider
+Resolution is checked in both the startup key-presence gate (`hasAnyKey`) and
+the provider's key resolution (`createProvider`) — both read this exact flat
+shape, and both fall back to it only when the env var is unset.
+
+### Future: OS keychain (not yet implemented)
+
+The plaintext `credentials.yaml` is the *fallback* store. The intended
+best-practice path, matching `gh`/Docker/Claude Code, is the OS secret store:
+
+- **macOS Keychain**, **Linux libsecret/`secret-tool`**, **Windows Credential
+  Manager** — via a helper like `keytar`, or shelling out to the platform tool.
+- `heirloom auth` would write the key to the keychain when available and record
+  only a *pointer* (e.g. `deepseek: keychain`) in `credentials.yaml`, never the
+  raw secret. The plaintext value stays supported for headless/container
+  environments where no keychain exists (the `gh` model).
+- Resolution order becomes: env var → keychain (if pointer) → plaintext value.
+
+This removes the raw key from disk on the common desktop path while keeping the
+zero-dependency fallback. Deferred — plaintext-with-`0600` is the v1 store.
 
 **The normal way — `heirloom auth`** (cli-spec.md): pick a preset
 (DeepSeek, OpenRouter, Groq, Together, Ollama, OpenAI, Anthropic, or

@@ -1,10 +1,8 @@
 import * as readline from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { load } from "js-yaml";
 import { initPresets, createProvider, setConfigProviders, getPreset } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
@@ -20,6 +18,7 @@ import { SessionStore } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import { loadConfig, type PermissionConfigValue } from "./config/loader.js";
+import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers } from "./mcp/connector.js";
 import type { Message } from "./types.js";
@@ -136,14 +135,8 @@ async function runDoctor(): Promise<void> {
     : process.env.OPENROUTER_API_KEY ? "OPENROUTER_API_KEY env var"
     : process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY env var"
     : (() => {
-        try {
-          const credsStr = readFileSync(join(homedir(), ".heirloom", "credentials.yaml"), "utf-8");
-          const creds = load(credsStr) as any;
-          if (creds?.providers) {
-            const names = Object.keys(creds.providers).filter(k => creds.providers[k]?.apiKey);
-            if (names.length) return `credentials.yaml (${names.length} key(s): ${names.join(", ")})`;
-          }
-        } catch {}
+        const names = Object.entries(readCredentialsFile()).filter(([, v]) => v).map(([k]) => k);
+        if (names.length) return `credentials.yaml (${names.length} key(s): ${names.join(", ")})`;
         return "none";
       })();
   console.log(`  API key           ${keySource}`);
@@ -327,15 +320,7 @@ async function main() {
 
   function hasAnyKey(): boolean {
     if (detectProvider()) return true;
-    try {
-      const credsPath = join(homedir(), ".heirloom", "credentials.yaml");
-      if (existsSync(credsPath)) {
-        const creds = load(readFileSync(credsPath, "utf-8")) as Record<string, unknown>;
-        const providers = (creds.providers as Record<string, unknown>) || {};
-        return Object.values(providers).some((p: unknown) => (p as Record<string, unknown>)?.apiKey);
-      }
-    } catch {}
-    return false;
+    return Object.values(readCredentialsFile()).some((v) => v);
   }
 
   const detected = detectProvider();

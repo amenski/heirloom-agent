@@ -3,6 +3,7 @@ import { registerAdapter, getAdapter } from "./registry.js";
 import { createRetryingProvider } from "./retry.js";
 import type { Provider, ModelCapabilities } from "./types.js";
 import type { ProviderConfig } from "../config/loader.js";
+import { getCredential } from "../config/credentials.js";
 
 export interface ProviderPreset {
   api: string;
@@ -102,12 +103,12 @@ export function createProvider(name: string, modelOverride?: string): Provider {
   const configEntry = configProviders[name];
 
   if (configEntry) {
-    const apiKey = configEntry.apiKeyEnv
-      ? (process.env[configEntry.apiKeyEnv] ?? "")
-      : "";
+    const apiKey = (configEntry.apiKeyEnv ? process.env[configEntry.apiKeyEnv] : undefined)
+      || getCredential(name)
+      || "";
     if (configEntry.apiKeyEnv && !apiKey) {
       throw new Error(
-        `Provider "${name}" requires ${configEntry.apiKeyEnv} to be set`,
+        `Provider "${name}" requires ${configEntry.apiKeyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.yaml`,
       );
     }
     const model =
@@ -130,9 +131,13 @@ export function createProvider(name: string, modelOverride?: string): Provider {
     );
   }
 
-  const apiKey = preset.keyEnv ? (process.env[preset.keyEnv] || "") : "";
+  const apiKey = (preset.keyEnv ? process.env[preset.keyEnv] : undefined)
+    || getCredential(name)
+    || "";
   if (preset.keyEnv && !apiKey) {
-    throw new Error(`Provider "${name}" requires ${preset.keyEnv} to be set`);
+    throw new Error(
+      `Provider "${name}" requires ${preset.keyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.yaml`,
+    );
   }
 
   return createRetryingProvider(
