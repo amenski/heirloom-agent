@@ -1,5 +1,4 @@
-import * as readline from "node:readline/promises";
-import { emitKeypressEvents } from "node:readline";
+import { createInterface } from "node:readline/promises";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,12 +20,14 @@ import { loadConfig, type PermissionConfigValue } from "./config/loader.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers } from "./mcp/connector.js";
+import { createElement } from "react";
+import type { ModelEntry } from "./ui/ModelSelector.js";
+import { render } from "ink";
+import App from "./ui/App.js";
 import type { Message } from "./types.js";
+import type { ModelCapabilities } from "./providers/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-let pasteBuffer = "";
-let inPaste = false;
 
 // Populated once at startup (see main()) so the synchronous `completer` can
 // offer /mode <tab> slug completion without making completer async — readline
@@ -165,7 +166,7 @@ async function runDoctor(): Promise<void> {
 const SLASH_COMMANDS = [
   "/help", "/exit", "/clear", "/mode", "/approve", "/compact",
   "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new",
-  "/skills", "/skill", "/modes", "/model"
+  "/skills", "/skill", "/modes", "/model", "/effort"
 ];
 
 function completer(line: string): [string[], string] {
@@ -244,12 +245,6 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 function getProviderLabel(name: string): string {
   return PROVIDER_LABELS[name] ?? name;
-}
-
-interface ModelEntry {
-  provider: string;
-  model: string;
-  contextWindow?: number;
 }
 
 // Enumerates every known provider/model combo (built-in preset models + any
@@ -395,6 +390,16 @@ async function main() {
   }
   let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
 
+  /** Returns the current model's capabilities from the preset (or undefined). */
+  function getActiveModelCaps(): ModelCapabilities | undefined {
+    const preset = getPreset(providerName);
+    if (!preset) return undefined;
+    return preset.models[activeModel ?? preset.defaultModel];
+  }
+
+  // Per-model effort knob — resets to the new model's default on /model switch.
+  let activeEffort: string | undefined = getActiveModelCaps()?.effort?.default;
+
   function getProvider() {
     return createProvider(providerName, activeModel);
   }
@@ -435,47 +440,8 @@ async function main() {
     return _compactor;
   }
 
-  async function interactiveAskUser(
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<boolean> {
-    const editTools = ["edit", "edit_file", "write_to_file", "write", "search_replace", "apply_diff", "apply_patch"];
-    if (editTools.includes(toolName)) {
-      const preview = previewEdit(toolName, args);
-      if (preview) {
-        process.stderr.write(preview + "\n\n");
-      }
-    }
 
-    const rlAsk = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const argStr = JSON.stringify(args);
-    const promptStr = `  ${toolName} ${argStr}\n  Allow? (y)es once · (a)llow for session · (n)o  `;
-    const answer = (await rlAsk.question(promptStr)).trim().toLowerCase();
-    rlAsk.close();
 
-    if (answer === "n" || answer === "no") {
-      return false;
-    }
-
-    if (answer === "a" || answer === "allow") {
-      let pattern = "*";
-      if (toolName === "run_bash" && typeof args.command === "string") {
-        const firstWord = args.command.split(/\s+/)[0];
-        pattern = firstWord ? `${firstWord} *` : "*";
-      } else if (typeof args.filePath === "string") {
-        const dir = dirname(args.filePath);
-        pattern = dir === "." || dir === "/" ? "*" : `${dir}/*`;
-      } else if (typeof args.path === "string") {
-        const dir = dirname(args.path);
-        pattern = dir === "." || dir === "/" ? "*" : `${dir}/*`;
-      }
-      permissions.addSessionRule({ tool: toolName, pattern, action: "allow" });
-      console.log(`  (added session rule: ${toolName} ${pattern})`);
-      return true;
-    }
-
-    return true;
-  }
 
   const sessionStore = new SessionStore();
   let sessionId: string;
@@ -537,19 +503,27 @@ async function main() {
   const memoryStore = new MemoryStore();
   await memoryStore.init();
   const memoryInjection = await memoryStore.getInjection();
-  const sessionUserInputs: string[] = [];
-  let sessionInput = 0;
-  let sessionOutput = 0;
+
+  const shared = {
+    conversationHistory: [] as Message[],
+    sessionInput: 0,
+    sessionOutput: 0,
+    // Tokens of the most recent request — the actual context size, unlike
+    // sessionInput/Output which accumulate across requests (for cost).
+    lastContextTokens: 0,
+    sessionUserInputs: [] as string[],
+    abort: new AbortController(),
+  };
 
   async function logSessionEnd() {
     try {
       const compactor = getCompactor();
       const { summary, files } = compactor.getLastCompaction();
       const decisions = extractDecisions(summary);
-      if (sessionUserInputs.length > 0 || files.length > 0 || summary) {
+      if (shared.sessionUserInputs.length > 0 || files.length > 0 || summary) {
         await memoryStore.appendSession({
           date: new Date().toISOString().slice(0, 10),
-          tasks: [...sessionUserInputs],
+          tasks: [...shared.sessionUserInputs],
           decisions,
           files,
           summary: summary ?? undefined,
@@ -579,9 +553,6 @@ async function main() {
     console.log(`Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${modeLabel}`);
   }
 
-  let abortController = new AbortController();
-  let agentRunning = false;
-
   let firstTokenReceived = false;
   let activeSpinner: ReturnType<typeof setInterval> | null = null;
 
@@ -594,8 +565,9 @@ async function main() {
     onCompacted: (m: string) => process.stderr.write(`[compacted: ${m}]\n`),
     onLoopDetected: () => process.stderr.write("[loop detected]\n"),
     onUsage: (input: number, output: number) => {
-      sessionInput += input;
-      sessionOutput += output;
+      shared.sessionInput += input;
+      shared.sessionOutput += output;
+      shared.lastContextTokens = input + output;
     },
   };
 
@@ -629,20 +601,21 @@ async function main() {
     onLoopDetected: (m: string) => console.log(`[${m}]`),
     onMaxTurns: () => console.log("[max turns reached. Session saved.]"),
     onUsage: (input: number, output: number) => {
-      sessionInput += input;
-      sessionOutput += output;
+      shared.sessionInput += input;
+      shared.sessionOutput += output;
+      shared.lastContextTokens = input + output;
       const inK = (input / 1000).toFixed(1);
       const outK = (output / 1000).toFixed(1);
       process.stderr.write(`  [${inK}k in / ${outK}k out]\n`);
-      sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: sessionInput, cumulativeOutput: sessionOutput });
+      sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: shared.sessionInput, cumulativeOutput: shared.sessionOutput });
     },
   };
 
   if (args.prompt) {
-    setSignal(abortController.signal);
+    setSignal(shared.abort.signal);
 
     process.on("SIGINT", () => {
-      abortController.abort();
+      shared.abort.abort();
     });
 
     try {
@@ -660,7 +633,8 @@ async function main() {
         memoryStore,
         sessionStore,
         sessionId,
-        signal: abortController.signal,
+        signal: shared.abort.signal,
+        effort: activeEffort,
         ...headlessCallbacks,
       });
       await logSessionEnd();
@@ -673,110 +647,163 @@ async function main() {
     }
   }
 
-  if (process.stdin.isTTY) {
-    process.stdin.on("data", (chunk: Buffer) => {
-      const str = chunk.toString();
-
-      if (str.startsWith("\x1b[200~")) {
-        inPaste = true;
-        pasteBuffer = "";
-        process.stdin.pause();
-        const rest = str.slice(6);
-        if (rest) pasteBuffer += rest;
-        return;
+  // ── Piped path: plain line-by-line, no ANSI, no TUI ──
+  if (!process.stdout.isTTY || !process.stdin.isTTY) {
+    const rl = createInterface({ input: process.stdin });
+    let pipedConversationHistory: Message[] = [];
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      if (line.trim() === "/exit") break;
+      if (line.startsWith("/")) {
+        await handleSlashCore(line);
+        continue;
       }
-
-      if (inPaste) {
-        const endIdx = str.indexOf("\x1b[201~");
-        if (endIdx >= 0) {
-          inPaste = false;
-          pasteBuffer += str.slice(0, endIdx);
-          const combined = pasteBuffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
-          rl.write(combined + "\n");
-          process.stdin.resume();
-          pasteBuffer = "";
-        } else {
-          pasteBuffer += str;
+      setSignal(shared.abort.signal);
+      firstTokenReceived = false;
+      try {
+        const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
+        const processed = await processAtMentions(line);
+        const result = await runAgent(processed, {
+          provider: getProvider(),
+          tools,
+          executeTool,
+          permissions,
+          mode: activeMode,
+          compactor: getCompactor(),
+          diagnostics,
+          skills,
+          memory: memoryInjection ?? undefined,
+          memoryStore,
+          sessionStore,
+          sessionId,
+          signal: shared.abort.signal,
+          effort: activeEffort,
+          history: pipedConversationHistory.length > 0 ? pipedConversationHistory : undefined,
+          ...interactiveCallbacks,
+        });
+        pipedConversationHistory = result.messages;
+        if (result.stopReason === "done") {
+          await sessionStore.appendMessage(sessionId, { role: "user", content: line });
+          for (const msg of result.newMessages) {
+            if (msg.role !== "system") {
+              await sessionStore.appendMessage(sessionId, msg);
+            }
+          }
         }
-        return;
+      } catch (err) {
+        process.stderr.write(`Error: ${(err as Error).message}\n`);
       }
-    });
+    }
+    await logSessionEnd();
+    return;
   }
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
-
-  // Accent-rail prompt: mode/model/approval info now lives in renderStatusLine(),
-  // not the prompt line itself (readline needs a single-line prompt for correct
-  // backspace/history behavior).
-  function getPrompt(): string {
-    if (!colorEnabled) return "heirloom > ";
-    return `${ansi.blue("\u258C")} ${ansi.blue("\u203A")} `;
-  }
-
-  function renderStatusLine(): void {
-    if (!colorEnabled) return;
-
-    const modeName = activeMode?.name ?? "chat";
-    const modelName = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
-    const providerLabel = getProviderLabel(providerName);
-    console.log(
-      `  ${ansi.blueBold(modeName)} ${ansi.dim("\u00B7")} ${ansi.bright(modelName)} ${ansi.dim("\u00B7")} ${ansi.dim(providerLabel)}`,
-    );
-  }
-
+  // ── TTY path: Ink renderer ──
+  // Banner (goes to real stdout before Ink takes over)
   console.log("heirloom — type /exit to quit, /help for help");
-
   if (colorEnabled) {
-    const hints: string[] = [
-      `${ansi.bright("shift+tab")} ${ansi.dim("approve")}`,
-      `${ansi.bright("esc")} ${ansi.dim("abort")}`,
-      `${ansi.bright("/help")}`,
-    ];
-    console.log(`  ${hints.join(`  ${ansi.dim("·")}  `)}`);
-    console.log(`  ${ansi.orange("●")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands")}`);
+    console.log(`  ${ansi.bright("shift+tab")} ${ansi.dim("approve")}  ${ansi.dim("·")}  ${ansi.bright("esc")} ${ansi.dim("abort")}  ${ansi.dim("·")}  ${ansi.bright("/help")}`);
+    console.log(`  ${ansi.orange("\u25CF")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands")}`);
   }
   console.log("");
 
-  process.on("SIGINT", () => {
-    abortController.abort();
-    abortController = new AbortController();
-  });
+  setSignal(shared.abort.signal);
 
+  process.on("SIGINT", () => {
+    shared.abort.abort();
+    shared.abort = new AbortController();
+  });
   process.on("SIGTERM", () => {
     logSessionEnd().finally(() => process.exit(0));
   });
 
-  process.on("exit", () => process.stdout.write("\x1b[?2004l"));
+  const promptStr = colorEnabled ? `${ansi.blue("\u258C")} ${ansi.blue("\u203A")} ` : "heirloom > ";
 
-  emitKeypressEvents(process.stdin);
-  function onKeypress(str: string, key: { name?: string; ctrl?: boolean; shift?: boolean }) {
-    if (key.name === "escape") {
-      if (agentRunning) abortController.abort();
-    }
-    if (key.name === "c" && key.ctrl) {
-      if (agentRunning) abortController.abort();
-    }
-    if (key.name === "tab" && key.shift) {
-      if (!agentRunning) {
-        const modes: ApprovalMode[] = ["manual", "edits", "all"];
-        const idx = modes.indexOf(permissions.approvalMode);
-        permissions.setApprovalMode(modes[(idx + 1) % modes.length]);
-        // onKeypress is only attached while an agent turn is running (see
-        // process.stdin.on("keypress", ...) below), so there is no live rl.question
-        // prompt line to repaint here — the status line header is redrawn on the next
-        // rl.question call instead. Keep the in-place line redraw as a harmless no-op
-        // fallback for the line readline is tracking.
-        process.stdout.write(`\r${getPrompt()}${(rl as any).line}`);
-      }
-    }
+  function getContextPercent(): number | null {
+    const preset = getPreset(providerName);
+    const caps = preset?.models[activeModel ?? preset.defaultModel];
+    if (!caps?.contextWindow) return null;
+    const total = shared.sessionInput + shared.sessionOutput;
+    if (total === 0) return null;
+    return (total / caps.contextWindow) * 100;
   }
 
-  rl.on("SIGINT", () => {
-    console.log("(use /exit or Ctrl+D to quit)");
-    rl.prompt();
-  });
+  function getCostStr(): string | null {
+    const preset = getPreset(providerName);
+    const caps = preset?.models[activeModel ?? preset.defaultModel];
+    if (!caps?.pricing) return null;
+    return ((shared.sessionInput * caps.pricing.inputPerM + shared.sessionOutput * caps.pricing.outputPerM) / 1_000_000).toFixed(4);
+  }
 
-  async function handleSlash(input: string): Promise<boolean> {
+  function buildStatusBar(): import("./ui/types.js").StatusSegment[] {
+    const T = (text: string, props?: Partial<import("./ui/types.js").StatusSegment>): import("./ui/types.js").StatusSegment => ({ text, ...props });
+    const dim = (text: string) => T(text, { dimColor: true });
+    const sep = () => T(" │ ", { dimColor: true });
+    const segments: import("./ui/types.js").StatusSegment[] = [];
+
+    // mode
+    segments.push(dim(activeMode?.name ?? "chat"));
+
+    // model
+    segments.push(T(" · ", { dimColor: true }));
+    const modelId = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
+    const providerLabel = getProviderLabel(providerName);
+    segments.push(T(`${providerLabel}/${modelId}`, { bold: true }));
+
+    // cwd
+    segments.push(T(" · ", { dimColor: true }));
+    let cwd = process.cwd();
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    if (home && cwd.startsWith(home)) cwd = "~" + cwd.slice(home.length);
+    if (cwd.length > 30) { const parts = cwd.split("/"); cwd = "…/" + parts.slice(-2).join("/"); }
+    segments.push(dim(cwd));
+
+    // ctx %
+    const ctxPercent = getContextPercent();
+    if (ctxPercent !== null) {
+      segments.push(sep());
+      segments.push(dim("ctx "));
+      const ctxText = `${Math.round(ctxPercent)}%`;
+      if (ctxPercent >= 95) segments.push(T(ctxText, { color: "red" }));
+      else if (ctxPercent >= 80) segments.push(T(ctxText, { color: "yellow" }));
+      else segments.push(dim(ctxText));
+    }
+
+    // cost
+    const costStr = getCostStr();
+    if (costStr) {
+      segments.push(sep());
+      segments.push(dim(`$${costStr}`));
+    }
+
+    // effort
+    if (activeEffort) {
+      segments.push(sep());
+      segments.push(T(activeEffort, { bold: true }));
+    }
+
+    return segments;
+  }
+
+  function cycleApprovalMode(): void {
+    const modes: ApprovalMode[] = ["manual", "edits", "all"];
+    const idx = modes.indexOf(permissions.approvalMode);
+    permissions.setApprovalMode(modes[(idx + 1) % modes.length]);
+  }
+
+  const handleSlash = async (input: string): Promise<string[]> => {
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args) => lines.push(args.map(String).join(" "));
+    try {
+      await handleSlashCore(input);
+    } finally {
+      console.log = origLog;
+    }
+    return lines;
+  };
+
+  async function handleSlashCore(input: string): Promise<void> {
     const cmd = input.trim().split(/\s+/)[0];
     switch (cmd) {
       case "/help": {
@@ -784,13 +811,17 @@ async function main() {
           "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /model <provider/model>, /cost\n" +
             "Use `heirloom auth` to configure a provider, or set a *_API_KEY env var.",
         );
-        return true;
+        return;
       }
       case "/cost": {
-        console.log(`Session totals: ${(sessionInput / 1000).toFixed(1)}k in / ${(sessionOutput / 1000).toFixed(1)}k out`);
-        const estCost = (sessionInput * 0.14 + sessionOutput * 0.28) / 1_000_000;
-        console.log(`Estimated cost: $${estCost.toFixed(4)}`);
-        return true;
+        console.log(`Session totals: ${(shared.sessionInput / 1000).toFixed(1)}k in / ${(shared.sessionOutput / 1000).toFixed(1)}k out`);
+        const costStr = getCostStr();
+        if (costStr) {
+          console.log(`Estimated cost: $${costStr}`);
+        } else {
+          console.log("Estimated cost: unknown (no pricing data for this model)");
+        }
+        return;
       }
       case "/skills": {
         if (skills.length === 0) {
@@ -800,29 +831,29 @@ async function main() {
             console.log(`  ${s.name} — ${s.description || "no description"}`);
           }
         }
-        return true;
+        return;
       }
       case "/skill": {
         const name = input.slice(7).trim();
-        const skill = skills.find(s => s.name === name);
+        const skill = skills.find((s: SkillDef) => s.name === name);
         if (skill) {
           console.log(skill.content);
         } else {
           console.log(`Unknown skill: ${name}. Try /skills to list available skills.`);
         }
-        return true;
+        return;
       }
       case "/clear": {
         console.log("[cleared]");
-        conversationHistory = [];
-        return true;
+        shared.conversationHistory = [];
+        return;
       }
       case "/modes": {
         const allModes = await modeLoader.listAll();
         for (const m of allModes) {
           console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`);
         }
-        return true;
+        return;
       }
       case "/mode": {
         const slug = input.slice(6).trim();
@@ -834,7 +865,7 @@ async function main() {
         } else {
           console.log(`Unknown mode: ${slug}. Try /modes to list available modes.`);
         }
-        return true;
+        return;
       }
       case "/approve": {
         const mode = input.slice(8).trim();
@@ -851,17 +882,17 @@ async function main() {
           if (sessionRules.length > 0) {
             console.log("Session rules:");
             for (const r of sessionRules) {
-              console.log(`  ${r.tool} ${r.pattern || "*"} → ${r.action}`);
+              console.log(`  ${r.tool} ${r.pattern || "*"} -> ${r.action}`);
             }
           }
         } else {
           console.log("Usage: /approve [manual|edits|all]");
         }
-        return true;
+        return;
       }
       case "/compact": {
         console.log("Not yet implemented. Compaction runs automatically.");
-        return true;
+        return;
       }
       case "/model": {
         const modelArg = input.slice(7).trim();
@@ -883,19 +914,19 @@ async function main() {
             for (const entry of entries) {
               const isActive = entry.provider === providerName && entry.model === currentModel;
               const suffix = entry.contextWindow ? `   ctx ${Math.round(entry.contextWindow / 1000)}k` : "";
-              const marker = isActive ? "› " : "  ";
+              const marker = isActive ? "> " : "  ";
               const line = `  ${marker}${entry.model.padEnd(modelColWidth)}${suffix}`;
               console.log(isActive && colorEnabled ? ansi.bright(line) : line);
             }
           }
           console.log("");
           console.log("Switch: /model <provider/model>");
-          return true;
+          return;
         }
         const slashIdx = modelArg.indexOf("/");
         if (slashIdx < 0) {
           console.log("Invalid format. Use: /model <provider/model>");
-          return true;
+          return;
         }
         const provName = modelArg.slice(0, slashIdx);
         const modelName = modelArg.slice(slashIdx + 1);
@@ -903,16 +934,18 @@ async function main() {
           providerName = provName;
           activeModel = modelName;
           _compactor = undefined;
+          activeEffort = getActiveModelCaps()?.effort?.default;
           sessionStore.appendState(sessionId, {
             model: modelName,
             provider: provName,
             changedAt: Date.now(),
           });
-          console.log(`Model changed to ${provName}/${modelName}`);
+          const effortNote = activeEffort ? ` (effort: ${activeEffort})` : "";
+          console.log(`Model changed to ${provName}/${modelName}${effortNote}`);
         } catch (e) {
           console.log(`Error: ${(e as Error).message}`);
         }
-        return true;
+        return;
       }
       case "/checkpoint": {
         const hash = await checkpoints.save("manual checkpoint");
@@ -921,7 +954,7 @@ async function main() {
         } else {
           console.log("No changes to save.");
         }
-        return true;
+        return;
       }
       case "/restore": {
         if (input === "/restore files") {
@@ -943,7 +976,7 @@ async function main() {
         } else {
           console.log("Usage: /restore [files|full]");
         }
-        return true;
+        return;
       }
       case "/checkpoints": {
         const entries = checkpoints.list();
@@ -954,7 +987,7 @@ async function main() {
             console.log(`  ${e.hash.slice(0, 7)}  ${e.message}  (${e.timestamp})`);
           }
         }
-        return true;
+        return;
       }
       case "/sessions": {
         const sessions = await sessionStore.list();
@@ -968,12 +1001,12 @@ async function main() {
             console.log(`  ${s.id}${excerpt}  ${msgs}  created ${date}`);
           }
         }
-        return true;
+        return;
       }
       case "/new": {
         await logSessionEnd();
-        sessionUserInputs.length = 0;
-        conversationHistory = [];
+        shared.sessionUserInputs.length = 0;
+        shared.conversationHistory = [];
         sessionId = await sessionStore.create({
           cwd: process.cwd(),
           provider: providerName,
@@ -984,112 +1017,130 @@ async function main() {
         setCheckpointManager(checkpoints);
         setSessionId(sessionId);
         console.log("New session started.");
-        return true;
+        return;
+      }
+      case "/effort": {
+        const arg = input.slice(7).trim();
+        const caps = getActiveModelCaps();
+        if (!caps?.effort) {
+          console.log("Current model does not support reasoning effort.");
+          return;
+        }
+        if (!arg) {
+          console.log(`Effort: ${activeEffort ?? caps.effort.default}`);
+          console.log(`Valid values: ${caps.effort.values.join(", ")}`);
+          return;
+        }
+        if (!caps.effort.values.includes(arg)) {
+          console.log(`Invalid effort value. Valid: ${caps.effort.values.join(", ")}`);
+          return;
+        }
+        activeEffort = arg;
+        console.log(`Effort set to ${arg}.`);
+        return;
       }
       default:
         console.log(`Unknown command: ${cmd}\nType /help for available commands.`);
-        return true;
+        return;
     }
   }
 
-  let conversationHistory: Message[] = [];
+  const runAgentTurnBridge = async (
+    input: string,
+    cb: {
+      onText: (c: string) => void;
+      onToolStart: (name: string, args: Record<string, unknown>) => void;
+      onToolResult: (name: string, result: { content: string; error?: string }) => void;
+      onDiagnostic: (m: string) => void;
+      onRetry: (m: string) => void;
+      onCompacted: (m: string) => void;
+      onLoopDetected: (m: string) => void;
+      onMaxTurns: () => void;
+      onUsage: (input: number, output: number) => void;
+      onNewMessages: (userInput: string, newMessages: Message[]) => Promise<void>;
+      onHistoryUpdate: (messages: Message[]) => void;
+      askUser: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+    },
+  ): Promise<any> => {
+    shared.sessionUserInputs.push(input);
+    const processed = await processAtMentions(input);
 
-  while (true) {
-    setSignal(abortController.signal);
+    const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
 
-    let input: string | null = null;
-    try {
-      if (colorEnabled) console.log("");
-      renderStatusLine();
-      // Bracketed paste is enabled only for the duration of this question, not
-      // left on for the whole session: readline echoes buffered input a second
-      // time (a bare repeat of the line, after the prompt) when paste mode is
-      // toggled on before it starts reading — see docs/handoff-model-fixes.md.
-      if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
-      input = await rl.question(getPrompt());
-    } catch {
-      // Ctrl+D (EOF) — rl.question rejects when interface closes
-    } finally {
-      if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l");
-    }
-    if (input === null || input === undefined) {
-      await logSessionEnd();
-      console.log("Bye.");
-      break;
-    }
-    if (!input.trim()) continue;
+    const result = await runAgent(processed, {
+      provider: getProvider(),
+      tools,
+      executeTool,
+      permissions,
+      mode: activeMode,
+      compactor: getCompactor(),
+      diagnostics,
+      skills,
+      memory: memoryInjection ?? undefined,
+      memoryStore,
+      sessionStore,
+      sessionId,
+      signal: shared.abort.signal,
+      effort: activeEffort,
+      history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
+      onText: cb.onText,
+      onToolStart: cb.onToolStart,
+      onToolResult: cb.onToolResult,
+      onDiagnostic: cb.onDiagnostic,
+      onRetry: cb.onRetry,
+      onCompacted: cb.onCompacted,
+      onLoopDetected: cb.onLoopDetected,
+      onMaxTurns: cb.onMaxTurns,
+      onUsage: (input: number, output: number) => {
+        shared.sessionInput += input;
+        shared.sessionOutput += output;
+        shared.lastContextTokens = input + output;
+        sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: shared.sessionInput, cumulativeOutput: shared.sessionOutput });
+        cb.onUsage(input, output);
+      },
+      // agent.ts already surfaced the tool via onToolStart; the App's askUser
+      // renders the preview and approval prompt. Re-announcing the tool here
+      // printed every ask-gated call twice more.
+      askUser: cb.askUser,
+    });
 
-    if (input === "/exit") {
-      await logSessionEnd();
-      console.log("Bye.");
-      break;
-    }
+    return result;
+  };
 
-    if (input.startsWith("/")) {
-      const handled = await handleSlash(input);
-      if (handled) continue;
-    }
+  const appCtx = {
+    mutable: shared,
+    getProvider,
+    sessionId,
+    activeMode,
+    permissions,
+    toolRegistry: registry,
+    compactor: getCompactor(),
+    diagnostics,
+    skills,
+    memoryInjection: memoryInjection ?? undefined,
+    memoryStore,
+    sessionStore,
+    checkpoints,
+    modeLoader,
+    skillLoader,
+    providerName,
+    activeModel,
+    provideAbortController: () => shared.abort,
+    renewAbortController: () => { shared.abort = new AbortController(); },
+    processAtMentions,
+    completer,
+    buildStatusBar,
+    cycleApprovalMode,
+    getPromptStr: () => promptStr,
+    getColorEnabled: () => colorEnabled,
+    logSessionEnd,
+    onExit: () => logSessionEnd().then(() => process.exit(0)),
+    handleSlash,
+    getModelEntries: () => listKnownModels(),
+    runAgentTurnCore: runAgentTurnBridge,
+  };
 
-    try {
-      agentRunning = true;
-      if (process.stdin.isTTY) {
-        process.stdin.setRawMode(true);
-        process.stdin.on("keypress", onKeypress);
-      }
-
-      const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
-      sessionUserInputs.push(input);
-      const processed = await processAtMentions(input);
-
-      firstTokenReceived = false;
-      const loadingChars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-      let loadingCharIdx = 0;
-      activeSpinner = setInterval(() => {
-        process.stderr.write(`\r  \x1b[2m${loadingChars[loadingCharIdx]}\x1b[0m`);
-        loadingCharIdx = (loadingCharIdx + 1) % loadingChars.length;
-      }, 100);
-
-      const result = await runAgent(processed, {
-        provider: getProvider(),
-        tools,
-        executeTool,
-        permissions,
-        mode: activeMode,
-        compactor: getCompactor(),
-        diagnostics,
-        skills,
-        memory: memoryInjection ?? undefined,
-        memoryStore,
-        sessionStore,
-        sessionId,
-        signal: abortController.signal,
-        history: conversationHistory.length > 0 ? conversationHistory : undefined,
-        ...interactiveCallbacks,
-        askUser: interactiveAskUser,
-      });
-      conversationHistory = result.messages;
-      if (result.stopReason === "done") {
-        await sessionStore.appendMessage(sessionId, { role: "user", content: input });
-        for (const msg of result.newMessages) {
-          if (msg.role !== "system") {
-            await sessionStore.appendMessage(sessionId, msg);
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`\nError: ${(err as Error).message}`);
-    } finally {
-      agentRunning = false;
-      if (activeSpinner) { clearInterval(activeSpinner); activeSpinner = null; }
-      if (!firstTokenReceived) process.stderr.write("\r\x1b[K");
-      if (process.stdin.isTTY) {
-        process.stdin.setRawMode(false);
-        process.stdin.off("keypress", onKeypress);
-      }
-    }
-    console.log("");
-  }
-  rl.close();
+  const { waitUntilExit } = render(createElement(App, { ctx: appCtx }));
+  await waitUntilExit();
 }
-
-main();
+void main();

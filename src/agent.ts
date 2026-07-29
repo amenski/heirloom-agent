@@ -38,6 +38,7 @@ export interface AgentOptions {
   sessionStore?: SessionStore;
   sessionId?: string;
   signal?: AbortSignal;
+  effort?: string;
   history?: Message[];
   onText?: (chunk: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
@@ -55,7 +56,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<AgentResult> {
-  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20 } = options;
+  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20, effort } = options;
 
   const systemPrompt = await buildSystemPrompt({
     mode: options.mode,
@@ -66,10 +67,14 @@ export async function runAgent(
     conversation: userMessage,
   });
 
-  const historyLen = options.history ? options.history.length : 0;
   let messages: Message[] = options.history ? [...options.history] : [];
-  messages.push({ role: "system", content: systemPrompt });
+  // The system prompt lives at position 0 only. Replace the previous turn's
+  // prompt instead of appending a new one — stacking a full prompt per user
+  // turn bloats the context and degrades openai-compatible models.
+  if (messages[0]?.role === "system") messages.shift();
+  messages.unshift({ role: "system", content: systemPrompt });
   messages.push({ role: "user", content: userMessage });
+  const newStart = messages.length;
 
   let stopReason: "done" | "aborted" | "max_turns" = "done";
   let turn = 0;
@@ -93,7 +98,7 @@ export async function runAgent(
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
 
     try {
-    for await (const event of provider.streamChat(messages, tools, { signal: options.signal })) {
+    for await (const event of provider.streamChat(messages, tools, { signal: options.signal, effort })) {
       switch (event.type) {
         case "text_delta":
           content += event.content;
@@ -125,7 +130,10 @@ export async function runAgent(
 
     if (content) options.onText?.("\n");
 
-    if (pendingCalls.size === 0) break;
+    if (pendingCalls.size === 0) {
+      if (content) messages.push({ role: "assistant", content });
+      break;
+    }
 
     const toolCalls: ToolCall[] = [];
     let retryWithCorrection = false;
@@ -305,7 +313,7 @@ export async function runAgent(
 
   return {
     messages,
-    newMessages: messages.slice(historyLen + 2),
+    newMessages: messages.slice(newStart),
     stopReason,
   };
 }

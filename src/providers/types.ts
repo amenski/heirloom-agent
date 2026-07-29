@@ -3,6 +3,15 @@ import type { Message, ToolDef } from "../types.js";
 export interface ModelCapabilities {
   supportsTools: boolean;
   contextWindow: number;
+  displayName?: string;
+  /** Absent = this model has no reasoning-effort knob. */
+  effort?: {
+    /** The model's own vocabulary, e.g. ["minimal","low","medium","high"]. */
+    values: string[];
+    /** Used when the user hasn't picked a value. */
+    default: string;
+  };
+  pricing?: { inputPerM: number; outputPerM: number };
 }
 
 export type StreamEvent =
@@ -17,6 +26,6 @@ export interface Provider {
   streamChat(
     messages: Message[],
     tools: ToolDef[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; effort?: string },
   ): AsyncGenerator<StreamEvent>;
 }
