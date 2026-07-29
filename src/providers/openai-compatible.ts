@@ -3,6 +3,7 @@ import type { Message, ToolDef } from "../types.js";
 import type { Provider, StreamEvent } from "./types.js";
 import { isRetryableStatus } from "./retry.js";
 import type { RetryableError } from "./retry.js";
+import { logRequest, logResponse } from "../debug/logger.js";
 
 function mapMessages(messages: Message[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   return messages.map((m) => {
@@ -70,12 +71,21 @@ export function createOpenAICompatibleProvider(config: {
       options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
     ): AsyncGenerator<StreamEvent> {
       try {
+        logRequest({
+          model,
+          messages,
+          tools,
+          max_tokens: options?.maxTokens,
+          temperature: options?.temperature,
+        });
+
         const stream = await client.chat.completions.create({
           model,
           messages: mapMessages(messages),
           tools: mapTools(tools),
           tool_choice: "auto",
           stream: true,
+          stream_options: { include_usage: true },
           temperature: options?.temperature,
           max_tokens: options?.maxTokens,
         }, {
@@ -85,8 +95,18 @@ export function createOpenAICompatibleProvider(config: {
         const toolCallAccum: Map<number, { id: string; name: string; args: string }> = new Map();
         const started: Set<number> = new Set();
         let finishReason = "stop";
+        let usage: unknown;
 
         for await (const chunk of stream) {
+          if (chunk.usage) {
+            usage = chunk.usage;
+            yield {
+              type: "usage",
+              inputTokens: chunk.usage.prompt_tokens || 0,
+              outputTokens: chunk.usage.completion_tokens || 0,
+            };
+          }
+
           const choice = chunk.choices[0];
           if (choice?.finish_reason) {
             finishReason = choice.finish_reason;
@@ -119,6 +139,8 @@ export function createOpenAICompatibleProvider(config: {
             }
           }
         }
+
+        logResponse(usage, Array.from(toolCallAccum.values()));
 
         yield { type: "done", finishReason };
       } catch (err: any) {

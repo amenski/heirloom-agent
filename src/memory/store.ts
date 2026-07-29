@@ -2,6 +2,7 @@ import { appendFile, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
+import { redactSecrets } from "../sessions/redact.js";
 
 const MAX_INJECTION_TOKENS = 1024;
 
@@ -42,13 +43,13 @@ export class MemoryStore {
     const header = `## ${entries.date}\n`;
     let body = "";
     if (entries.tasks.length > 0)
-      body += `- Tasks: ${entries.tasks.join(", ")}\n`;
+      body += `- Tasks: ${entries.tasks.map((t) => redactSecrets(t)).join(", ")}\n`;
     if (entries.decisions.length > 0)
-      body += `- Decisions:\n${entries.decisions.map((d) => `  - ${d}`).join("\n")}\n`;
+      body += `- Decisions:\n${entries.decisions.map((d) => `  - ${redactSecrets(d)}`).join("\n")}\n`;
     if (entries.files.length > 0)
-      body += `- Files: ${entries.files.join(", ")}\n`;
+      body += `- Files: ${entries.files.map((f) => redactSecrets(f)).join(", ")}\n`;
     if (entries.summary)
-      body += `- Summary: ${entries.summary}\n`;
+      body += `- Summary: ${redactSecrets(entries.summary)}\n`;
 
     let existing = "";
     try {

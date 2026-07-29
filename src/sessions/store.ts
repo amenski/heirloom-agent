@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../types.js";
+import { redactSecrets } from "./redact.js";
 
 const KNOWN_VERSION = 1;
 
@@ -116,12 +117,17 @@ export class SessionStore {
   }
 
   async appendMessage(sessionId: string, message: Message): Promise<void> {
-    await this.append(sessionId, { type: "message", message });
+    const safeContent =
+      typeof message.content === "string"
+        ? redactSecrets(message.content)
+        : message.content;
+    const safeMessage = { ...message, content: safeContent };
+    await this.append(sessionId, { type: "message", message: safeMessage });
   }
 
   async appendState(
     sessionId: string,
-    state: Partial<{ mode: string; model: string; provider: string }>,
+    state: Record<string, unknown>,
   ): Promise<void> {
     await this.append(sessionId, { type: "state", ...state });
   }
@@ -131,10 +137,16 @@ export class SessionStore {
     replacesThrough: number,
     summary: CompactionSummary,
   ): Promise<void> {
+    const safeSummary: CompactionSummary = {
+      task: redactSecrets(summary.task),
+      decisions: summary.decisions.map((d) => redactSecrets(d)),
+      files: summary.files.map((f) => redactSecrets(f)),
+      errors_resolved: summary.errors_resolved.map((e) => redactSecrets(e)),
+    };
     await this.append(sessionId, {
       type: "compaction",
       replacesThrough,
-      summary,
+      summary: safeSummary,
     });
   }
 

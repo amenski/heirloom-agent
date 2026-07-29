@@ -1,9 +1,12 @@
 import * as readline from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import yaml from "js-yaml";
 import { initPresets, createProvider, setConfigProviders } from "./providers/presets.js";
+import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine, type ApprovalMode, type PermissionAction } from "./permissions/index.js";
@@ -16,9 +19,15 @@ import { SessionStore } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import { loadConfig, type PermissionConfigValue } from "./config/loader.js";
+import { enableDebug } from "./debug/logger.js";
 import type { Message } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+process.stdout.write("\x1b[?2004h");
+
+let pasteBuffer = "";
+let inPaste = false;
 
 interface CliArgs {
   prompt?: string;
@@ -27,6 +36,7 @@ interface CliArgs {
   approveMode?: "edits" | "all";
   mode?: string;
   model?: string;
+  debug?: boolean;
 }
 
 function parseArgs(): CliArgs {
@@ -50,6 +60,7 @@ function parseArgs(): CliArgs {
       "  --model <provider/model> Override config/mode model\n" +
       "  -p, --print <prompt>   Headless mode: run one task and exit\n" +
       "  --approve <edits|all>  Set approval mode (for headless runs)\n" +
+      "  --debug                Write redacted request/response JSONL\n" +
       "  --help                 Show this help\n" +
       "  --version              Show version\n"
     );
@@ -82,6 +93,8 @@ function parseArgs(): CliArgs {
       result.continue_ = true;
     } else if (args[i] === "--session" && i + 1 < args.length) {
       result.sessionId = args[++i];
+    } else if (args[i] === "--debug") {
+      result.debug = true;
     }
   }
   return result;
@@ -99,8 +112,130 @@ function extractDecisions(summary: string | null): string[] {
   return decisions;
 }
 
+async function runDoctor(): Promise<void> {
+  console.log("heirloom doctor\n");
+
+  try {
+    const { execSync } = await import("node:child_process");
+    const gitVersion = execSync("git --version", { encoding: "utf-8" }).trim();
+    console.log(`  git               ${gitVersion}`);
+  } catch {
+    console.log(`  git               NOT FOUND (some features will be unavailable)`);
+  }
+
+  try {
+    const configResult = loadConfig();
+    const providers = Object.keys(configResult.config.providers || {});
+    console.log(`  config.yaml       ${providers.length} provider(s): ${providers.join(", ") || "none"}`);
+  } catch (e) {
+    console.log(`  config.yaml       ERROR: ${(e as Error).message}`);
+  }
+
+  const keySource = process.env.DEEPSEEK_API_KEY ? "DEEPSEEK_API_KEY env var"
+    : process.env.OPENAI_API_KEY ? "OPENAI_API_KEY env var"
+    : process.env.OPENROUTER_API_KEY ? "OPENROUTER_API_KEY env var"
+    : process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY env var"
+    : (() => {
+        try {
+          const credsStr = readFileSync(join(homedir(), ".heirloom", "credentials.yaml"), "utf-8");
+          const creds = yaml.load(credsStr) as any;
+          if (creds?.providers) {
+            const names = Object.keys(creds.providers).filter(k => creds.providers[k]?.apiKey);
+            if (names.length) return `credentials.yaml (${names.length} key(s): ${names.join(", ")})`;
+          }
+        } catch {}
+        return "none";
+      })();
+  console.log(`  API key           ${keySource}`);
+
+  try {
+    const configResult = loadConfig();
+    const issues = [...configResult.errors, ...configResult.warnings];
+    if (issues.length === 0) {
+      console.log(`  config            valid`);
+    } else {
+      console.log(`  config            ${issues.length} issue(s):`);
+      for (const issue of issues) console.log(`                    - ${issue}`);
+    }
+  } catch (e) {
+    console.log(`  config            ERROR: ${(e as Error).message}`);
+  }
+
+  console.log(`  node              ${process.version}`);
+}
+
+const SLASH_COMMANDS = [
+  "/help", "/exit", "/clear", "/mode", "/approve", "/compact",
+  "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new",
+  "/skills", "/skill", "/modes"
+];
+
+function completer(line: string): [string[], string] {
+  if (line.startsWith("/")) {
+    const hits = SLASH_COMMANDS.filter(c => c.startsWith(line));
+    if (hits.length === 1) return [hits.map(h => h + " "), line];
+    return [hits, line];
+  }
+
+  const atMatch = line.match(/@(\S*)$/);
+  if (atMatch) {
+    const partial = atMatch[1];
+    const dir = partial.includes("/") ? dirname(partial) : ".";
+    const prefix = partial.includes("/") ? partial.split("/").pop()! : partial;
+
+    try {
+      const base = resolve(process.cwd(), dir);
+      const entries = readdirSync(base, { withFileTypes: true });
+      const hits = entries
+        .filter(e => !e.name.startsWith(".") && e.name.startsWith(prefix))
+        .map(e => {
+          const relPath = dir === "." ? e.name : `${dir}/${e.name}`;
+          return `@${relPath}${e.isDirectory() ? "/" : ""}`;
+        });
+      return [hits, line.slice(0, line.lastIndexOf("@")) + "@" + (dir === "." ? "" : dir + "/")];
+    } catch {
+      return [[], line];
+    }
+  }
+
+  return [[], line];
+}
+
+function truncateContent(content: string, maxLen: number): string {
+  if (content.length <= maxLen) return content;
+  return content.slice(0, maxLen) + `\n... (truncated at ${maxLen} chars)`;
+}
+
+async function processAtMentions(input: string): Promise<string> {
+  const atRegex = /@([^\s]+)/g;
+  let result = input;
+  let match;
+
+  while ((match = atRegex.exec(input)) !== null) {
+    const filePath = match[1];
+    if (filePath.endsWith("/") || (!filePath.includes(".") && !filePath.includes("/"))) continue;
+
+    const fullPath = resolve(process.cwd(), filePath);
+    try {
+      const content = readFileSync(fullPath, "utf-8");
+      const truncated = truncateContent(content, 4000);
+      result = result.replace(match[0], `\n--- ${filePath} ---\n${truncated}\n--- end ${filePath} ---\n`);
+    } catch {
+      // File doesn't exist — leave the @mention as-is
+    }
+  }
+
+  return result;
+}
+
 async function main() {
   initPresets();
+
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.length > 0 && rawArgs[0] === "doctor") {
+    await runDoctor();
+    process.exit(0);
+  }
 
   const args = parseArgs();
 
@@ -145,10 +280,19 @@ async function main() {
     process.exit(0);
   }
 
+  const providerName = process.env.HEIRLOOM_PROVIDER || configResult.config.provider || "deepseek";
   const provider = createProvider(
-    process.env.HEIRLOOM_PROVIDER || configResult.config.provider || "deepseek",
+    providerName,
     args.model ?? configResult.config.model ?? undefined,
   );
+
+  const capabilities = getProviderCapabilities(providerName);
+  if (!capabilities.supportsTools) {
+    const model = args.model ?? configResult.config.model ?? providerName;
+    console.error(`Error: '${model}' does not support tool calls.`);
+    console.error(`Use a tool-capable model (e.g., deepseek-chat, gpt-4o, claude-sonnet-4).`);
+    process.exit(1);
+  }
   const modeLoader = new ModeLoader();
   const permissions = PermissionEngine.defaults();
   if (configResult.config.permissions) {
@@ -241,6 +385,10 @@ async function main() {
     });
   }
 
+  if (args.debug) {
+    enableDebug(sessionId);
+  }
+
   if (args.approveMode) {
     permissions.setApprovalMode(args.approveMode);
   }
@@ -254,6 +402,8 @@ async function main() {
   await memoryStore.init();
   const memoryInjection = await memoryStore.getInjection();
   const sessionUserInputs: string[] = [];
+  let sessionInput = 0;
+  let sessionOutput = 0;
 
   async function logSessionEnd() {
     const { summary, files } = compactor.getLastCompaction();
@@ -298,6 +448,10 @@ async function main() {
     onRetry: () => {},
     onCompacted: (m: string) => process.stderr.write(`[compacted: ${m}]\n`),
     onLoopDetected: () => process.stderr.write("[loop detected]\n"),
+    onUsage: (input: number, output: number) => {
+      sessionInput += input;
+      sessionOutput += output;
+    },
   };
 
   const interactiveCallbacks = {
@@ -309,6 +463,14 @@ async function main() {
     onCompacted: (m: string) => console.log(`  [compacted: ${m}]`),
     onLoopDetected: (m: string) => console.log(`[${m}]`),
     onMaxTurns: () => console.log("[max turns reached. Session saved.]"),
+    onUsage: (input: number, output: number) => {
+      sessionInput += input;
+      sessionOutput += output;
+      const inK = (input / 1000).toFixed(1);
+      const outK = (output / 1000).toFixed(1);
+      process.stderr.write(`  [${inK}k in / ${outK}k out]\n`);
+      sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: sessionInput, cumulativeOutput: sessionOutput });
+    },
   };
 
   if (args.prompt) {
@@ -346,7 +508,37 @@ async function main() {
     }
   }
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  if (process.stdin.isTTY) {
+    process.stdin.on("data", (chunk: Buffer) => {
+      const str = chunk.toString();
+
+      if (str.startsWith("\x1b[200~")) {
+        inPaste = true;
+        pasteBuffer = "";
+        process.stdin.pause();
+        const rest = str.slice(6);
+        if (rest) pasteBuffer += rest;
+        return;
+      }
+
+      if (inPaste) {
+        const endIdx = str.indexOf("\x1b[201~");
+        if (endIdx >= 0) {
+          inPaste = false;
+          pasteBuffer += str.slice(0, endIdx);
+          const combined = pasteBuffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+          rl.write(combined + "\n");
+          process.stdin.resume();
+          pasteBuffer = "";
+        } else {
+          pasteBuffer += str;
+        }
+        return;
+      }
+    });
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
 
   function getPrompt(): string {
     if (!activeMode) return "heirloom > ";
@@ -367,6 +559,8 @@ async function main() {
   process.on("SIGTERM", () => {
     logSessionEnd().finally(() => process.exit(0));
   });
+
+  process.on("exit", () => process.stdout.write("\x1b[?2004l"));
 
   emitKeypressEvents(process.stdin);
   process.stdin.on("keypress", (str, key) => {
@@ -396,9 +590,15 @@ async function main() {
     switch (cmd) {
       case "/help": {
         console.log(
-          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact\n" +
+          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /cost\n" +
             "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
         );
+        return true;
+      }
+      case "/cost": {
+        console.log(`Session totals: ${(sessionInput / 1000).toFixed(1)}k in / ${(sessionOutput / 1000).toFixed(1)}k out`);
+        const estCost = (sessionInput * 0.14 + sessionOutput * 0.28) / 1_000_000;
+        console.log(`Estimated cost: $${estCost.toFixed(4)}`);
         return true;
       }
       case "/skills": {
@@ -585,7 +785,8 @@ async function main() {
 
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
       sessionUserInputs.push(input);
-      const result = await runAgent(input, {
+      const processed = await processAtMentions(input);
+      const result = await runAgent(processed, {
         provider,
         tools,
         executeTool,

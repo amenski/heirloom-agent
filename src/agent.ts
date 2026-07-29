@@ -46,6 +46,7 @@ export interface AgentOptions {
   onCompacted?: (msg: string) => void;
   onLoopDetected?: (msg: string) => void;
   onMaxTurns?: (messages: Message[]) => void;
+  onUsage?: (input: number, output: number) => void;
   askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
 }
 
@@ -105,6 +106,9 @@ export async function runAgent(
           if (entry) entry.args += event.arguments;
           break;
         }
+        case "usage":
+          options.onUsage?.(event.inputTokens, event.outputTokens);
+          break;
         case "done":
           break;
       }
