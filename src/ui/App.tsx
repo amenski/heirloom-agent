@@ -154,7 +154,7 @@ export default function App({ ctx }: { ctx: AppContext }) {
               continue;
             }
 
-            pushOutput(line);
+            scheduleOutput(line);
           }
           textBuffer = rawLines[rawLines.length - 1];
           if (codeBlockRef.current.active) {
@@ -165,7 +165,7 @@ export default function App({ ctx }: { ctx: AppContext }) {
           }
         },
         onToolStart: (name: string, args: Record<string, unknown>) => {
-          if (activeLineRef.current) pushOutput(activeLineRef.current);
+          if (activeLineRef.current) scheduleOutput(activeLineRef.current);
           setActiveLineBoth("");
           if (SILENT_TOOLS.has(name)) {
             textBuffer = "";
@@ -174,21 +174,21 @@ export default function App({ ctx }: { ctx: AppContext }) {
           const desc = describeToolCall(name, args);
           const dim = ctx.getColorEnabled() ? "\x1b[2m" : "";
           const reset = ctx.getColorEnabled() ? "\x1b[0m" : "";
-          pushOutput(`${dim}  ${desc}${reset}`);
+          scheduleOutput(`${dim}  ${desc}${reset}`);
           textBuffer = "";
         },
         onToolResult: (_name: string, result: { content: string; error?: string }) => {
           if (result.content?.startsWith("PERMISSION_DENIED")) {
-            pushOutput("  Permission denied");
+            scheduleOutput("  Permission denied");
           } else if (result.content?.startsWith("COMMAND_FAILED")) {
-            pushOutput(`  Command failed: ${result.content.slice(16)}`);
+            scheduleOutput(`  Command failed: ${result.content.slice(16)}`);
           }
         },
         onDiagnostic: () => {},
         onRetry: () => {},
         onCompacted: () => {},
-        onLoopDetected: (m: string) => { pushOutput(`[${m}]`); },
-        onMaxTurns: () => { pushOutput("[max turns reached. Session saved.]"); },
+        onLoopDetected: (m: string) => { scheduleOutput(`[${m}]`); },
+        onMaxTurns: () => { scheduleOutput("[max turns reached. Session saved.]"); },
         onUsage: () => { setStatusLine(ctx.buildStatusBar()); },
         onNewMessages: async (userInput: string, newMessages: any[]) => {
           await ctx.sessionStore.appendMessage(ctx.sessionId, { role: "user", content: userInput });
@@ -204,7 +204,7 @@ export default function App({ ctx }: { ctx: AppContext }) {
         askUser: async (toolName: string, args: Record<string, unknown>) => {
           if (["edit", "edit_file", "write_to_file", "write", "search_replace", "apply_diff", "apply_patch"].includes(toolName)) {
             const preview = previewEdit(toolName, args);
-            if (preview) pushOutput(preview);
+            if (preview) scheduleOutput(preview);
           }
           return new Promise<boolean>((resolve) => {
             setAskPrompt({ resolve, toolName, args });
@@ -214,6 +214,9 @@ export default function App({ ctx }: { ctx: AppContext }) {
 
       try {
         const result = await ctx.runAgentTurnCore(input, callbacks);
+
+        // Drain queued output before final items so order is preserved
+        flushOutputQueue();
 
         if (codeBlockRef.current.active && codeBlockRef.current.lines.length > 0) {
           pushOutput(codeBlockRef.current.lines.join("\n"));
@@ -228,8 +231,10 @@ export default function App({ ctx }: { ctx: AppContext }) {
           await callbacks.onNewMessages(input, result.newMessages);
         }
       } catch (err) {
+        flushOutputQueue();
         pushOutput(`Error: ${(err as Error).message}`);
       } finally {
+        stopFlushTimer();
         setBusy(false);
         stopSpinner();
         codeBlockRef.current = { active: false, lines: [] };
