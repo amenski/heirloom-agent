@@ -206,6 +206,32 @@ function truncateContent(content: string, maxLen: number): string {
   return content.slice(0, maxLen) + `\n... (truncated at ${maxLen} chars)`;
 }
 
+// Colors are only ever emitted on an interactive TTY with NO_COLOR unset — piped/headless
+// output must stay byte-for-byte plain (tests and pipelines grep it).
+const colorEnabled = !!process.stdout.isTTY && !process.env.NO_COLOR;
+const ansi = {
+  dim: (s: string) => (colorEnabled ? `\x1b[2m${s}\x1b[0m` : s),
+  bold: (s: string) => (colorEnabled ? `\x1b[1m${s}\x1b[0m` : s),
+  blue: (s: string) => (colorEnabled ? `\x1b[34m${s}\x1b[0m` : s),
+  blueBold: (s: string) => (colorEnabled ? `\x1b[1;34m${s}\x1b[0m` : s),
+  bright: (s: string) => (colorEnabled ? `\x1b[97m${s}\x1b[0m` : s),
+  orange: (s: string) => (colorEnabled ? `\x1b[38;5;208m${s}\x1b[0m` : s),
+  orangeBold: (s: string) => (colorEnabled ? `\x1b[1;38;5;208m${s}\x1b[0m` : s),
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  deepseek: "DeepSeek",
+  deepseek_reasoner: "DeepSeek",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  groq: "Groq",
+  ollama: "Ollama",
+};
+
+function getProviderLabel(name: string): string {
+  return PROVIDER_LABELS[name] ?? name;
+}
+
 async function processAtMentions(input: string): Promise<string> {
   const atRegex = /@([^\s]+)/g;
   let result = input;
@@ -634,14 +660,39 @@ async function main() {
   if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
 
+  // Accent-rail prompt: mode/model/approval info now lives in renderPromptHeader(),
+  // not the prompt line itself (readline needs a single-line prompt for correct
+  // backspace/history behavior).
   function getPrompt(): string {
-    if (!activeMode) return "heirloom > ";
-    let p = `heirloom [${activeMode.name}`;
-    if (permissions.approvalMode !== "manual") {
-      p += ` \u26A1${permissions.approvalMode}`;
+    if (!colorEnabled) return "heirloom > ";
+    return `${ansi.blue("\u258C")} ${ansi.blue("\u203A")} `;
+  }
+
+  let shownTip = false;
+
+  function renderPromptHeader(): void {
+    if (!colorEnabled) return;
+
+    const modeName = activeMode?.name ?? "chat";
+    const modelName = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
+    const providerLabel = getProviderLabel(providerName);
+    console.log(
+      `  ${ansi.blueBold(modeName)} ${ansi.dim("\u00B7")} ${ansi.bright(modelName)} ${ansi.dim("\u00B7")} ${ansi.dim(providerLabel)}`,
+    );
+
+    const hints: string[] = [
+      `${ansi.bright("shift+tab")} ${ansi.dim("approve")}`,
+      `${ansi.bright("esc")} ${ansi.dim("abort")}`,
+      `${ansi.bright("/help")}`,
+    ];
+    console.log(`  ${hints.join(`  ${ansi.dim("\u00B7")}  `)}`);
+    console.log("");
+
+    if (!shownTip) {
+      shownTip = true;
+      console.log(`  ${ansi.orange("\u25CF")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands")}`);
+      console.log("");
     }
-    p += "] > ";
-    return p;
   }
   console.log("heirloom — type /exit to quit, /help for help\n");
 
@@ -669,6 +720,11 @@ async function main() {
         const modes: ApprovalMode[] = ["manual", "edits", "all"];
         const idx = modes.indexOf(permissions.approvalMode);
         permissions.setApprovalMode(modes[(idx + 1) % modes.length]);
+        // onKeypress is only attached while an agent turn is running (see
+        // process.stdin.on("keypress", ...) below), so there is no live rl.question
+        // prompt line to repaint here — the status line header is redrawn on the next
+        // rl.question call instead. Keep the in-place line redraw as a harmless no-op
+        // fallback for the line readline is tracking.
         process.stdout.write(`\r${getPrompt()}${(rl as any).line}`);
       }
     }
@@ -885,6 +941,7 @@ async function main() {
 
     let input: string | null = null;
     try {
+      renderPromptHeader();
       input = await rl.question(getPrompt());
     } catch {
       // Ctrl+D (EOF) — rl.question rejects when interface closes
