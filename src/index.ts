@@ -1,6 +1,6 @@
 import * as readline from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -25,8 +25,6 @@ import { connectMCPServers } from "./mcp/connector.js";
 import type { Message } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-process.stdout.write("\x1b[?2004h");
 
 let pasteBuffer = "";
 let inPaste = false;
@@ -294,19 +292,37 @@ async function main() {
       { name: "anthropic", key: "ANTHROPIC_API_KEY" },
       { name: "groq", key: "GROQ_API_KEY" },
       { name: "together", key: "TOGETHER_API_KEY" },
-      { name: "ollama", key: "" },
     ];
     for (const p of envProviders) {
-      if (!p.key || process.env[p.key]) return p.name;
+      if (process.env[p.key]) return p.name;
     }
     return null;
   }
 
+  function hasAnyKey(): boolean {
+    if (detectProvider()) return true;
+    try {
+      const credsPath = join(homedir(), ".heirloom", "credentials.yaml");
+      if (existsSync(credsPath)) {
+        const creds = load(readFileSync(credsPath, "utf-8")) as Record<string, unknown>;
+        const providers = (creds.providers as Record<string, unknown>) || {};
+        return Object.values(providers).some((p: unknown) => (p as Record<string, unknown>)?.apiKey);
+      }
+    } catch {}
+    return false;
+  }
+
+  const detected = detectProvider();
   let providerName =
     process.env.HEIRLOOM_PROVIDER ||
     configResult.config.provider ||
-    detectProvider() ||
+    detected ||
     "deepseek";
+
+  if (!detected && !configResult.config.provider && !process.env.HEIRLOOM_PROVIDER && !args.prompt) {
+    console.log("No API keys found. Run `heirloom auth` to configure a provider, or set an API key env var.");
+    console.log("Supported keys: DEEPSEEK_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY\n");
+  }
   let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
 
   function getProvider() {
@@ -451,16 +467,21 @@ async function main() {
   let sessionOutput = 0;
 
   async function logSessionEnd() {
-    const { summary, files } = getCompactor().getLastCompaction();
-    const decisions = extractDecisions(summary);
-    if (sessionUserInputs.length > 0 || files.length > 0 || summary) {
-      await memoryStore.appendSession({
-        date: new Date().toISOString().slice(0, 10),
-        tasks: [...sessionUserInputs],
-        decisions,
-        files,
-        summary: summary ?? undefined,
-      });
+    try {
+      const compactor = getCompactor();
+      const { summary, files } = compactor.getLastCompaction();
+      const decisions = extractDecisions(summary);
+      if (sessionUserInputs.length > 0 || files.length > 0 || summary) {
+        await memoryStore.appendSession({
+          date: new Date().toISOString().slice(0, 10),
+          tasks: [...sessionUserInputs],
+          decisions,
+          files,
+          summary: summary ?? undefined,
+        });
+      }
+    } catch {
+      // Session logging is best-effort; ignore errors on exit
     }
   }
 
@@ -607,6 +628,7 @@ async function main() {
     });
   }
 
+  if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
 
   function getPrompt(): string {
@@ -660,7 +682,7 @@ async function main() {
       case "/help": {
         console.log(
           "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /model <provider/model>, /cost\n" +
-            "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
+            "Use `heirloom auth` to configure a provider, or set a *_API_KEY env var.",
         );
         return true;
       }
