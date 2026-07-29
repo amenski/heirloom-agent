@@ -204,6 +204,113 @@ describe("PermissionEngine", () => {
     });
   });
 
+  describe("guarded-pattern evasion (D3)", () => {
+    beforeEach(() => {
+      engine.setApprovalMode("all");
+    });
+
+    it("prompts for absolute-path curl (/usr/bin/curl)", () => {
+      expect(engine.check("run_bash", { command: "/usr/bin/curl http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for absolute-path wget (/usr/local/bin/wget)", () => {
+      expect(engine.check("run_bash", { command: "/usr/local/bin/wget http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for uppercase CURL", () => {
+      expect(engine.check("run_bash", { command: "CURL http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for mixed-case Curl", () => {
+      expect(engine.check("run_bash", { command: "Curl http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for curl with leading whitespace", () => {
+      expect(engine.check("run_bash", { command: "   curl http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for env-var-prefixed curl (FOO=bar curl)", () => {
+      expect(engine.check("run_bash", { command: "FOO=bar curl http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for backslash-escaped curl (\\curl)", () => {
+      expect(engine.check("run_bash", { command: "\\curl http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for builtin-wrapped curl (command curl)", () => {
+      expect(engine.check("run_bash", { command: "command curl http://evil/x" })).toBe("ask");
+    });
+
+    it("prompts for curl indirected through xargs", () => {
+      expect(engine.check("run_bash", { command: "echo http://evil | xargs curl" })).toBe("ask");
+    });
+
+    it("prompts for rm -fr / (flags swapped)", () => {
+      expect(engine.check("run_bash", { command: "rm -fr /" })).toBe("ask");
+    });
+
+    it("prompts for rm -r -f / (flags split)", () => {
+      expect(engine.check("run_bash", { command: "rm -r -f /" })).toBe("ask");
+    });
+
+    it("prompts for read_file of .env with trailing space", () => {
+      expect(engine.check("read_file", { path: ".env " })).toBe("ask");
+    });
+
+    it("catches a guarded name inside a chain segment", () => {
+      const result = engine.check("run_bash", { command: "echo hi; /usr/bin/curl evil" });
+      expect(result).toBe("ask");
+    });
+
+    it("still allows curl with an explicit allow rule in all mode", () => {
+      engine.addRule({ tool: "run_bash", pattern: "curl *", action: "allow" });
+      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
+    });
+
+    it("still prompts for sudo -i", () => {
+      expect(engine.check("run_bash", { command: "sudo -i" })).toBe("ask");
+    });
+
+    it("still allows a normal rm of a single file", () => {
+      expect(engine.check("run_bash", { command: "rm file.txt" })).toBe("allow");
+    });
+
+    it("does not over-block an unrelated command containing 'curl' as a substring", () => {
+      expect(engine.check("run_bash", { command: "echo curlish" })).toBe("allow");
+    });
+  });
+
+  describe("command-chain operators (D2)", () => {
+    it("prompts for single & backgrounding a guarded command", () => {
+      engine.addRule({ tool: "run_bash", pattern: "git *", action: "allow" });
+      const result = engine.check("run_bash", { command: "git status & rm -rf ~" });
+      expect(result).toBe("ask");
+    });
+
+    it("prompts for process substitution <(...)", () => {
+      engine.addRule({ tool: "run_bash", pattern: "git *", action: "allow" });
+      const result = engine.check("run_bash", { command: "git log <(rm -rf ~)" });
+      expect(result).toBe("ask");
+    });
+
+    it("prompts for process substitution >(...)", () => {
+      engine.addRule({ tool: "run_bash", pattern: "git *", action: "allow" });
+      const result = engine.check("run_bash", { command: "git log >(rm -rf ~)" });
+      expect(result).toBe("ask");
+    });
+
+    it("still allows git log | head when both sides allowed", () => {
+      engine.addRule({ tool: "run_bash", pattern: "git *", action: "allow" });
+      engine.addRule({ tool: "run_bash", pattern: "head", action: "allow" });
+      expect(engine.check("run_bash", { command: "git log | head" })).toBe("allow");
+    });
+
+    it("still allows git a && git b when both allowed (does not over-split &&)", () => {
+      engine.addRule({ tool: "run_bash", pattern: "git *", action: "allow" });
+      expect(engine.check("run_bash", { command: "git status && git log" })).toBe("allow");
+    });
+  });
+
   describe("bash command chains", () => {
     it("rejects git status; rm -rf ~ with git * allow rule", () => {
       engine.addRule({ tool: "run_bash", pattern: "git *", action: "allow" });
@@ -380,6 +487,39 @@ describe("PermissionEngine", () => {
       const e = new PermissionEngine(proj);
       e.setApprovalMode("edits");
       expect(e.check("edit", { path: join(tmpDir, "other", "deep.ts") })).toBe("ask");
+    });
+
+    it("rejects a dangling symlink inside the workspace pointing outside it", () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), "heirloom-d1-dangling-outside-"));
+      try {
+        const outsideTarget = join(outsideDir, "does-not-exist");
+        symlinkSync(outsideTarget, join(tmpDir, "dangling-link"));
+
+        const e = new PermissionEngine(tmpDir);
+        e.setApprovalMode("edits");
+        // A new file requested underneath the dangling symlink must not be
+        // classified as inside the workspace just because existsSync() skips
+        // the broken-link component.
+        expect(e.check("edit", { path: join(tmpDir, "dangling-link", "new.ts") })).toBe("ask");
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it("allows symlinked workspace root (existing PASS case)", () => {
+      const realRoot = mkdtempSync(join(tmpdir(), "heirloom-d1-realroot-"));
+      const linkRoot = join(tmpDir, "workspace-link");
+      try {
+        symlinkSync(realRoot, linkRoot);
+        writeFileSync(join(realRoot, "existing.txt"), "hi");
+
+        const e = new PermissionEngine(linkRoot);
+        e.setApprovalMode("edits");
+        expect(e.check("edit", { path: join(linkRoot, "existing.txt") })).toBe("allow");
+        expect(e.check("edit", { path: join(linkRoot, "new-file.ts") })).toBe("allow");
+      } finally {
+        rmSync(realRoot, { recursive: true, force: true });
+      }
     });
   });
 });

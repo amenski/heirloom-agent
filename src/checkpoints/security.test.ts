@@ -67,6 +67,30 @@ describe("checkpoint secret handling", () => {
     expect(envFiles).toHaveLength(0);
   });
 
+  it("excludes .env from the shadow repo even when the workspace has NO .gitignore at all (D4 backstop)", async () => {
+    // Simulate a workspace that never had a .gitignore: remove it and
+    // re-commit the removal so the shadow repo's --work-tree sees a
+    // workspace with no gitignore forwarding whatsoever.
+    rmSync(join(workspaceDir, ".gitignore"));
+    execSync("git add -A && git commit -m 'remove gitignore'", {
+      cwd: workspaceDir,
+      stdio: "pipe",
+    });
+
+    const mgr = await chkptManager();
+    const hash = await mgr.save("no-gitignore-checkpoint");
+    expect(hash).toBeTruthy();
+
+    const tracked = execSync(
+      `git --git-dir="${shadowGitDir()}" ls-files`,
+      { encoding: "utf-8", stdio: "pipe" },
+    ).trim();
+    const files = tracked.split("\n").filter(Boolean);
+
+    expect(files).toContain("app.ts");
+    expect(files).not.toContain(".env");
+  });
+
   it("restore does not recreate gitignored .env that was never tracked", async () => {
     const mgr = await chkptManager();
 

@@ -39,6 +39,14 @@ export class CheckpointManager {
         "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.webp",
         "*.mp3", "*.mp4", "*.avi", "*.mov",
         "*.ttf", "*.otf", "*.woff", "*.woff2",
+        // Secret-adjacent backstop: excluded regardless of the workspace's own
+        // .gitignore (which the shadow repo otherwise relies on via
+        // --work-tree). Defense-in-depth only — this reduces but does not
+        // eliminate T3 (session transcripts are still plaintext elsewhere).
+        ".env", ".env.*", "*.pem", "*.key", "id_rsa", "id_rsa.*",
+        "id_dsa*", "id_ecdsa*", "id_ed25519*",
+        "credentials.yaml", "credentials.json",
+        ".aws/**", ".ssh/**", "*.p12", "*.pfx",
         "",
       ].join("\n");
 
