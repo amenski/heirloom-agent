@@ -3,10 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "heirloom": "dist/index.js"
+  },
   "scripts": {
+    "build": "tsup",
     "start": "tsx src/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
     "js-yaml": "^5.2.2",
@@ -15,6 +20,7 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "tsup": "^8.5.1",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"

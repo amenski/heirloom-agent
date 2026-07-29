@@ -5,11 +5,12 @@ import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
-import { initPresets, createProvider, setConfigProviders } from "./providers/presets.js";
+import { initPresets, createProvider, setConfigProviders, getPreset } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine, type ApprovalMode, type PermissionAction } from "./permissions/index.js";
+import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
@@ -20,6 +21,7 @@ import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import { loadConfig, type PermissionConfigValue } from "./config/loader.js";
 import { enableDebug } from "./debug/logger.js";
+import { connectMCPServers } from "./mcp/connector.js";
 import type { Message } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -167,7 +169,7 @@ async function runDoctor(): Promise<void> {
 const SLASH_COMMANDS = [
   "/help", "/exit", "/clear", "/mode", "/approve", "/compact",
   "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new",
-  "/skills", "/skill", "/modes"
+  "/skills", "/skill", "/modes", "/model"
 ];
 
 function completer(line: string): [string[], string] {
@@ -254,6 +256,10 @@ async function main() {
     setConfigProviders(configResult.config.providers);
   }
 
+  if (configResult.config.mcp) {
+    await connectMCPServers(configResult.config.mcp);
+  }
+
   function feedPermissions(engine: PermissionEngine, perms: Record<string, PermissionConfigValue>): void {
     for (const [tool, value] of Object.entries(perms)) {
       if (typeof value === "string") {
@@ -280,11 +286,9 @@ async function main() {
     process.exit(0);
   }
 
-  const providerName = process.env.HEIRLOOM_PROVIDER || configResult.config.provider || "deepseek";
-  const provider = createProvider(
-    providerName,
-    args.model ?? configResult.config.model ?? undefined,
-  );
+  let providerName = process.env.HEIRLOOM_PROVIDER || configResult.config.provider || "deepseek";
+  let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
+  let provider = createProvider(providerName, activeModel);
 
   const capabilities = getProviderCapabilities(providerName);
   if (!capabilities.supportsTools) {
@@ -311,6 +315,14 @@ async function main() {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<boolean> {
+    const editTools = ["edit", "edit_file", "write_to_file", "write", "search_replace", "apply_diff", "apply_patch"];
+    if (editTools.includes(toolName)) {
+      const preview = previewEdit(toolName, args);
+      if (preview) {
+        process.stderr.write(preview + "\n\n");
+      }
+    }
+
     const rlAsk = readline.createInterface({ input: process.stdin, output: process.stdout });
     const argStr = JSON.stringify(args);
     const promptStr = `  ${toolName} ${argStr}\n  Allow? (y)es once · (a)llow for session · (n)o  `;
@@ -371,16 +383,16 @@ async function main() {
     } else {
       sessionId = await sessionStore.create({
         cwd: process.cwd(),
-        provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-        model: args.model || "deepseek-chat",
+        provider: providerName,
+        model: activeModel || getPreset(providerName)?.defaultModel || "deepseek-chat",
         mode: args.mode || "code",
       });
     }
   } else {
     sessionId = await sessionStore.create({
       cwd: process.cwd(),
-      provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-      model: args.model || "deepseek-chat",
+      provider: providerName,
+      model: activeModel || getPreset(providerName)?.defaultModel || "deepseek-chat",
       mode: args.mode || "code",
     });
   }
@@ -441,9 +453,13 @@ async function main() {
   let abortController = new AbortController();
   let agentRunning = false;
 
+  let firstTokenReceived = false;
+  let activeSpinner: ReturnType<typeof setInterval> | null = null;
+
   const headlessCallbacks = {
     onText: (c: string) => process.stdout.write(c),
     onToolStart: () => {},
+    onToolResult: () => {},
     onDiagnostic: (m: string) => process.stderr.write(`[diagnostics: ${m}]\n`),
     onRetry: () => {},
     onCompacted: (m: string) => process.stderr.write(`[compacted: ${m}]\n`),
@@ -455,9 +471,29 @@ async function main() {
   };
 
   const interactiveCallbacks = {
-    onText: (c: string) => process.stdout.write(c),
+    onText: (c: string) => {
+      if (!firstTokenReceived) {
+        if (activeSpinner) { clearInterval(activeSpinner); activeSpinner = null; }
+        process.stderr.write("\r\x1b[K");
+        firstTokenReceived = true;
+      }
+      process.stdout.write(c);
+    },
     onToolStart: (name: string, args: Record<string, unknown>) =>
-      console.log(`  [${name}] ${JSON.stringify(args).slice(0, 120)}`),
+      process.stderr.write(`\x1b[2m  [${name}] ${JSON.stringify(args).slice(0, 120)}\x1b[0m\n`),
+    onToolResult: (name: string, result: { content: string; error?: string }) => {
+      if (result.error) {
+        process.stderr.write(`\x1b[31m  ${name} error: ${result.error}\x1b[0m\n`);
+        return;
+      }
+      if (result.content?.startsWith("PERMISSION_DENIED")) {
+        process.stderr.write(`\x1b[31m  Permission denied\x1b[0m\n`);
+      }
+      if (result.content?.startsWith("COMMAND_FAILED")) {
+        const detail = result.content.slice(16);
+        process.stderr.write(`\x1b[31m  Command failed: ${detail}\x1b[0m\n`);
+      }
+    },
     onDiagnostic: (m: string) => console.log(`  [diagnostics: ${m}]`),
     onRetry: (m: string) => console.log(`    [self-reflection: ${m}]`),
     onCompacted: (m: string) => console.log(`  [compacted: ${m}]`),
@@ -590,7 +626,7 @@ async function main() {
     switch (cmd) {
       case "/help": {
         console.log(
-          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /cost\n" +
+          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /model <provider/model>, /cost\n" +
             "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
         );
         return true;
@@ -672,6 +708,40 @@ async function main() {
         console.log("Not yet implemented. Compaction runs automatically.");
         return true;
       }
+      case "/model": {
+        const modelArg = input.slice(7).trim();
+        if (!modelArg) {
+          console.log(`Current: ${providerName}/${activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown"}`);
+          console.log("Usage: /model <provider/model>");
+          return true;
+        }
+        const slashIdx = modelArg.indexOf("/");
+        if (slashIdx < 0) {
+          console.log("Invalid format. Use: /model <provider/model>");
+          return true;
+        }
+        const provName = modelArg.slice(0, slashIdx);
+        const modelName = modelArg.slice(slashIdx + 1);
+        try {
+          const capabilities = getProviderCapabilities(provName);
+          if (!capabilities.supportsTools) {
+            console.log(`Error: '${modelName}' does not support tool calls.`);
+            return true;
+          }
+          provider = createProvider(provName, modelName);
+          providerName = provName;
+          activeModel = modelName;
+          sessionStore.appendState(sessionId, {
+            model: modelName,
+            provider: provName,
+            changedAt: Date.now(),
+          });
+          console.log(`Model changed to ${provName}/${modelName}`);
+        } catch (e) {
+          console.log(`Error: ${(e as Error).message}`);
+        }
+        return true;
+      }
       case "/checkpoint": {
         const hash = await checkpoints.save("manual checkpoint");
         if (hash) {
@@ -734,8 +804,8 @@ async function main() {
         conversationHistory = [];
         sessionId = await sessionStore.create({
           cwd: process.cwd(),
-          provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-          model: args.model || "deepseek-chat",
+          provider: providerName,
+          model: activeModel || getPreset(providerName)?.defaultModel || "deepseek-chat",
           mode: activeMode?.slug || "code",
         });
         checkpoints = new CheckpointManager(sessionId);
@@ -786,6 +856,15 @@ async function main() {
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
       sessionUserInputs.push(input);
       const processed = await processAtMentions(input);
+
+      firstTokenReceived = false;
+      const loadingChars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+      let loadingCharIdx = 0;
+      activeSpinner = setInterval(() => {
+        process.stderr.write(`\r  \x1b[2m${loadingChars[loadingCharIdx]}\x1b[0m`);
+        loadingCharIdx = (loadingCharIdx + 1) % loadingChars.length;
+      }, 100);
+
       const result = await runAgent(processed, {
         provider,
         tools,
@@ -817,6 +896,8 @@ async function main() {
       console.error(`\nError: ${(err as Error).message}`);
     } finally {
       agentRunning = false;
+      if (activeSpinner) { clearInterval(activeSpinner); activeSpinner = null; }
+      if (!firstTokenReceived) process.stderr.write("\r\x1b[K");
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
     }
     console.log("");

@@ -25,10 +25,11 @@ export interface KeybindingConfig {
   "cycle-mode"?: string;
 }
 
-export interface McpServerConfig {
-  type: "local";
-  command: string[];
-  enabled: boolean;
+export interface MCPEntry {
+  enabled?: boolean;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
 }
 
 export type PermissionConfigValue = string | Record<string, string>;
@@ -41,7 +42,7 @@ export interface HeirloomConfig {
   compaction?: CompactionConfig;
   contextWindow?: number;
   keybindings?: KeybindingConfig;
-  mcp?: Record<string, McpServerConfig>;
+  mcp?: Record<string, MCPEntry>;
 }
 
 export interface LoadResult {
@@ -263,7 +264,46 @@ export function loadConfig(projectDir?: string): LoadResult {
 
   if ("mcp" in merged) {
     if (isObject(merged.mcp)) {
-      config.mcp = merged.mcp as Record<string, McpServerConfig>;
+      const entries = merged.mcp as Record<string, unknown>;
+      const validated: Record<string, MCPEntry> = {};
+      for (const [name, entry] of Object.entries(entries)) {
+        if (!isObject(entry)) {
+          errors.push(`config.mcp.${name}: must be an object`);
+          continue;
+        }
+        const e = entry as Record<string, unknown>;
+        if (typeof e.command !== "string") {
+          errors.push(`config.mcp.${name}.command: missing or not a string`);
+          continue;
+        }
+        const mcpEntry: MCPEntry = { command: e.command };
+        if (typeof e.enabled === "boolean") {
+          mcpEntry.enabled = e.enabled;
+        }
+        if (Array.isArray(e.args)) {
+          const args = e.args.filter((a): a is string => typeof a === "string");
+          if (args.length === e.args.length) {
+            mcpEntry.args = args;
+          } else {
+            errors.push(`config.mcp.${name}.args: all elements must be strings`);
+          }
+        } else if ("args" in e && e.args !== undefined) {
+          errors.push(`config.mcp.${name}.args: must be an array of strings`);
+        }
+        if (isObject(e.env)) {
+          const env: Record<string, string> = {};
+          for (const [ek, ev] of Object.entries(e.env as Record<string, unknown>)) {
+            if (typeof ev === "string") {
+              env[ek] = ev;
+            }
+          }
+          mcpEntry.env = env;
+        } else if ("env" in e && e.env !== undefined) {
+          errors.push(`config.mcp.${name}.env: must be an object`);
+        }
+        validated[name] = mcpEntry;
+      }
+      config.mcp = validated;
     } else {
       errors.push("config.mcp: must be an object");
     }

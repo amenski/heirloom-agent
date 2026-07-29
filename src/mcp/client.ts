@@ -1,3 +1,5 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import type { ToolDef, ToolOutput } from "../types.js";
 
 export interface McpServerConfig {
@@ -165,5 +167,92 @@ export async function callTool(
       };
     }
     return { content: "", error: (err as Error).message };
+  }
+}
+
+export class MCPClient {
+  private process: ChildProcess | null = null;
+  private requestId = 1;
+  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
+
+  async connect(command: string, args: string[], env?: Record<string, string>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.process = spawn(command, args, {
+        stdio: ["pipe", "pipe", "inherit"],
+        env: { ...process.env, ...env },
+      });
+
+      const rl = createInterface({ input: this.process.stdout!, historySize: 0 });
+
+      rl.on("line", (line: string) => {
+        try {
+          const response = JSON.parse(line) as JsonRpcResponse;
+          const pending = this.pending.get(response.id);
+          if (pending) {
+            this.pending.delete(response.id);
+            if (response.error) {
+              pending.reject(new Error(response.error.message));
+            } else {
+              pending.resolve(response.result);
+            }
+          }
+        } catch {
+          // ignore non-JSON lines
+        }
+      });
+
+      this.process.on("error", (err) => {
+        for (const [, pending] of this.pending) {
+          pending.reject(err);
+        }
+        this.pending.clear();
+        reject(err);
+      });
+
+      this.process.on("exit", (code) => {
+        if (this.process && this.process.exitCode !== null) return;
+        const msg = `MCP server exited with code ${code}`;
+        for (const [, pending] of this.pending) {
+          pending.reject(new Error(msg));
+        }
+        this.pending.clear();
+      });
+
+      this.sendRequest("initialize", {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "heirloom", version: "1.0.0" },
+      }).then(() => {
+        this.sendRequest("notifications/initialized", {});
+        resolve();
+      }).catch(reject);
+    });
+  }
+
+  private sendRequest<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+    if (!this.process || !this.process.stdin) {
+      return Promise.reject(new Error("MCP client not connected"));
+    }
+    return new Promise((resolve, reject) => {
+      const id = this.requestId++;
+      const request: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      this.process!.stdin!.write(JSON.stringify(request) + "\n");
+    });
+  }
+
+  async listTools(): Promise<McpTool[]> {
+    const result = await this.sendRequest<McpToolsListResult>("tools/list");
+    return result.tools;
+  }
+
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<McpToolCallResult> {
+    return this.sendRequest<McpToolCallResult>("tools/call", {
+      name,
+      arguments: args,
+    });
   }
 }

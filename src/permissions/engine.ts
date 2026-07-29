@@ -52,6 +52,14 @@ export class PermissionEngine {
     this._isHeadless = isHeadless;
   }
 
+  clone(): PermissionEngine {
+    const engine = new PermissionEngine(this._workingDir, this._isHeadless);
+    engine.rules = [...this.rules];
+    engine._approvalMode = this._approvalMode;
+    engine._sessionRules = [...this._sessionRules];
+    return engine;
+  }
+
   get approvalMode(): ApprovalMode {
     return this._approvalMode;
   }

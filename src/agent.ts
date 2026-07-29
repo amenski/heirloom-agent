@@ -41,6 +41,7 @@ export interface AgentOptions {
   history?: Message[];
   onText?: (chunk: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
+  onToolResult?: (name: string, result: ToolOutput) => void;
   onDiagnostic?: (msg: string) => void;
   onRetry?: (msg: string) => void;
   onCompacted?: (msg: string) => void;
@@ -188,6 +189,7 @@ export async function runAgent(
       }
 
       const result = await executeTool(tc);
+      options.onToolResult?.(tc.name, result);
 
       const callKey = `${tc.name}:${JSON.stringify(tc.arguments)}`;
       const callCount = (seenCalls.get(callKey) || 0) + 1;

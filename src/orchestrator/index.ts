@@ -5,6 +5,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { runAgent } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
+import { PermissionEngine, type ApprovalMode } from "../permissions/index.js";
 
 const NEW_TASK_DEF: ToolDef = {
   name: "new_task",
@@ -41,8 +42,16 @@ export interface OrchestratorOptions {
   registry: ToolRegistry;
   executeTool: (call: ToolCall) => Promise<ToolOutput>;
   modeLoader: ModeLoader;
+  permissions?: PermissionEngine;
   maxDepth?: number;
   maxSubTurns?: number;
+}
+
+function constrainApprovalMode(parent: ApprovalMode, child: ApprovalMode): ApprovalMode {
+  const levels: Record<ApprovalMode, number> = { manual: 0, edits: 1, all: 2 };
+  const maxAllowed = levels[parent] ?? 0;
+  const requested = levels[child] ?? 0;
+  return Object.keys(levels).find(k => levels[k as ApprovalMode] === Math.min(maxAllowed, requested)) as ApprovalMode;
 }
 
 export class Orchestrator {
@@ -53,6 +62,7 @@ export class Orchestrator {
     registry: ToolRegistry;
     executeTool: (call: ToolCall) => Promise<ToolOutput>;
     modeLoader: ModeLoader;
+    permissions?: PermissionEngine;
   };
 
   constructor(options: OrchestratorOptions) {
@@ -109,12 +119,26 @@ export class Orchestrator {
         return this.options.executeTool(call);
       };
 
+      const subPermissions = this.options.permissions
+        ? (() => {
+            const cloned = this.options.permissions!.clone();
+            cloned.setApprovalMode(
+              constrainApprovalMode(
+                this.options.permissions!.approvalMode,
+                cloned.approvalMode,
+              ),
+            );
+            return cloned;
+          })()
+        : undefined;
+
       try {
         const result = await runAgent(description, {
           provider: this.options.provider,
           tools: subTools,
           executeTool: subExecuteTool,
           compactor: subCompactor,
+          permissions: subPermissions,
           maxTurns: this.options.maxSubTurns,
           mode: subMode,
         });
