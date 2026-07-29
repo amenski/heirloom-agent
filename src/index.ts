@@ -1,4 +1,5 @@
 import * as readline from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
 import { readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -199,12 +200,14 @@ async function main() {
   const sessionStore = new SessionStore();
   let sessionId: string;
   let sessionMessages: Message[] = [];
+  let sessionLoaded = false;
 
   if (args.sessionId) {
     try {
       const loaded = await sessionStore.loadEffective(args.sessionId);
       sessionId = args.sessionId;
       sessionMessages = loaded.messages;
+      sessionLoaded = true;
     } catch {
       console.error(`Session not found: ${args.sessionId}`);
       process.exit(1);
@@ -216,6 +219,7 @@ async function main() {
       try {
         const loaded = await sessionStore.loadEffective(sessionId);
         sessionMessages = loaded.messages;
+        sessionLoaded = true;
       } catch (err) {
         console.error(`Failed to load session ${sessionId}: ${(err as Error).message}`);
         process.exit(1);
@@ -279,7 +283,13 @@ async function main() {
     }
   }
 
+  if (sessionLoaded) {
+    const modeLabel = activeMode?.slug || "code";
+    console.log(`Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${modeLabel}`);
+  }
+
   let abortController = new AbortController();
+  let agentRunning = false;
 
   const headlessCallbacks = {
     onText: (c: string) => process.stdout.write(c),
@@ -310,7 +320,7 @@ async function main() {
 
     try {
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
-      await runAgent(args.prompt, {
+      const result = await runAgent(args.prompt, {
         provider,
         tools,
         executeTool,
@@ -325,12 +335,10 @@ async function main() {
         sessionId,
         signal: abortController.signal,
         ...headlessCallbacks,
-        onMaxTurns: () => {
-          logSessionEnd().finally(() => process.exit(2));
-        },
       });
       await logSessionEnd();
-      process.exit(0);
+      const exitCode = result.stopReason === "done" ? 0 : result.stopReason === "max_turns" ? 2 : 1;
+      process.exit(exitCode);
     } catch (err) {
       try { await logSessionEnd(); } catch {}
       process.stderr.write(`Error: ${(err as Error).message}\n`);
@@ -340,14 +348,15 @@ async function main() {
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  const prompt = () => {
-    let p = activeMode ? `heirloom [${activeMode.name}` : "heirloom [";
+  function getPrompt(): string {
+    if (!activeMode) return "heirloom > ";
+    let p = `heirloom [${activeMode.name}`;
     if (permissions.approvalMode !== "manual") {
       p += ` \u26A1${permissions.approvalMode}`;
     }
-    p += activeMode ? "] > " : "] > ";
+    p += "] > ";
     return p;
-  };
+  }
   console.log("heirloom — type /exit to quit, /help for help\n");
 
   process.on("SIGINT", () => {
@@ -359,12 +368,202 @@ async function main() {
     logSessionEnd().finally(() => process.exit(0));
   });
 
+  emitKeypressEvents(process.stdin);
+  process.stdin.on("keypress", (str, key) => {
+    if (key.name === "escape") {
+      if (agentRunning) abortController.abort();
+    }
+    if (key.name === "c" && key.ctrl) {
+      if (agentRunning) abortController.abort();
+    }
+    if (key.name === "tab" && key.shift) {
+      if (!agentRunning) {
+        const modes: ApprovalMode[] = ["manual", "edits", "all"];
+        const idx = modes.indexOf(permissions.approvalMode);
+        permissions.setApprovalMode(modes[(idx + 1) % modes.length]);
+        process.stdout.write(`\rheirloom [${permissions.approvalMode}] > ${(rl as any).line}`);
+      }
+    }
+  });
+
+  rl.on("SIGINT", () => {
+    console.log("(use /exit or Ctrl+D to quit)");
+    rl.prompt();
+  });
+
+  async function handleSlash(input: string): Promise<boolean> {
+    const cmd = input.trim().split(/\s+/)[0];
+    switch (cmd) {
+      case "/help": {
+        console.log(
+          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact\n" +
+            "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
+        );
+        return true;
+      }
+      case "/skills": {
+        if (skills.length === 0) {
+          console.log("No skills available.");
+        } else {
+          for (const s of skills) {
+            console.log(`  ${s.name} — ${s.description || "no description"}`);
+          }
+        }
+        return true;
+      }
+      case "/skill": {
+        const name = input.slice(7).trim();
+        const skill = skills.find(s => s.name === name);
+        if (skill) {
+          console.log(skill.content);
+        } else {
+          console.log(`Unknown skill: ${name}. Try /skills to list available skills.`);
+        }
+        return true;
+      }
+      case "/clear": {
+        console.log("[cleared]");
+        conversationHistory = [];
+        return true;
+      }
+      case "/modes": {
+        const allModes = await modeLoader.listAll();
+        for (const m of allModes) {
+          console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`);
+        }
+        return true;
+      }
+      case "/mode": {
+        const slug = input.slice(6).trim();
+        const mode = await modeLoader.load(slug);
+        if (mode) {
+          activeMode = mode;
+          await sessionStore.appendState(sessionId, { mode: slug });
+          console.log(`Switched to ${mode.name} mode.`);
+        } else {
+          console.log(`Unknown mode: ${slug}. Try /modes to list available modes.`);
+        }
+        return true;
+      }
+      case "/approve": {
+        const mode = input.slice(8).trim();
+        if (mode === "manual" || mode === "edits" || mode === "all") {
+          permissions.setApprovalMode(mode);
+          if (mode === "all") {
+            console.log(`All edit tool calls will auto-approve within ${process.cwd()}. Deny rules still hold.`);
+          } else {
+            console.log(`Approval mode set to: ${mode}`);
+          }
+        } else if (mode === "") {
+          console.log(`Current approval mode: ${permissions.approvalMode}`);
+          const sessionRules = permissions.getSessionRules();
+          if (sessionRules.length > 0) {
+            console.log("Session rules:");
+            for (const r of sessionRules) {
+              console.log(`  ${r.tool} ${r.pattern || "*"} → ${r.action}`);
+            }
+          }
+        } else {
+          console.log("Usage: /approve [manual|edits|all]");
+        }
+        return true;
+      }
+      case "/compact": {
+        console.log("Not yet implemented. Compaction runs automatically.");
+        return true;
+      }
+      case "/checkpoint": {
+        const hash = await checkpoints.save("manual checkpoint");
+        if (hash) {
+          console.log(`Checkpoint saved: ${hash.slice(0, 7)}`);
+        } else {
+          console.log("No changes to save.");
+        }
+        return true;
+      }
+      case "/restore": {
+        if (input === "/restore files") {
+          const result = await checkpoints.restore("files");
+          if (result.restored) {
+            console.log(`Workspace restored to checkpoint ${result.checkpointHash!.slice(0, 7)}.`);
+          } else {
+            console.log("No checkpoints to restore from.");
+          }
+        } else if (input === "/restore full --yes") {
+          const result = await checkpoints.restore("full");
+          if (result.restored) {
+            console.log(`Workspace restored to checkpoint ${result.checkpointHash!.slice(0, 7)}.`);
+          } else {
+            console.log("No checkpoints to restore from.");
+          }
+        } else if (input === "/restore full") {
+          console.log("Full restore is destructive. Use /restore full --yes to confirm.");
+        } else {
+          console.log("Usage: /restore [files|full]");
+        }
+        return true;
+      }
+      case "/checkpoints": {
+        const entries = checkpoints.list();
+        if (entries.length === 0) {
+          console.log("No checkpoints recorded.");
+        } else {
+          for (const e of entries) {
+            console.log(`  ${e.hash.slice(0, 7)}  ${e.message}  (${e.timestamp})`);
+          }
+        }
+        return true;
+      }
+      case "/sessions": {
+        const sessions = await sessionStore.list();
+        if (sessions.length === 0) {
+          console.log("No sessions for this project.");
+        } else {
+          for (const s of sessions) {
+            const date = new Date(s.createdAt).toISOString().slice(0, 10);
+            const msgs = `${s.messageCount} msg${s.messageCount !== 1 ? "s" : ""}`;
+            const excerpt = s.firstMessage ? `  "${s.firstMessage}"` : "";
+            console.log(`  ${s.id}${excerpt}  ${msgs}  created ${date}`);
+          }
+        }
+        return true;
+      }
+      case "/new": {
+        await logSessionEnd();
+        sessionUserInputs.length = 0;
+        conversationHistory = [];
+        sessionId = await sessionStore.create({
+          cwd: process.cwd(),
+          provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
+          model: args.model || "deepseek-chat",
+          mode: activeMode?.slug || "code",
+        });
+        checkpoints = new CheckpointManager(sessionId);
+        setCheckpointManager(checkpoints);
+        setSessionId(sessionId);
+        console.log("New session started.");
+        return true;
+      }
+      default:
+        console.log(`Unknown command: ${cmd}\nType /help for available commands.`);
+        return true;
+    }
+  }
+
+  let conversationHistory: Message[] = [];
+
   while (true) {
     setSignal(abortController.signal);
 
-    const input = await rl.question(prompt());
-    if (input === null) {
+    let input: string | null = null;
+    try {
+      input = await rl.question(getPrompt());
+    } catch {
+      // Ctrl+D (EOF) — rl.question rejects when interface closes
+    }
+    if (input === null || input === undefined) {
       await logSessionEnd();
+      console.log("Bye.");
       break;
     }
     if (!input.trim()) continue;
@@ -375,167 +574,16 @@ async function main() {
       break;
     }
 
-    if (input === "/help") {
-      console.log(
-        "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /new\n" +
-          "Set HEIRLOOM_PROVIDER to choose provider (default: deepseek). Set DEEPSEEK_API_KEY to use the default.",
-      );
-      continue;
-    }
-
-    if (input === "/skills") {
-      if (skills.length === 0) {
-        console.log("No skills available.");
-      } else {
-        for (const s of skills) {
-          console.log(`  ${s.name} — ${s.description || "no description"}`);
-        }
-      }
-      continue;
-    }
-
-    if (input.startsWith("/skill ")) {
-      const name = input.slice(7).trim();
-      const skill = skills.find(s => s.name === name);
-      if (skill) {
-        console.log(skill.content);
-      } else {
-        console.log(`Unknown skill: ${name}. Try /skills to list available skills.`);
-      }
-      continue;
-    }
-
-    if (input === "/clear") {
-      console.log("[cleared]");
-      continue;
-    }
-
-    if (input === "/modes") {
-      const allModes = await modeLoader.listAll();
-      for (const m of allModes) {
-        console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`);
-      }
-      continue;
-    }
-
-    if (input.startsWith("/mode ")) {
-      const slug = input.slice(6).trim();
-      const mode = await modeLoader.load(slug);
-      if (mode) {
-        activeMode = mode;
-        await sessionStore.appendState(sessionId, { mode: slug });
-        console.log(`Switched to ${mode.name} mode.`);
-      } else {
-        console.log(`Unknown mode: ${slug}. Try /modes to list available modes.`);
-      }
-      continue;
-    }
-
-    if (input.startsWith("/approve")) {
-      const mode = input.slice(8).trim();
-      if (mode === "manual" || mode === "edits" || mode === "all") {
-        permissions.setApprovalMode(mode);
-        if (mode === "all") {
-          console.log(`All edit tool calls will auto-approve within ${process.cwd()}. Deny rules still hold.`);
-        } else {
-          console.log(`Approval mode set to: ${mode}`);
-        }
-      } else if (mode === "") {
-        console.log(`Current approval mode: ${permissions.approvalMode}`);
-        const sessionRules = permissions.getSessionRules();
-        if (sessionRules.length > 0) {
-          console.log("Session rules:");
-          for (const r of sessionRules) {
-            console.log(`  ${r.tool} ${r.pattern || "*"} → ${r.action}`);
-          }
-        }
-      } else {
-        console.log("Usage: /approve [manual|edits|all]");
-      }
-      continue;
-    }
-
-    if (input === "/checkpoint") {
-      const hash = await checkpoints.save("manual checkpoint");
-      if (hash) {
-        console.log(`Checkpoint saved: ${hash.slice(0, 7)}`);
-      } else {
-        console.log("No changes to save.");
-      }
-      continue;
-    }
-
-    if (input === "/restore files") {
-      const result = await checkpoints.restore("files");
-      if (result.restored) {
-        console.log(`Workspace restored to checkpoint ${result.checkpointHash!.slice(0, 7)}.`);
-      } else {
-        console.log("No checkpoints to restore from.");
-      }
-      continue;
-    }
-
-    if (input === "/restore full --yes") {
-      const result = await checkpoints.restore("full");
-      if (result.restored) {
-        console.log(`Workspace restored to checkpoint ${result.checkpointHash!.slice(0, 7)}.`);
-      } else {
-        console.log("No checkpoints to restore from.");
-      }
-      continue;
-    }
-
-    if (input === "/restore full") {
-      console.log("Full restore is destructive. Use /restore full --yes to confirm.");
-      continue;
-    }
-
-    if (input === "/checkpoints") {
-      const entries = checkpoints.list();
-      if (entries.length === 0) {
-        console.log("No checkpoints recorded.");
-      } else {
-        for (const e of entries) {
-          console.log(`  ${e.hash.slice(0, 7)}  ${e.message}  (${e.timestamp})`);
-        }
-      }
-      continue;
-    }
-
-    if (input === "/sessions") {
-      const sessions = await sessionStore.list();
-      if (sessions.length === 0) {
-        console.log("No sessions for this project.");
-      } else {
-        for (const s of sessions) {
-          const date = new Date(s.createdAt).toISOString().slice(0, 10);
-          const msgs = `${s.messageCount} msg${s.messageCount !== 1 ? "s" : ""}`;
-          const excerpt = s.firstMessage ? `  "${s.firstMessage}"` : "";
-          console.log(`  ${s.id}${excerpt}  ${msgs}  created ${date}`);
-        }
-      }
-      continue;
-    }
-
-    if (input === "/new") {
-      await logSessionEnd();
-      sessionUserInputs.length = 0;
-      sessionId = await sessionStore.create({
-        cwd: process.cwd(),
-        provider: process.env.HEIRLOOM_PROVIDER || "deepseek",
-        model: args.model || "deepseek-chat",
-        mode: activeMode?.slug || "code",
-      });
-      checkpoints = new CheckpointManager(sessionId);
-      setCheckpointManager(checkpoints);
-      setSessionId(sessionId);
-      console.log("New session started.");
-      continue;
+    if (input.startsWith("/")) {
+      const handled = await handleSlash(input);
+      if (handled) continue;
     }
 
     try {
+      agentRunning = true;
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
+
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
-      await sessionStore.appendMessage(sessionId, { role: "user", content: input });
       sessionUserInputs.push(input);
       const result = await runAgent(input, {
         provider,
@@ -551,16 +599,24 @@ async function main() {
         sessionStore,
         sessionId,
         signal: abortController.signal,
+        history: conversationHistory.length > 0 ? conversationHistory : undefined,
         ...interactiveCallbacks,
         askUser: interactiveAskUser,
       });
-      for (const msg of result.slice(2)) {
-        if (msg.role !== "system") {
-          await sessionStore.appendMessage(sessionId, msg);
+      conversationHistory = result.messages;
+      if (result.stopReason === "done") {
+        await sessionStore.appendMessage(sessionId, { role: "user", content: input });
+        for (const msg of result.newMessages) {
+          if (msg.role !== "system") {
+            await sessionStore.appendMessage(sessionId, msg);
+          }
         }
       }
     } catch (err) {
       console.error(`\nError: ${(err as Error).message}`);
+    } finally {
+      agentRunning = false;
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
     }
     console.log("");
   }

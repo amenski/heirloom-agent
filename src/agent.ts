@@ -14,6 +14,12 @@ import { buildSystemPrompt } from "./prompt.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
+export type AgentResult = {
+  messages: Message[];
+  newMessages: Message[];
+  stopReason: "done" | "aborted" | "max_turns";
+};
+
 export interface AgentOptions {
   provider: Provider;
   tools: ToolDef[];
@@ -32,6 +38,7 @@ export interface AgentOptions {
   sessionStore?: SessionStore;
   sessionId?: string;
   signal?: AbortSignal;
+  history?: Message[];
   onText?: (chunk: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
   onDiagnostic?: (msg: string) => void;
@@ -45,7 +52,7 @@ export interface AgentOptions {
 export async function runAgent(
   userMessage: string,
   options: AgentOptions,
-): Promise<Message[]> {
+): Promise<AgentResult> {
   const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20 } = options;
 
   const systemPrompt = await buildSystemPrompt({
@@ -57,15 +64,19 @@ export async function runAgent(
     conversation: userMessage,
   });
 
-  let messages: Message[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ];
+  const historyLen = options.history ? options.history.length : 0;
+  let messages: Message[] = options.history ? [...options.history] : [];
+  messages.push({ role: "system", content: systemPrompt });
+  messages.push({ role: "user", content: userMessage });
 
+  let stopReason: "done" | "aborted" | "max_turns" = "done";
   let turn = 0;
   let turnEnded = false;
   while (turn < maxTurns && !turnEnded) {
-    if (options.signal?.aborted) break;
+    if (options.signal?.aborted) {
+      stopReason = "aborted";
+      break;
+    }
     const seenCalls = new Map<string, number>();
     let failedStreak = 0;
     let warnedRepeat = false;
@@ -101,6 +112,7 @@ export async function runAgent(
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || (err as any).name === "AbortError")) {
         options.onDiagnostic?.("aborted by user");
+        stopReason = "aborted";
         break;
       }
       throw err;
@@ -281,8 +293,13 @@ export async function runAgent(
   }
 
   if (turn >= maxTurns) {
+    stopReason = "max_turns";
     options.onMaxTurns?.(messages);
   }
 
-  return messages;
+  return {
+    messages,
+    newMessages: messages.slice(historyLen + 2),
+    stopReason,
+  };
 }

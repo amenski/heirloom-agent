@@ -110,7 +110,7 @@ export class Orchestrator {
       };
 
       try {
-        const messages = await runAgent(description, {
+        const result = await runAgent(description, {
           provider: this.options.provider,
           tools: subTools,
           executeTool: subExecuteTool,
@@ -119,7 +119,7 @@ export class Orchestrator {
           mode: subMode,
         });
 
-        const summary = summarizeMessages(messages, description);
+        const summary = summarizeMessages(result.messages, description);
         return { content: summary };
       } catch (err) {
         return {
