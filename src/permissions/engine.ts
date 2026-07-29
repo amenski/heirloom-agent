@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { resolve, relative, dirname } from "node:path";
+import { realpathSync, existsSync } from "node:fs";
 
 export type PermissionAction = "allow" | "ask" | "deny";
 
@@ -38,6 +39,18 @@ function splitCommands(command: string): string[] {
 
 function hasSubshell(command: string): boolean {
   return /\$\(.*?\)/.test(command) || /`[^`]+`/.test(command);
+}
+
+function realpathUpToExisting(absPath: string): string {
+  if (existsSync(absPath)) return realpathSync(absPath);
+  let current = absPath;
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  const ancestorReal = realpathSync(current);
+  return ancestorReal + absPath.slice(current.length);
 }
 
 export class PermissionEngine {
@@ -225,8 +238,21 @@ export class PermissionEngine {
     if (!editTools.includes(tool)) return false;
     const path = args?.path as string;
     if (!path) return false;
-    const resolved = resolve(path);
-    return resolved.startsWith(this._workingDir);
+    const absPath = resolve(this._workingDir, path);
+    let targetReal: string;
+    try {
+      targetReal = realpathUpToExisting(absPath);
+    } catch {
+      return false;
+    }
+    let workspaceReal: string;
+    try {
+      workspaceReal = realpathUpToExisting(this._workingDir);
+    } catch {
+      return false;
+    }
+    const rel = relative(workspaceReal, targetReal);
+    return rel !== "" && !rel.startsWith("..");
   }
 
   static defaults(workingDir?: string, isHeadless = false): PermissionEngine {

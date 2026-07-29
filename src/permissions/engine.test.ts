@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { PermissionEngine } from "./engine.js";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("PermissionEngine", () => {
   let engine: PermissionEngine;
@@ -315,6 +318,68 @@ describe("PermissionEngine", () => {
 
       expect(child.check("edit", { path: "/custom-dir/src/foo.ts" })).toBe("allow");
       expect(child.check("edit", { path: "/other-dir/bar.ts" })).toBe("ask");
+    });
+  });
+
+  describe("path containment (D1)", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "heirloom-d1-"));
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("allows file within workspace", () => {
+      const e = new PermissionEngine(tmpDir);
+      writeFileSync(join(tmpDir, "test.txt"), "hello");
+      e.setApprovalMode("edits");
+      expect(e.check("edit", { path: join(tmpDir, "test.txt") })).toBe("allow");
+    });
+
+    it("rejects prefix collision: /x/proj vs /x/proj-evil", () => {
+      const proj = join(tmpDir, "proj");
+      const projEvil = join(tmpDir, "proj-evil");
+      mkdirSync(proj);
+      mkdirSync(projEvil);
+      writeFileSync(join(projEvil, "bad.txt"), "evil");
+
+      const e = new PermissionEngine(proj);
+      e.setApprovalMode("edits");
+      expect(e.check("edit", { path: join(projEvil, "bad.txt") })).toBe("ask");
+    });
+
+    it("rejects symlink pointing outside workspace", () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), "heirloom-d1-outside-"));
+      try {
+        writeFileSync(join(outsideDir, "secret.txt"), "secret");
+        symlinkSync(join(outsideDir, "secret.txt"), join(tmpDir, "link.txt"));
+
+        const e = new PermissionEngine(tmpDir);
+        e.setApprovalMode("edits");
+        expect(e.check("edit", { path: join(tmpDir, "link.txt") })).toBe("ask");
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it("allows not-yet-created file in existing subdir", () => {
+      mkdirSync(join(tmpDir, "subdir"));
+
+      const e = new PermissionEngine(tmpDir);
+      e.setApprovalMode("edits");
+      expect(e.check("edit", { path: join(tmpDir, "subdir", "new.ts") })).toBe("allow");
+    });
+
+    it("rejects file in not-yet-created deep path outside workspace", () => {
+      const proj = join(tmpDir, "proj");
+      mkdirSync(proj);
+
+      const e = new PermissionEngine(proj);
+      e.setApprovalMode("edits");
+      expect(e.check("edit", { path: join(tmpDir, "other", "deep.ts") })).toBe("ask");
     });
   });
 });
