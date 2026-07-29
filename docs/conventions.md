@@ -37,6 +37,17 @@
 - One concept per file. If a file exceeds 200 lines, split it.
 - `index.ts` files only re-export — no logic.
 
+## Documentation Workflow
+
+- `todo.md` is **untracked** working state (gitignored): checkmarks, audit
+  findings, acceptance-criteria drafts, agent instructions. Append to it;
+  never regenerate it wholesale.
+- `docs/` is the committed record. When a phase completes, promote what
+  matters: implementation decisions → the relevant spec (with a line in its
+  changelog/design-decisions section), AC tables → test descriptions.
+  Findings and checkmarks are ephemeral — they die with the todo.
+- Nothing in `docs/` may require reading `todo.md` to understand.
+
 ## Git
 
 ### Commits

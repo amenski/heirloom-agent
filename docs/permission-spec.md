@@ -5,6 +5,10 @@ across architecture.md Layer 5 and config-spec.md) plus **approval modes** —
 the session-level overlay that makes the agent usable without editing YAML
 mid-session (Claude Code's permission-modes pattern).
 
+Threat model and known permission-engine defects: [security-spec.md](./security-spec.md).
+Guarded patterns (always-prompt, not upgradeable by approval modes) are
+defined there and take precedence over the resolution table below.
+
 ---
 
 ## Two Orthogonal Axes
