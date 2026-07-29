@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import yaml from "js-yaml";
+import { load } from "js-yaml";
 
 export interface ProviderModelConfig {
   contextWindow: number;
@@ -92,7 +92,7 @@ function resolveHome(): string {
 function loadYamlFile(path: string): Record<string, unknown> | null {
   try {
     const content = readFileSync(path, "utf-8");
-    const parsed = yaml.load(content);
+    const parsed = load(content);
     if (parsed === null || parsed === undefined) return {};
     if (!isObject(parsed)) {
       throw new Error(`config file "${path}" must be a YAML mapping, got ${typeof parsed}`);

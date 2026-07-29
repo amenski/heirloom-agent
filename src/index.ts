@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import yaml from "js-yaml";
+import { load } from "js-yaml";
 import { initPresets, createProvider, setConfigProviders, getPreset } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
@@ -140,7 +140,7 @@ async function runDoctor(): Promise<void> {
     : (() => {
         try {
           const credsStr = readFileSync(join(homedir(), ".heirloom", "credentials.yaml"), "utf-8");
-          const creds = yaml.load(credsStr) as any;
+          const creds = load(credsStr) as any;
           if (creds?.providers) {
             const names = Object.keys(creds.providers).filter(k => creds.providers[k]?.apiKey);
             if (names.length) return `credentials.yaml (${names.length} key(s): ${names.join(", ")})`;
@@ -286,17 +286,43 @@ async function main() {
     process.exit(0);
   }
 
-  let providerName = process.env.HEIRLOOM_PROVIDER || configResult.config.provider || "deepseek";
-  let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
-  let provider = createProvider(providerName, activeModel);
-
-  const capabilities = getProviderCapabilities(providerName);
-  if (!capabilities.supportsTools) {
-    const model = args.model ?? configResult.config.model ?? providerName;
-    console.error(`Error: '${model}' does not support tool calls.`);
-    console.error(`Use a tool-capable model (e.g., deepseek-chat, gpt-4o, claude-sonnet-4).`);
-    process.exit(1);
+  function detectProvider(): string | null {
+    const envProviders = [
+      { name: "deepseek", key: "DEEPSEEK_API_KEY" },
+      { name: "openai", key: "OPENAI_API_KEY" },
+      { name: "openrouter", key: "OPENROUTER_API_KEY" },
+      { name: "anthropic", key: "ANTHROPIC_API_KEY" },
+      { name: "groq", key: "GROQ_API_KEY" },
+      { name: "together", key: "TOGETHER_API_KEY" },
+      { name: "ollama", key: "" },
+    ];
+    for (const p of envProviders) {
+      if (!p.key || process.env[p.key]) return p.name;
+    }
+    return null;
   }
+
+  let providerName =
+    process.env.HEIRLOOM_PROVIDER ||
+    configResult.config.provider ||
+    detectProvider() ||
+    "deepseek";
+  let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
+
+  function getProvider() {
+    return createProvider(providerName, activeModel);
+  }
+
+  function checkCapabilities() {
+    const capabilities = getProviderCapabilities(providerName);
+    if (!capabilities.supportsTools) {
+      const model = args.model ?? configResult.config.model ?? providerName;
+      console.error(`Error: '${model}' does not support tool calls.`);
+      console.error(`Use a tool-capable model (e.g., deepseek-chat, gpt-4o, claude-sonnet-4).`);
+      process.exit(1);
+    }
+  }
+
   const modeLoader = new ModeLoader();
   const permissions = PermissionEngine.defaults(undefined, !!args.prompt);
   if (configResult.config.permissions) {
@@ -305,11 +331,18 @@ async function main() {
 
   const contextWindow =
     configResult.config.contextWindow ?? 128000;
-  const compactor = new Compactor(
-    provider,
-    contextWindow,
-    configResult.config.compaction?.threshold,
-  );
+
+  let _compactor: Compactor | undefined;
+  function getCompactor(): Compactor {
+    if (!_compactor) {
+      _compactor = new Compactor(
+        getProvider(),
+        contextWindow,
+        configResult.config.compaction?.threshold,
+      );
+    }
+    return _compactor;
+  }
 
   async function interactiveAskUser(
     toolName: string,
@@ -418,7 +451,7 @@ async function main() {
   let sessionOutput = 0;
 
   async function logSessionEnd() {
-    const { summary, files } = compactor.getLastCompaction();
+    const { summary, files } = getCompactor().getLastCompaction();
     const decisions = extractDecisions(summary);
     if (sessionUserInputs.length > 0 || files.length > 0 || summary) {
       await memoryStore.appendSession({
@@ -519,12 +552,12 @@ async function main() {
     try {
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
       const result = await runAgent(args.prompt, {
-        provider,
+        provider: getProvider(),
         tools,
         executeTool,
         permissions,
         mode: activeMode,
-        compactor,
+        compactor: getCompactor(),
         diagnostics,
         skills,
         memory: memoryInjection ?? undefined,
@@ -728,9 +761,9 @@ async function main() {
             console.log(`Error: '${modelName}' does not support tool calls.`);
             return true;
           }
-          provider = createProvider(provName, modelName);
           providerName = provName;
           activeModel = modelName;
+          _compactor = undefined;
           sessionStore.appendState(sessionId, {
             model: modelName,
             provider: provName,
@@ -866,12 +899,12 @@ async function main() {
       }, 100);
 
       const result = await runAgent(processed, {
-        provider,
+        provider: getProvider(),
         tools,
         executeTool,
         permissions,
         mode: activeMode,
-        compactor,
+        compactor: getCompactor(),
         diagnostics,
         skills,
         memory: memoryInjection ?? undefined,
