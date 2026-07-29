@@ -10,6 +10,11 @@ export default defineConfig({
   target: "node20",
   shims: false,
   dts: false,
+  treeshake: false,
+  external: ["react-devtools-core", "ws"],
+  esbuildOptions(opts) {
+    opts.treeShaking = false;
+  },
   banner: {
     js: "#!/usr/bin/env node",
   },

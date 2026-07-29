@@ -1,6 +1,4 @@
-import { createOpenAICompatibleProvider } from "./openai-compatible.js";
-import { registerAdapter, getAdapter } from "./registry.js";
-import { createRetryingProvider } from "./retry.js";
+import { createAISDKProvider } from "./aisdk.js";
 import type { Provider, ModelCapabilities } from "./types.js";
 import type { ProviderConfig } from "../config/loader.js";
 import { getCredential } from "../config/credentials.js";
@@ -18,10 +16,10 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
     api: "openai-compatible",
     baseUrl: "https://api.deepseek.com",
     keyEnv: "DEEPSEEK_API_KEY",
-    defaultModel: "deepseek-chat",
+    defaultModel: "deepseek-v4-pro",
     models: {
-      "deepseek-chat": { supportsTools: true, contextWindow: 128000 },
-      "deepseek-reasoner": { supportsTools: false, contextWindow: 128000 },
+      "deepseek-v4-flash": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.14, outputPerM: 0.28 } },
+      "deepseek-v4-pro": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.435, outputPerM: 0.87 } },
     },
   },
   openai: {
@@ -30,7 +28,7 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
     keyEnv: "OPENAI_API_KEY",
     defaultModel: "gpt-4o",
     models: {
-      "gpt-4o": { supportsTools: true, contextWindow: 128000 },
+      "gpt-4o": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 2.50, outputPerM: 10.00 } },
     },
   },
   openrouter: {
@@ -39,7 +37,7 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
     keyEnv: "OPENROUTER_API_KEY",
     defaultModel: "anthropic/claude-sonnet-4",
     models: {
-      "anthropic/claude-sonnet-4": { supportsTools: true, contextWindow: 200000 },
+      "anthropic/claude-sonnet-4": { supportsTools: true, contextWindow: 200000, pricing: { inputPerM: 3.00, outputPerM: 15.00 } },
     },
   },
   groq: {
@@ -48,7 +46,7 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
     keyEnv: "GROQ_API_KEY",
     defaultModel: "llama-4-scout",
     models: {
-      "llama-4-scout": { supportsTools: true, contextWindow: 128000 },
+      "llama-4-scout": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.11, outputPerM: 0.34 } },
     },
   },
   ollama: {
@@ -105,7 +103,6 @@ export function getContextWindowForModel(
 }
 
 export function initPresets(): void {
-  registerAdapter("openai-compatible", createOpenAICompatibleProvider);
 }
 
 export function createProvider(name: string, modelOverride?: string): Provider {
@@ -123,13 +120,14 @@ export function createProvider(name: string, modelOverride?: string): Provider {
     const model =
       modelOverride ??
       (configEntry.models ? Object.keys(configEntry.models)[0] : "default");
-    return createRetryingProvider(
-      getAdapter(configEntry.api, {
-        baseUrl: configEntry.baseUrl ?? "",
-        apiKey,
-        model,
-      }),
-    );
+    const preset: ProviderPreset = {
+      api: configEntry.api,
+      baseUrl: configEntry.baseUrl ?? "",
+      keyEnv: configEntry.apiKeyEnv ?? "",
+      defaultModel: model,
+      models: {},
+    };
+    return createAISDKProvider(preset, model, apiKey);
   }
 
   const preset = BUILTIN_PRESETS[name];
@@ -149,11 +147,5 @@ export function createProvider(name: string, modelOverride?: string): Provider {
     );
   }
 
-  return createRetryingProvider(
-    getAdapter(preset.api, {
-      baseUrl: preset.baseUrl,
-      apiKey,
-      model: modelOverride ?? preset.defaultModel,
-    }),
-  );
+  return createAISDKProvider(preset, modelOverride ?? preset.defaultModel, apiKey);
 }
