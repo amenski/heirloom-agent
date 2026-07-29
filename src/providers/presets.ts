@@ -10,7 +10,7 @@ export interface ProviderPreset {
   baseUrl: string;
   keyEnv: string;
   defaultModel: string;
-  capabilities: ModelCapabilities;
+  models: Record<string, ModelCapabilities>;
 }
 
 export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
@@ -19,42 +19,46 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
     baseUrl: "https://api.deepseek.com",
     keyEnv: "DEEPSEEK_API_KEY",
     defaultModel: "deepseek-chat",
-    capabilities: { supportsTools: true, contextWindow: 128000 },
-  },
-  deepseek_reasoner: {
-    api: "openai-compatible",
-    baseUrl: "https://api.deepseek.com",
-    keyEnv: "DEEPSEEK_API_KEY",
-    defaultModel: "deepseek-reasoner",
-    capabilities: { supportsTools: false, contextWindow: 64000 },
+    models: {
+      "deepseek-chat": { supportsTools: true, contextWindow: 128000 },
+      "deepseek-reasoner": { supportsTools: false, contextWindow: 128000 },
+    },
   },
   openai: {
     api: "openai-compatible",
     baseUrl: "https://api.openai.com/v1",
     keyEnv: "OPENAI_API_KEY",
     defaultModel: "gpt-4o",
-    capabilities: { supportsTools: true, contextWindow: 128000 },
+    models: {
+      "gpt-4o": { supportsTools: true, contextWindow: 128000 },
+    },
   },
   openrouter: {
     api: "openai-compatible",
     baseUrl: "https://openrouter.ai/api/v1",
     keyEnv: "OPENROUTER_API_KEY",
     defaultModel: "anthropic/claude-sonnet-4",
-    capabilities: { supportsTools: true, contextWindow: 200000 },
+    models: {
+      "anthropic/claude-sonnet-4": { supportsTools: true, contextWindow: 200000 },
+    },
   },
   groq: {
     api: "openai-compatible",
     baseUrl: "https://api.groq.com/openai/v1",
     keyEnv: "GROQ_API_KEY",
     defaultModel: "llama-4-scout",
-    capabilities: { supportsTools: true, contextWindow: 128000 },
+    models: {
+      "llama-4-scout": { supportsTools: true, contextWindow: 128000 },
+    },
   },
   ollama: {
     api: "openai-compatible",
     baseUrl: "http://localhost:11434/v1",
     keyEnv: "",
     defaultModel: "llama3.2",
-    capabilities: { supportsTools: false, contextWindow: 8192 },
+    models: {
+      "llama3.2": { supportsTools: false, contextWindow: 8192 },
+    },
   },
 };
 
@@ -90,6 +94,11 @@ export function getContextWindowForModel(
   const models = getProviderModels(providerName);
   if (models) {
     const match = models[modelId];
+    if (match?.contextWindow) return match.contextWindow;
+  }
+  const preset = BUILTIN_PRESETS[providerName];
+  if (preset) {
+    const match = preset.models[modelId] ?? preset.models[preset.defaultModel];
     if (match?.contextWindow) return match.contextWindow;
   }
   return fallback;

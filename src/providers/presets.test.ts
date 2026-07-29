@@ -63,4 +63,58 @@ describe("createProvider key resolution", () => {
     expect(() => createProvider("deepseek")).toThrow(/DEEPSEEK_API_KEY/);
     expect(() => createProvider("deepseek")).toThrow(/heirloom auth/);
   });
+
+  it("creates a deepseek provider for the deepseek-reasoner model via modelOverride", async () => {
+    process.env[ENV_KEY] = "sk-env-dummy";
+
+    const { registerAdapter } = await import("./registry.js");
+    const seen: { baseUrl: string; model?: string }[] = [];
+    registerAdapter("openai-compatible", (config) => {
+      seen.push({ baseUrl: config.baseUrl, model: config.model });
+      return {} as never;
+    });
+
+    const { createProvider } = await import("./presets.js");
+    createProvider("deepseek", "deepseek-reasoner");
+    expect(seen).toEqual([{ baseUrl: "https://api.deepseek.com", model: "deepseek-reasoner" }]);
+  });
+});
+
+describe("BUILTIN_PRESETS models map", () => {
+  it("has no separate deepseek_reasoner provider — deepseek carries both models", async () => {
+    const { BUILTIN_PRESETS } = await import("./presets.js");
+    expect(BUILTIN_PRESETS.deepseek_reasoner).toBeUndefined();
+    expect(BUILTIN_PRESETS.deepseek.models["deepseek-chat"]).toEqual({
+      supportsTools: true,
+      contextWindow: 128000,
+    });
+    expect(BUILTIN_PRESETS.deepseek.models["deepseek-reasoner"]).toEqual({
+      supportsTools: false,
+      contextWindow: 128000,
+    });
+  });
+
+  it("getContextWindowForModel resolves deepseek-reasoner to 128000 from the preset", async () => {
+    const { getContextWindowForModel } = await import("./presets.js");
+    expect(getContextWindowForModel("deepseek", "deepseek-reasoner", -1)).toBe(128000);
+    expect(getContextWindowForModel("deepseek", "deepseek-chat", -1)).toBe(128000);
+  });
+
+  it("getContextWindowForModel falls back for an unknown provider", async () => {
+    const { getContextWindowForModel } = await import("./presets.js");
+    expect(getContextWindowForModel("nonexistent", "whatever", 42)).toBe(42);
+  });
+});
+
+describe("getProviderCapabilities per model", () => {
+  it("resolves supportsTools per model instead of per provider", async () => {
+    const { getProviderCapabilities } = await import("./registry.js");
+    expect(getProviderCapabilities("deepseek", "deepseek-chat").supportsTools).toBe(true);
+    expect(getProviderCapabilities("deepseek", "deepseek-reasoner").supportsTools).toBe(false);
+  });
+
+  it("falls back to the provider's default model when no model is given", async () => {
+    const { getProviderCapabilities } = await import("./registry.js");
+    expect(getProviderCapabilities("deepseek")).toEqual({ supportsTools: true, contextWindow: 128000 });
+  });
 });

@@ -21,7 +21,8 @@ export function getAdapter(api: string, config: AdapterConfig): Provider {
   return factory(config);
 }
 
-export function getProviderCapabilities(name: string): ModelCapabilities {
+export function getProviderCapabilities(name: string, modelId?: string): ModelCapabilities {
   const preset = getPreset(name);
-  return preset?.capabilities || { supportsTools: true, contextWindow: 128000 };
+  if (!preset) return { supportsTools: true, contextWindow: 128000 };
+  return preset.models[modelId ?? preset.defaultModel] ?? preset.models[preset.defaultModel];
 }

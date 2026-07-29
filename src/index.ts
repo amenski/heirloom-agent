@@ -3,7 +3,7 @@ import { emitKeypressEvents } from "node:readline";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { initPresets, createProvider, setConfigProviders, getPreset } from "./providers/presets.js";
+import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
@@ -27,6 +27,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let pasteBuffer = "";
 let inPaste = false;
+
+// Populated once at startup (see main()) so the synchronous `completer` can
+// offer /mode <tab> slug completion without making completer async — readline
+// requires a sync completer callback.
+let knownModeSlugs: string[] = [];
 
 interface CliArgs {
   prompt?: string;
@@ -164,6 +169,23 @@ const SLASH_COMMANDS = [
 ];
 
 function completer(line: string): [string[], string] {
+  const modelArgMatch = line.match(/^\/model\s+(\S*)$/);
+  if (modelArgMatch) {
+    const partial = modelArgMatch[1];
+    const all = listKnownModels().map(e => `${e.provider}/${e.model}`);
+    const hits = all.filter(m => m.startsWith(partial));
+    const prefixEnd = line.length - partial.length;
+    return [hits, line.slice(0, prefixEnd)];
+  }
+
+  const modeArgMatch = line.match(/^\/mode\s+(\S*)$/);
+  if (modeArgMatch) {
+    const partial = modeArgMatch[1];
+    const hits = knownModeSlugs.filter(s => s.startsWith(partial));
+    const prefixEnd = line.length - partial.length;
+    return [hits, line.slice(0, prefixEnd)];
+  }
+
   if (line.startsWith("/")) {
     const hits = SLASH_COMMANDS.filter(c => c.startsWith(line));
     if (hits.length === 1) return [hits.map(h => h + " "), line];
@@ -214,7 +236,6 @@ const ansi = {
 
 const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
-  deepseek_reasoner: "DeepSeek",
   openai: "OpenAI",
   openrouter: "OpenRouter",
   groq: "Groq",
@@ -223,6 +244,41 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 function getProviderLabel(name: string): string {
   return PROVIDER_LABELS[name] ?? name;
+}
+
+interface ModelEntry {
+  provider: string;
+  model: string;
+  contextWindow?: number;
+}
+
+// Enumerates every known provider/model combo (built-in preset models + any
+// config-defined models). Shared by the bare `/model` listing and `/model <tab>`
+// completion so both stay in sync.
+function listKnownModels(): ModelEntry[] {
+  const entries: ModelEntry[] = [];
+  for (const provName of getKnownProviderNames()) {
+    const preset = getPreset(provName);
+    const seen = new Set<string>();
+    if (preset) {
+      for (const [modelName, caps] of Object.entries(preset.models)) {
+        entries.push({ provider: provName, model: modelName, contextWindow: caps.contextWindow });
+        seen.add(modelName);
+      }
+    }
+    const models = getProviderModels(provName);
+    if (models) {
+      for (const [modelName, info] of Object.entries(models)) {
+        if (seen.has(modelName)) continue;
+        entries.push({
+          provider: provName,
+          model: modelName,
+          contextWindow: info.contextWindow,
+        });
+      }
+    }
+  }
+  return entries;
 }
 
 async function processAtMentions(input: string): Promise<string> {
@@ -354,6 +410,11 @@ async function main() {
   }
 
   const modeLoader = new ModeLoader();
+  try {
+    knownModeSlugs = (await modeLoader.listAll()).map(m => m.slug);
+  } catch {
+    // Best-effort — /mode <tab> just won't complete if this fails.
+  }
   const permissions = PermissionEngine.defaults(undefined, !!args.prompt);
   if (configResult.config.permissions) {
     feedPermissions(permissions, configResult.config.permissions);
@@ -642,10 +703,9 @@ async function main() {
     });
   }
 
-  if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
 
-  // Accent-rail prompt: mode/model/approval info now lives in renderPromptHeader(),
+  // Accent-rail prompt: mode/model/approval info now lives in renderStatusLine(),
   // not the prompt line itself (readline needs a single-line prompt for correct
   // backspace/history behavior).
   function getPrompt(): string {
@@ -653,9 +713,7 @@ async function main() {
     return `${ansi.blue("\u258C")} ${ansi.blue("\u203A")} `;
   }
 
-  let shownTip = false;
-
-  function renderPromptHeader(): void {
+  function renderStatusLine(): void {
     if (!colorEnabled) return;
 
     const modeName = activeMode?.name ?? "chat";
@@ -664,22 +722,20 @@ async function main() {
     console.log(
       `  ${ansi.blueBold(modeName)} ${ansi.dim("\u00B7")} ${ansi.bright(modelName)} ${ansi.dim("\u00B7")} ${ansi.dim(providerLabel)}`,
     );
+  }
 
+  console.log("heirloom — type /exit to quit, /help for help");
+
+  if (colorEnabled) {
     const hints: string[] = [
       `${ansi.bright("shift+tab")} ${ansi.dim("approve")}`,
       `${ansi.bright("esc")} ${ansi.dim("abort")}`,
       `${ansi.bright("/help")}`,
     ];
-    console.log(`  ${hints.join(`  ${ansi.dim("\u00B7")}  `)}`);
-    console.log("");
-
-    if (!shownTip) {
-      shownTip = true;
-      console.log(`  ${ansi.orange("\u25CF")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands")}`);
-      console.log("");
-    }
+    console.log(`  ${hints.join(`  ${ansi.dim("·")}  `)}`);
+    console.log(`  ${ansi.orange("●")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands")}`);
   }
-  console.log("heirloom — type /exit to quit, /help for help\n");
+  console.log("");
 
   process.on("SIGINT", () => {
     abortController.abort();
@@ -810,8 +866,30 @@ async function main() {
       case "/model": {
         const modelArg = input.slice(7).trim();
         if (!modelArg) {
-          console.log(`Current: ${providerName}/${activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown"}`);
-          console.log("Usage: /model <provider/model>");
+          const currentModel = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
+          console.log(`Current: ${providerName}/${currentModel}`);
+          console.log("");
+          const byProvider = new Map<string, ModelEntry[]>();
+          for (const entry of listKnownModels()) {
+            const list = byProvider.get(entry.provider) ?? [];
+            list.push(entry);
+            byProvider.set(entry.provider, list);
+          }
+          const modelColWidth = Math.max(
+            ...[...byProvider.values()].flat().map(e => e.model.length),
+          );
+          for (const [provName, entries] of byProvider) {
+            console.log(provName);
+            for (const entry of entries) {
+              const isActive = entry.provider === providerName && entry.model === currentModel;
+              const suffix = entry.contextWindow ? `   ctx ${Math.round(entry.contextWindow / 1000)}k` : "";
+              const marker = isActive ? "› " : "  ";
+              const line = `  ${marker}${entry.model.padEnd(modelColWidth)}${suffix}`;
+              console.log(isActive && colorEnabled ? ansi.bright(line) : line);
+            }
+          }
+          console.log("");
+          console.log("Switch: /model <provider/model>");
           return true;
         }
         const slashIdx = modelArg.indexOf("/");
@@ -822,11 +900,6 @@ async function main() {
         const provName = modelArg.slice(0, slashIdx);
         const modelName = modelArg.slice(slashIdx + 1);
         try {
-          const capabilities = getProviderCapabilities(provName);
-          if (!capabilities.supportsTools) {
-            console.log(`Error: '${modelName}' does not support tool calls.`);
-            return true;
-          }
           providerName = provName;
           activeModel = modelName;
           _compactor = undefined;
@@ -926,10 +999,18 @@ async function main() {
 
     let input: string | null = null;
     try {
-      renderPromptHeader();
+      if (colorEnabled) console.log("");
+      renderStatusLine();
+      // Bracketed paste is enabled only for the duration of this question, not
+      // left on for the whole session: readline echoes buffered input a second
+      // time (a bare repeat of the line, after the prompt) when paste mode is
+      // toggled on before it starts reading — see docs/handoff-model-fixes.md.
+      if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
       input = await rl.question(getPrompt());
     } catch {
       // Ctrl+D (EOF) — rl.question rejects when interface closes
+    } finally {
+      if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l");
     }
     if (input === null || input === undefined) {
       await logSessionEnd();
