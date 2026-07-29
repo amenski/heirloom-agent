@@ -319,9 +319,12 @@ async function main() {
     detected ||
     "deepseek";
 
-  if (!detected && !configResult.config.provider && !process.env.HEIRLOOM_PROVIDER && !args.prompt) {
+  if (!detected && !configResult.config.provider && !process.env.HEIRLOOM_PROVIDER && !hasAnyKey()) {
     console.log("No API keys found. Run `heirloom auth` to configure a provider, or set an API key env var.");
     console.log("Supported keys: DEEPSEEK_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY\n");
+    if (!args.prompt) {
+      process.exit(0);
+    }
   }
   let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
 
@@ -654,7 +657,7 @@ async function main() {
   process.on("exit", () => process.stdout.write("\x1b[?2004l"));
 
   emitKeypressEvents(process.stdin);
-  process.stdin.on("keypress", (str, key) => {
+  function onKeypress(str: string, key: { name?: string; ctrl?: boolean; shift?: boolean }) {
     if (key.name === "escape") {
       if (agentRunning) abortController.abort();
     }
@@ -666,10 +669,10 @@ async function main() {
         const modes: ApprovalMode[] = ["manual", "edits", "all"];
         const idx = modes.indexOf(permissions.approvalMode);
         permissions.setApprovalMode(modes[(idx + 1) % modes.length]);
-        process.stdout.write(`\rheirloom [${permissions.approvalMode}] > ${(rl as any).line}`);
+        process.stdout.write(`\r${getPrompt()}${(rl as any).line}`);
       }
     }
-  });
+  }
 
   rl.on("SIGINT", () => {
     console.log("(use /exit or Ctrl+D to quit)");
@@ -906,7 +909,10 @@ async function main() {
 
     try {
       agentRunning = true;
-      if (process.stdin.isTTY) process.stdin.setRawMode(true);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+        process.stdin.on("keypress", onKeypress);
+      }
 
       const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
       sessionUserInputs.push(input);
@@ -953,7 +959,10 @@ async function main() {
       agentRunning = false;
       if (activeSpinner) { clearInterval(activeSpinner); activeSpinner = null; }
       if (!firstTokenReceived) process.stderr.write("\r\x1b[K");
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+        process.stdin.off("keypress", onKeypress);
+      }
     }
     console.log("");
   }
