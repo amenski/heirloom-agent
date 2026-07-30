@@ -71,6 +71,10 @@ export interface DeepCodeSettings {
   debugLogEnabled?: boolean;
   telemetryEnabled?: boolean;
 
+  // ── MCP hardening ──
+  /** When true, only allowlisted MCP server commands may be spawned (default false) */
+  strictMcpConfig?: boolean;
+
   // ── Temperature ──
   temperature?: number;
 
@@ -168,6 +172,7 @@ const KNOWN_KEYS = new Set([
   "enabledSkills",
   "debugLogEnabled",
   "telemetryEnabled",
+  "strictMcpConfig",
   "temperature",
   // Heirloom extensions
   "provider",
@@ -547,6 +552,15 @@ export function loadConfig(projectDir?: string): LoadResult {
       config.telemetryEnabled = merged.telemetryEnabled;
     } else {
       errors.push("config.telemetryEnabled: must be a boolean");
+    }
+  }
+
+  // ── strictMcpConfig ──
+  if ("strictMcpConfig" in merged) {
+    if (typeof merged.strictMcpConfig === "boolean") {
+      config.strictMcpConfig = merged.strictMcpConfig;
+    } else {
+      errors.push("config.strictMcpConfig: must be a boolean");
     }
   }
 
