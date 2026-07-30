@@ -20,6 +20,25 @@ function replaceAllLiterals(str: string, search: string, replacement: string): s
   return parts.join(replacement);
 }
 
+// Write the file, then refresh the recorded mtime from the post-write stat.
+// Without this, a tool's own successful write bumps the on-disk mtime while the
+// recorded mtime still reflects the last *read*, so the NEXT edit to the same
+// file misreads that self-inflicted bump as an external change and falsely
+// returns FILE_MODIFIED. Every write path must go through here.
+async function writeAndTrack(path: string, content: string, ctx: ToolContext): Promise<void> {
+  await writeFile(path, content, "utf-8");
+  if (ctx.fileMtimes) {
+    try {
+      const s = await stat(path);
+      ctx.fileMtimes.set(path, s.mtimeMs);
+    } catch {
+      // stat failed post-write (unlikely) — drop the stale entry so the next
+      // edit re-reads rather than comparing against an outdated mtime.
+      ctx.fileMtimes.delete(path);
+    }
+  }
+}
+
 async function checkStaleFile(path: string, ctx: ToolContext): Promise<ToolOutput | null> {
   if (!ctx.fileMtimes?.has(path)) return null;
   const recordedMtime = ctx.fileMtimes.get(path)!;
@@ -72,7 +91,7 @@ const editHandler: ToolHandler = async (args, ctx) => {
     const stale = await checkStaleFile(path, ctx);
     if (stale) return stale;
     await ctx.checkpoint?.save();
-    await writeFile(path, newContent, "utf-8");
+    await writeAndTrack(path, newContent, ctx);
     return { content: `Replaced 1 occurrence in ${path}` };
   } catch (err: unknown) {
     const msg = `Error writing file: ${(err as Error).message}`;
@@ -119,7 +138,7 @@ const applyDiffHandler: ToolHandler = async (args, ctx) => {
     const stale = await checkStaleFile(path, ctx);
     if (stale) return stale;
     await ctx.checkpoint?.save();
-    await writeFile(path, newContent, "utf-8");
+    await writeAndTrack(path, newContent, ctx);
     return { content: `Diff applied successfully to ${path}` };
   } catch (err: unknown) {
     const msg = `Error writing file: ${(err as Error).message}`;
@@ -242,7 +261,7 @@ const applyPatchHandler: ToolHandler = async (args, ctx) => {
     }
 
     try {
-      await writeFile(filePath, newContent, "utf-8");
+      await writeAndTrack(filePath, newContent, ctx);
       results.push(`${filePath}: ok`);
     } catch (err: unknown) {
       results.push(`${filePath}: error writing - ${(err as Error).message}`);
@@ -312,7 +331,7 @@ const searchReplaceHandler: ToolHandler = async (args, ctx) => {
     const stale = await checkStaleFile(path, ctx);
     if (stale) return stale;
     await ctx.checkpoint?.save();
-    await writeFile(path, newContent, "utf-8");
+    await writeAndTrack(path, newContent, ctx);
     return { content: `${count} occurrences replaced in ${path}` };
   } catch (err: unknown) {
     const msg = `Error writing file: ${(err as Error).message}`;
@@ -370,7 +389,7 @@ const editFileHandler: ToolHandler = async (args, ctx) => {
     const stale = await checkStaleFile(path, ctx);
     if (stale) return stale;
     await ctx.checkpoint?.save();
-    await writeFile(path, newContent, "utf-8");
+    await writeAndTrack(path, newContent, ctx);
     return { content: `${count} occurrences replaced in ${path}` };
   } catch (err: unknown) {
     const msg = `Error writing file: ${(err as Error).message}`;
@@ -402,7 +421,7 @@ const writeToFileHandler: ToolHandler = async (args, ctx) => {
     if (stale) return stale;
     await ctx.checkpoint?.save();
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, "utf-8");
+    await writeAndTrack(path, content, ctx);
     return { content: `Wrote ${content.split("\n").length} lines to ${path}` };
   } catch (err: unknown) {
     const msg = `Error writing file: ${(err as Error).message}`;
