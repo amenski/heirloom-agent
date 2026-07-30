@@ -41,6 +41,7 @@ import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
 import UndoSelector from "./views/UndoSelector.js";
 import McpStatusList from "./views/McpStatusList.js";
+import PermissionHistoryList from "./views/PermissionHistoryList.js";
 import ResumeChooser from "./views/ResumeChooser.js";
 import { buildReplayLines } from "./core/replay.js";
 import type { Message } from "../types.js";
@@ -130,6 +131,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [showSessionList, setShowSessionList] = useState(false);
   const [showUndoSelector, setShowUndoSelector] = useState(false);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
+  const [showPermissionHistory, setShowPermissionHistory] = useState(false);
   // Startup resume chooser: null until a resumed session offers the load/compact
   // choice, then holds the message count for the prompt. Set in the mount effect.
   const [resumeChoice, setResumeChoice] = useState<{ count: number } | null>(null);
@@ -775,6 +777,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowMcpStatus(true);
       return;
     }
+    if (trimmed === "/permissions" || trimmed === "/permissions history") {
+      setShowPermissionHistory(true);
+      return;
+    }
     if (trimmed.startsWith("/raw")) {
       const arg = trimmed.slice(4).trim();
       if (arg === "normal") rawMode.setMode("normal");
@@ -913,6 +919,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   function handlePermissionDecision(decision: PermissionDecision): void {
     if (!askPrompt) return;
 
+    const subject = String(askPrompt.args?.command ?? askPrompt.args?.path ?? askPrompt.args?.filePath ?? "");
+    void ctx.sessionStore.appendPermission(ctx.sessionId, {
+      tool: askPrompt.toolName,
+      subject,
+      decision,
+      winningRule: askPrompt.winningRule,
+    });
+
     if (decision === "deny") {
       resolveAskPrompt(false);
       return;
@@ -967,6 +981,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
 
     if (showMcpStatus) {
+      return;
+    }
+
+    if (showPermissionHistory) {
       return;
     }
 
@@ -1038,7 +1056,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const modalOpen =
     !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList ||
-    showUndoSelector || showMcpStatus || showModelDropdown || showHelp || showCommandPalette ||
+    showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   modalOpenRef.current = modalOpen;
 
@@ -1172,6 +1190,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showPermissionHistory && (
+        <PermissionHistoryList
+          sessionStore={ctx.sessionStore}
+          sessionId={ctx.sessionId}
+          onClose={() => setShowPermissionHistory(false)}
+          width={term.columns}
+        />
+      )}
+
       {showModelDropdown && (
         <ModelsDropdown
           open={showModelDropdown}
@@ -1216,7 +1243,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}

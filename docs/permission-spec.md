@@ -279,6 +279,17 @@ explicit warning banner) — rather than the standard prompt. It offers the
 same four options; the load-bearing safety property is the engine forcing
 `kind: "exact"` on approval, not the prompt's interaction style.
 
+## Audit Trail
+
+Every permission decision — deny, allow with no prompt, or a prompted
+once/session/always/no answer — is recorded as a `permission` record in the
+session's JSONL file (see [session-spec.md](./session-spec.md#permission--audit-trail-entry)
+for the record shape). `/permissions` opens a TUI view listing this
+session's decisions in order, most recent selected by default; arrow keys
+browse, Esc closes. Answers the "why did this run without asking me" /
+"what did I approve earlier this session" questions without needing to grep
+the raw session file by hand.
+
 ## Headless Interaction (cli-spec.md)
 
 - Default: fail closed — `ask` resolves to deny (unchanged from prior

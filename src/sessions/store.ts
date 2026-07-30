@@ -23,8 +23,20 @@ export interface CompactionSummary {
   errors_resolved: string[];
 }
 
+export type PermissionDecision = "deny" | "once" | "session" | "always";
+
+export interface PermissionAuditRecord {
+  toolCallId?: string;
+  tool: string;
+  /** The literal command/path text the decision was made against, redacted. */
+  subject: string;
+  decision: PermissionDecision;
+  /** The rule that produced this outcome, if any (absent for a fallthrough-to-defaultMode ask/allow). */
+  winningRule?: { tool: string; kind: string; pattern: string; action: string; origin: string };
+}
+
 export interface SessionRecord {
-  type: "meta" | "message" | "state" | "compaction";
+  type: "meta" | "message" | "state" | "compaction" | "permission";
   at: string;
   [key: string]: unknown;
 }
@@ -148,6 +160,23 @@ export class SessionStore {
       replacesThrough,
       summary: safeSummary,
     });
+  }
+
+  async appendPermission(sessionId: string, record: PermissionAuditRecord): Promise<void> {
+    await this.append(sessionId, {
+      type: "permission",
+      ...record,
+      subject: redactSecrets(record.subject),
+    });
+  }
+
+  /** Returns every permission decision recorded for a session, in chronological order. */
+  async queryPermissionHistory(sessionId: string): Promise<(PermissionAuditRecord & { at: string })[]> {
+    const records = await this.readRecords(sessionId);
+    if (!records) return [];
+    return records
+      .filter((r) => r.type === "permission")
+      .map((r) => r as unknown as PermissionAuditRecord & { at: string });
   }
 
   private async readRecords(sessionId: string): Promise<SessionRecord[] | null> {
