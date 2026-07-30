@@ -1,14 +1,15 @@
 import React from "react";
 import { Box, Text } from "ink";
+import type { PermissionScope } from "../permissions/index.js";
 
 interface PermissionPromptProps {
   toolName: string;
   args: Record<string, unknown>;
+  scopes: PermissionScope[];
   colorEnabled: boolean;
 }
 
-/** Approve/deny/always prompt shown before a tool execution. */
-export default function PermissionPrompt({ toolName, args, colorEnabled }: PermissionPromptProps) {
+export default function PermissionPrompt({ toolName, args, scopes, colorEnabled }: PermissionPromptProps) {
   const dim = (s: string) => colorEnabled ? `\x1b[2m${s}\x1b[0m` : s;
   const bright = (s: string) => colorEnabled ? `\x1b[97m${s}\x1b[0m` : s;
 
@@ -25,9 +26,10 @@ export default function PermissionPrompt({ toolName, args, colorEnabled }: Permi
       {argLines.map((line, i) => (
         <Text key={i}>{line}</Text>
       ))}
+      <Text>{dim("  Scopes: ")}{scopes.join(", ") || dim("none")}</Text>
       <Text>
-        {dim("  [")}{bright("Enter")}{dim("] ")}{bright("allow")}
-        {dim("  [a] ")}{bright("always")}
+        {dim("  [")}{bright("Enter")}{dim("] ")}{bright("allow once")}
+        {dim("  [a] ")}{bright("always allow scopes")}
         {dim("  [n] ")}{bright("deny")}
       </Text>
     </Box>
