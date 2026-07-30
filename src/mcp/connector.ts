@@ -1,13 +1,7 @@
 import { MCPClient } from "./client.js";
 import { registry } from "../tools/index.js";
 import type { ToolGroup } from "../tools/types.js";
-
-export interface MCPServerConfig {
-  enabled?: boolean;
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
+import type { McpServerConfig } from "../config/loader.js";
 
 interface ToolSnapshot {
   name: string;
@@ -16,10 +10,8 @@ interface ToolSnapshot {
 
 const toolSnapshots = new Map<string, ToolSnapshot[]>();
 
-export async function connectMCPServers(servers: Record<string, MCPServerConfig>): Promise<void> {
+export async function connectMCPServers(servers: Record<string, McpServerConfig>): Promise<void> {
   for (const [name, config] of Object.entries(servers)) {
-    if (config.enabled === false) continue;
-
     try {
       const client = new MCPClient();
       await client.connect(config.command, config.args || [], config.env);
