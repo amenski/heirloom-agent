@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { SlashCommandItem } from "../core/slash-commands.js";
+import { useTheme } from "../contexts.js";
+import { ansi256 } from "../theme.js";
 
 type Props = {
   items: SlashCommandItem[];
@@ -12,6 +14,8 @@ type Props = {
 const SlashCommandMenu = React.memo(function SlashCommandMenu({
   items, activeIndex, width, maxVisible = 8,
 }: Props): React.ReactElement | null {
+  const theme = useTheme();
+  const accent = theme.colorEnabled ? ansi256(theme.theme.accent) : undefined;
   if (items.length === 0) return null;
 
   const labelColumnWidth = React.useMemo(() => {
@@ -32,13 +36,13 @@ const SlashCommandMenu = React.memo(function SlashCommandMenu({
         return (
           <Box key={item.label} gap={2} flexDirection="row" flexGrow={1}>
             <Box width={labelColumnWidth} flexShrink={0}>
-              <Text color={isActive ? "#229ac3" : undefined} wrap="truncate-end">
+              <Text color={isActive ? accent : undefined} wrap="truncate-end">
                 {isActive ? "> " : "  "}
                 <Text bold>{item.label}</Text>
               </Text>
             </Box>
             <Box flexGrow={1}>
-              <Text color={isActive ? "#229ac3" : undefined} wrap="truncate-end" dimColor>
+              <Text color={isActive ? accent : undefined} wrap="truncate-end" dimColor>
                 {item.description}
               </Text>
             </Box>

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import DropdownMenu from "../DropdownMenu/index.js";
 import { scanFileMentionItems, filterFileMentionItems, type FileMentionItem } from "../../core/file-mentions.js";
+import { useTheme } from "../../contexts.js";
+import { ansi256 } from "../../theme.js";
 
 interface Props {
   open: boolean;
@@ -13,6 +15,8 @@ interface Props {
 }
 
 const FileMentionMenu: React.FC<Props> = ({ open, width, projectRoot, query, onSelect, onClose }) => {
+  const theme = useTheme();
+  const accent = theme.colorEnabled ? ansi256(theme.theme.accent) : undefined;
   const [items, setItems] = useState<FileMentionItem[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const filtered = filterFileMentionItems(items, query);
@@ -57,13 +61,13 @@ const FileMentionMenu: React.FC<Props> = ({ open, width, projectRoot, query, onS
         description: item.type === "directory" ? "directory" : "file",
       }))}
       activeIndex={activeIndex}
-      activeColor="#229ac3"
+      activeColor={accent}
       maxVisible={8}
       renderItem={(item, isActive) => (
         <Box flexDirection="row" paddingX={1} gap={1}>
-          <Text color={isActive ? "#229ac3" : undefined}>{isActive ? "> " : "  "}</Text>
+          <Text color={isActive ? accent : undefined}>{isActive ? "> " : "  "}</Text>
           <Box flexGrow={1}>
-            <Text color={isActive ? "#229ac3" : undefined} wrap="truncate-end" bold={isActive}>{item.label}</Text>
+            <Text color={isActive ? accent : undefined} wrap="truncate-end" bold={isActive}>{item.label}</Text>
           </Box>
           {item.description ? (
             <Box width={10} flexShrink={0}><Text dimColor>{item.description}</Text></Box>

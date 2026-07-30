@@ -1,5 +1,7 @@
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
+import { useTheme } from "../../contexts.js";
+import { ansi256 } from "../../theme.js";
 
 export type DropdownMenuItem = {
   key: string;
@@ -27,9 +29,11 @@ export function calculateVisibleStart(activeIndex: number, totalItems: number, m
 }
 
 const DropdownMenu = React.memo(function DropdownMenu({
-  items, activeIndex, maxVisible = 8, width, title, titleColor = "#229ac3",
+  items, activeIndex, maxVisible = 8, width, title, titleColor,
   activeColor = "cyanBright", helpText, emptyText = "No items found", renderItem,
 }: Props): React.ReactElement | null {
+  const theme = useTheme();
+  const resolvedTitleColor = titleColor ?? (theme.colorEnabled ? ansi256(theme.theme.accent) : undefined);
   const visibleStart = calculateVisibleStart(activeIndex, items?.length, maxVisible);
   const visibleItems = items?.slice(visibleStart, visibleStart + maxVisible);
 
@@ -48,7 +52,7 @@ const DropdownMenu = React.memo(function DropdownMenu({
   if (items?.length === 0) {
     return (
       <Box flexDirection="column" marginBottom={1} width={width}>
-        {title ? <Text color={titleColor} bold>{title}</Text> : null}
+        {title ? <Text color={resolvedTitleColor} bold>{title}</Text> : null}
         <Text dimColor>{emptyText}</Text>
         {helpText ? <Text dimColor>{helpText}</Text> : null}
       </Box>
@@ -59,7 +63,7 @@ const DropdownMenu = React.memo(function DropdownMenu({
     <Box flexDirection="column" marginBottom={1} borderStyle={"round"} borderDimColor width={width}>
       {title ? (
         <Box borderStyle={"single"} borderDimColor borderBottom={true} borderRight={false} borderTop={false} borderLeft={false} paddingX={1}>
-          <Text color={titleColor} bold>{title}</Text>
+          <Text color={resolvedTitleColor} bold>{title}</Text>
         </Box>
       ) : null}
       {visibleStart > 0 ? (
