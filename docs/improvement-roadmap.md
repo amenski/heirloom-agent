@@ -37,7 +37,7 @@ architectural swings on the roadmap; drop the rest.
 | **Extra theme presets** (dracula, monokai, github, ansi) | #132 | S | Pure data, re-expressed in Heirloom's richer theme shape. |
 | **Gutter/prompt contrast fix** (route accents through theme slots) | local | S | Hardcoded `#229ac3` washes out on light terminals. See [theme-spec.md](./theme-spec.md). |
 | **Long→short flag map** for destructive rules | local | S | Closes `rm --recursive --force /` gap. See [security-destructive-matching.md](./security-destructive-matching.md). |
-| **`docs_search` tool** (keyless official APIs; no provider, no scraper, no backend) | local | M | Out-of-box search for coding queries; general web via MCP. Binding spec: [web-search-spec.md](./web-search-spec.md). |
+| ~~**`docs_search` tool**~~ ✅ **shipped 2026-08-01** | local | M | Keyless official-API search, live-smoke verified; general web via MCP. Spec: [web-search-spec.md](./web-search-spec.md). |
 
 > **Local (non-borrow) findings** also tracked in their own docs, with priorities:
 > the two rows above are the do-now items; the input-stutter fix

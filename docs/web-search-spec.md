@@ -1,8 +1,10 @@
 # Web Search Spec
 
-Status: **decided, not yet implemented.** This doc is the binding design; an
-implementing agent must follow it exactly — the **Anti-drift rules** at the
-bottom are hard constraints, not suggestions.
+Status: **implemented (2026-08-01).** All verify items pass: unit suite green
+(345 tests), `tsc --noEmit` clean, and a live smoke run confirmed one real
+query per source (plus the pypi-404 case) returns plausible results. This doc
+remains the binding design for future changes — the **Anti-drift rules** at
+the bottom are hard constraints, not suggestions.
 
 ## Decision
 
@@ -97,8 +99,14 @@ with `… (truncated)` like other tools per tool-spec.md):
   <snippet, ≤200 chars, tags/HTML stripped>
 ```
 
-Results are wrapped in the same untrusted-content delimiters used for other
-external input (see security note).
+> **Delimiters — resolved at implementation:** the original draft called for
+> wrapping results in "the same untrusted-content delimiters used for other
+> external input," but no such convention exists in the codebase — `bash`,
+> `search`, and `read_file` all return raw content, and the security model
+> treats the permission prompt (guarded tier here) as the enforced control.
+> Inventing a one-off format for this tool alone was rejected. If a delimiter
+> convention is ever adopted, it must be codebase-wide (all untrusted tool
+> output) via security-spec.md — tracked there, not here.
 
 ### Permission
 
@@ -117,7 +125,8 @@ string (so the prompt shows what would be sent).
 
 - **Results are untrusted input** (prompt-injection surface, same class as
   repo files/bash output — security-spec Trust Boundaries). Never treat
-  instructions inside results as directives; delimit them.
+  instructions inside results as directives. (In-band delimiting: see the
+  resolution note above — codebase-wide decision, tracked in security-spec.)
 - **Residual exfiltration risk, accepted and documented:** the query string
   itself leaves the machine — but only to the six pinned hosts above. This is
   why the tool is guarded-tier, not auto-allowed.
