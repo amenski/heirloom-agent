@@ -355,7 +355,7 @@ async function main() {
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[]) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls, planMode),
       theme: resolvedTheme,
       keybindings: resolvedKeybindings,
       keybindingConfig: resolvedKeybindingConfig,
@@ -564,7 +564,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined, imageUrls?: string[]): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined, imageUrls?: string[], planMode?: boolean): Promise<any> {
   shared.sessionUserInputs.push(input);
   const processed = await processAtMentions(input);
   const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
@@ -576,6 +576,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     signal: shared.abort.signal, effort: activeEffort,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
     imageUrls,
+    planMode,
     onText: cb.onText, onReasoning: cb.onReasoning, onToolStart: (name, args) => { shared.toolUsage[name] = (shared.toolUsage[name] || 0) + 1; cb.onToolStart(name, args); }, onToolResult: cb.onToolResult,
     onDiagnostic: cb.onDiagnostic, onRetry: cb.onRetry, onCompacted: cb.onCompacted,
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,

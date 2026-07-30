@@ -120,7 +120,7 @@ export interface AppContext {
 
   handleSlash: (input: string) => Promise<string[]>;
   getModelEntries: () => ModelEntry[];
-  runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[]) => Promise<any>;
+  runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
 
   // ── New: Theme & Keybinding support ──
   theme?: ThemeContextValue;

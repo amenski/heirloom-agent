@@ -14,6 +14,7 @@ export interface PromptContext {
   repomap?: RepoMap;
   memory?: string;
   conversation?: string;
+  planMode?: boolean;
 }
 
 export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
@@ -30,6 +31,14 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
 
   const toolGuide = getToolGuide(mode?.groups || []);
   if (toolGuide) sections.push(toolGuide);
+
+  if (ctx.planMode) {
+    sections.push(
+      "You are in planning mode. Do NOT execute any tool calls that modify files. " +
+      "Instead, analyze the request and produce a detailed plan. " +
+      "Your reply must end with a <proposed_plan>...</proposed_plan> block containing the step-by-step plan."
+    );
+  }
 
   if (mode?.customInstructions) sections.push(mode.customInstructions);
 
