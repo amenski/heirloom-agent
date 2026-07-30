@@ -138,7 +138,7 @@ const COMMAND_CARRYING_FIRST_TOKENS = new Set([
  * whatever rule matches the visible first token.
  */
 export function isUnresolved(segment: string): boolean {
-  if (segment.includes("$(") || segment.includes("`") || segment.includes("<(")) {
+  if (segment.includes("$(") || segment.includes("`") || segment.includes("<(") || segment.includes(">(")) {
     return true;
   }
 
@@ -148,6 +148,14 @@ export function isUnresolved(segment: string): boolean {
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) return true;
 
   const first = tokens[0];
+
+  // A first token that isn't a bare command word (leading backslash escape,
+  // a quote character, or any other non-identifier leading character) can't
+  // be safely resolved against a literal-token destructive rule — "\rm" and
+  // "rm" are different strings even though a shell treats them identically.
+  // Fail closed rather than silently falling through defaultMode unchecked.
+  if (!/^[A-Za-z0-9_./~-]/.test(first)) return true;
+
   if (COMMAND_CARRYING_FIRST_TOKENS.has(first)) return true;
   if (first === "find" && tokens.includes("-exec")) return true;
   if ((first === "sh" || first === "bash") && !WRAPPER_RE.test(segment.trim())) return true;

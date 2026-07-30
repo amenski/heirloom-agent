@@ -1,13 +1,20 @@
 # Permission Specification
 
-Consolidates the permission system: the pattern ruleset (previously split
-across architecture.md Layer 5 and config-spec.md) plus **approval modes** —
-the session-level overlay that makes the agent usable without editing YAML
-mid-session (Claude Code's permission-modes pattern).
+Consolidates the permission system: rule-based pattern matching on tool +
+argument (exact/prefix/glob/any), a builtin destructive-command deny tier, a
+builtin secret-adjacent/network-egress ask tier, and a session-level posture
+overlay that makes the agent usable without editing config mid-session.
 
-Threat model and known permission-engine defects: [security-spec.md](./security-spec.md).
-Guarded patterns (always-prompt, not upgradeable by approval modes) are
-defined there and take precedence over the resolution table below.
+Threat model and known permission-engine defects:
+[security-spec.md](./security-spec.md). The builtin destructive and guarded
+tiers described there take precedence over ordinary rule resolution as
+specified below.
+
+Implementation: `src/permissions/rules.ts` (types, matching, specificity),
+`src/permissions/bash-normalize.ts` (command splitting/normalization,
+fail-closed unresolved-ask detection), `src/permissions/destructive.ts` /
+`src/permissions/guarded.ts` (builtin rule seeds), `src/permissions/engine.ts`
+(`PermissionEngine.resolve`).
 
 ---
 
@@ -16,79 +23,295 @@ defined there and take precedence over the resolution table below.
 | Axis | Question it answers | Defined by |
 |------|--------------------|-----------|
 | **Mode** (persona) | Which tools *exist* this turn? | mode-spec.md groups |
-| **Approval mode** | Do `ask` rules actually prompt? | This doc, session state |
+| **Posture** | Do `ask` results actually prompt? | This doc, `App.tsx` UI state |
 
-`ask` mode (persona) has no edit tools at all — approval mode is irrelevant
-there. The axes never interact except that both must pass: a tool must be in
-the persona's groups AND clear the permission check.
+`ask` mode (persona) has no edit tools at all — posture is irrelevant there.
+The axes never interact except that both must pass: a tool must be in the
+persona's groups AND clear the permission check.
 
-## Rule Resolution (recap + one addition)
+## Data Model
 
-1. Rules are evaluated in insertion order; **last match wins** (opencode).
-2. Sources, in evaluation order (later = higher precedence):
-   built-in defaults → global config → project config → **session rules**
-   (added by "allow for session" answers, in-memory only).
-3. The winning rule's action resolves as:
+A **rule** is `{ tool, kind, pattern, action, origin }`:
 
-| Winning action | `manual` | `edits` | `all` |
-|---------------|----------|---------|-------|
-| `allow` | allow | allow | allow |
-| `ask` | prompt user | edit-group tool inside workingDir → allow; else prompt | allow |
-| `deny` | deny | deny | **deny** |
+- `tool` — a tool name, `"mcp__*"` (any MCP tool), or `"*"` (any tool).
+- `kind` — `"exact"` (literal string equality), `"prefix"` (whole-token
+  prefix match on `run_bash` command text — the final token may extend at a
+  non-alphanumeric boundary, e.g. `~` matches `~/Documents`, `mkfs` matches
+  `mkfs.ext4`), `"glob"` (POSIX-glob match against a resolved file path),
+  `"any"` (matches every call to `tool`, ignoring pattern content).
+- `action` — `"allow" | "ask" | "deny"`.
+- `origin` — `"builtin-destructive" | "builtin-guarded" | "config" | "session"`.
+  Determines override eligibility and forced-narrowing behavior (below).
 
-**Invariant: approval modes only upgrade `ask` → `allow`. An explicit `deny`
-always wins, in every approval mode.** `rm *: deny` blocks `rm` even in
-`all`. This is what makes `all` tolerable: the user's red lines hold.
+On disk (`.deepcode/settings.json`), `permissions.rules` is an array of
+`{ tool, pattern, action }`; `kind` is inferred at load time — a `:*` pattern
+suffix means `prefix` (stripped before matching), a pattern containing `*`
+or `?` means `glob`, an empty string means `any`, anything else is `exact`.
 
-`edits` auto-allows only tools in the `edit` group targeting paths inside
-`workingDir` — `run_bash` always prompts in `edits`, and an edit tool aimed
-outside the working directory prompts too.
+## Subject Construction
 
-## Approval Mode Rules
+One normalized subject is built per call: `{ tool, text, resolvedPath? }`.
+For `run_bash`, `text` is the literal command string (or, after normalization
+below, one independent segment of a compound command). For path-bearing
+tools, `text` is the raw path argument and `resolvedPath` is that path made
+relative to the working directory (`./src/main.ts`) when it falls inside it
+— this is what lets a glob rule authored as `./**` match a real absolute path
+argument, since every tool call carries an absolute path but a relative glob
+pattern can only match a relative-looking subject. Paths outside the working
+directory are left absolute, so a `./**`-rooted rule doesn't spuriously match
+them; an absolute glob can still be authored to cover them explicitly.
 
-- Session-scoped. **Never persisted** — a new session always starts `manual`.
-  Making auto-approval permanent must be a deliberate config edit.
-- Switched with `/approve <manual|edits|all>`; bare `/approve` prints the
-  current setting.
-- The prompt shows non-default state: `heirloom [code] >` becomes
-  `heirloom [code ⚡edits] >` / `heirloom [code ⚡all] >`. Auto-approval must
-  be visible at a glance.
-- Entering `all` prints a one-line warning naming the workingDir it applies to.
+## `run_bash` Command Normalization
+
+Raw `command` text is never compared directly:
+
+1. **Unwrap** a `bash -c '...'` / `sh -c "..."` / `eval ...` wrapper, one
+   level deep. If the quoted inner command can't be cleanly extracted (uses
+   `$(...)`, is unquoted, concatenates), the whole call resolves to
+   `ask` with no rule match possible (fail-closed, not fail-open).
+2. **Split** on top-level `&&`, `||`, `;`, `|`, newlines, and a single
+   standalone `&` (background), via a quote/paren-aware scanner — not a
+   naive regex. Redirection targets stay attached to their segment. The
+   fork-bomb literal (`:(){ :|:& };:`) is special-cased before splitting,
+   since it contains a bare `|` that would otherwise be treated as a split
+   point.
+3. **Normalize** each segment: strip a leading `sudo` (so an allow rule for
+   `npm test` also covers `sudo npm test` — privilege elevation shouldn't
+   grant a *laxer* posture than the unprivileged form would have gotten).
+4. **Resolve each segment independently** against the same rule set, then
+   combine via most-restrictive-wins: any segment `deny` → the whole call
+   denies; else any segment `ask` (ordinary or unresolved, see below) → the
+   whole call asks; else `allow`.
+
+Bash pattern rules are prefix/exact text match only — no glob expansion
+against shell text (ambiguous whether `*` is the user's shell glob or the
+rule's wildcard).
+
+### Unresolved-ask (fail-closed)
+
+A segment containing a construct the normalizer can't safely classify
+resolves to a distinct **unresolved-ask** marker rather than falling through
+to whatever rule happens to match its visible first token. This is separate
+from an ordinary rule-derived `ask` because it is **never bypassable by
+posture** (see below) — an unresolved segment always surfaces the real
+prompt, regardless of auto-approve.
+
+Triggers: inline command substitution (`$(`, backtick), process substitution
+(`<(`, `>(`), a leading `NAME=value` assignment, a first token that isn't a
+bare command word (leading backslash escape, a leading quote character —
+`\rm`, `'rm'`), and a fixed set of command-carrying first tokens: `env`,
+`nice`, `nohup`, `timeout`, `command`, `xargs`, `find` (only when `-exec` is
+present), a bare `sh`/`bash` not already handled as a full wrapper. This list
+is a heuristic, not exhaustive — arbitrary shell is not statically
+analyzable — but the failure direction is conservative (ask), never
+permissive (silent allow via a coincidental token match).
+
+`PermissionEngine.resolve()` returns `wasUnresolved: boolean` alongside the
+action specifically so the UI can make this distinction without re-deriving
+it from the raw command text.
+
+## Resolution Algorithm
+
+`PermissionEngine.resolve(toolName, args)`:
+
+1. Collect all rules matching the subject, across three sources: builtin
+   rules (destructive + guarded, always present) → `configRules` (loaded
+   from `.deepcode/settings.json`, global then project, in append order) →
+   `sessionRules` (in-memory, this process only, appended in approval
+   order).
+2. If zero rules match: fall through to `defaultMode` (`allowAll` → allow,
+   `askAll` → ask) — **except** if `defaultMode` is `allowAll` but no
+   *user-configured* rule exists anywhere for this tool (builtin rules don't
+   count toward "recognized," since they exist regardless of user intent),
+   force `ask`. This is the unrecognized-tool safety net.
+3. **Partition matches into `deny` / `ask` / `allow`.** Deny wins by default
+   over ask, and ask wins by default over allow — this is not a raw
+   specificity argmax across all matches (see the specificity appendix for
+   why an argmax would be exploitable). Within the winning tier: if any
+   matching rule in that tier has `kind: "any"`, it wins outright — an
+   `any`-kind rule is an absolute kill-switch, never overridable by
+   specificity, since it scores the floor and would otherwise be "beaten"
+   by literally any real allow rule. Otherwise, the highest-specificity rule
+   in the tier wins, **unless** some `allow` rule is *strictly* more
+   specific than every rule in that tier, in which case the allow rule wins
+   — a deliberate, narrow escape hatch for a user overriding their own
+   earlier broad deny/ask with a later narrower allow (e.g. "ask on all
+   `curl`" then "allow `curl https://api.internal.corp/*`").
+4. Ties (identical specificity, same tier) break by rule order (global
+   config → project config → session, in append order within each).
+
+### Specificity
+
+```
+exact:  1000 + pattern.length
+prefix: 500 + tokenCount * 10
+glob:   globSpecificity(pattern), capped at 490
+any:    0
+```
+
+`globSpecificity` scores a pattern by segment: a literal path segment is
+worth 50, a single `*` segment is worth 5, a `**` segment is worth 1 — so a
+narrow, mostly-literal glob scores near the prefix floor, and a broad `**`
+scores near the `any` floor. The three kinds' ranges are deliberately
+disjoint (glob's ceiling < prefix's floor < exact's floor) so a cross-kind
+comparison can never invert regardless of pattern content — a blanket
+`{kind:"glob", pattern:"**"}` allow can never numerically outrank a narrow
+`{kind:"prefix", pattern:"/etc"}` deny.
+
+## Builtin Tiers
+
+Two builtin rule sets are always present, regardless of config, and cannot
+be removed (only overridden per the rules below):
+
+### Destructive tier (`src/permissions/destructive.ts`) — denies
+
+`rm -rf /`, `rm -rf ~`, `git push --force`, `git push -f`,
+`git reset --hard`, `git clean -fdx`, `mkfs`, `dd if=`, and the fork-bomb
+literal. Each is `origin: "builtin-destructive"`, `action: "deny"`.
+
+**Matching is hardened against known evasions**, not literal-string prefix
+matching: the invoked command is resolved to its lowercase basename (so
+`/usr/bin/rm -rf /` and `RM -RF /` both match `rm -rf /`), and a leading
+short-flag cluster is canonicalized — sorted, lowercased, and merged across
+separate tokens — so `-fr`, `-r -f`, `-f -r`, and `-rf` all match identically
+against a rule pattern of `-rf`. This hardening (`matchesBuiltinPrefix` in
+`rules.ts`) applies only to builtin-origin prefix rules; ordinary
+user-authored rules keep literal, case-sensitive, positional matching, so a
+user's own rule isn't silently reinterpreted. A first token that doesn't
+look like a bare command word (backslash escape, leading quote) is instead
+caught upstream by unresolved-ask, since it can't be safely normalized at
+all.
+
+**Override policy**: not absolute — discarding your own uncommitted scratch
+work via `git reset --hard` is common. A user-authored rule can only beat a
+destructive deny by being *strictly* more specific (`git reset --hard
+HEAD~1` beats `git reset --hard`; an equally-broad rule does not — ties go
+to deny). Session-tier and always-tier approval of a destructive match are
+both allowed, but the engine forces the approved rule to `kind: "exact"` on
+the literal normalized command text — approving one instance never silently
+broadens to "all matching commands."
+
+### Guarded tier (`src/permissions/guarded.ts`) — always asks
+
+Two categories, both `origin: "builtin-guarded"`, `action: "ask"`:
+
+- **Secret-adjacent paths** (`read_file`/`write_to_file`/`edit`, glob-matched
+  against the resolved path): `.env*`, `~/.ssh/*`, `~/.aws/*`, `id_rsa*`,
+  `*.pem`, `credentials*`.
+- **Network egress** (`run_bash`, basename-matched): `curl`, `wget`, `nc`,
+  `ssh`, `scp`, `rsync`.
+
+Unlike the destructive tier, guarded rules resolve to `ask`, not `deny` —
+reading your own `.env` or curl-ing an API is common and legitimate. The
+guarantee is "a human always sees this," not "this never runs": a guarded
+match is exempt from the posture bypass exactly like an unresolved bash
+segment (below), so it can never be silently auto-allowed regardless of
+posture or `defaultMode: allowAll`. It can still be answered "yes" at the
+prompt, once, for a session, or always (with the same forced-`exact`
+narrowing on approval as the destructive tier).
+
+**Known gap**: the secret-path guard only covers the file-reading tools
+(`read_file`/`write_to_file`/`edit`). A `run_bash` command that reads a
+secret file as an argument (`cat .env`) is not covered — that would require
+scanning arbitrary command arguments for path-shaped substrings, which the
+rule model doesn't attempt. See security-spec.md.
+
+## Persistence Tiers
+
+Chosen per-approval from the 4-option prompt:
+
+- **Once** — no engine call at all; the turn just proceeds.
+- **Session** — `engine.approveForSession(rule)` appends to an in-memory
+  `sessionRules` array (`origin: "session"`). Never written to disk, cleared
+  on process restart.
+- **Always** — `engine.approveAlways(rule)` appends to `configRules` (live
+  immediately, no reload needed) *and* persists to `.deepcode/settings.json`
+  via an atomic write (temp file + `renameSync`), preserving all other
+  top-level JSON keys.
+
+Both session and always approval of a destructive- or guarded-origin match
+force the approved rule to `kind: "exact"` on the literal subject text —
+approving one instance never broadens to the whole category. This is
+enforced at the engine API level (`PermissionEngine.narrowToExact`), not
+left to UI discipline.
+
+## Posture (Shift+Tab)
+
+Posture is **UI-only state** (`App.tsx`, `ctx.mutable.posture`), not engine
+state — the engine has no session-wide auto-approve flag. Three values:
+`normal`, `autoApprove`, `plan`. Cycled with Shift+Tab; the prompt shows
+non-default state.
+
+- **Session-scoped. Never persisted** — a new session always starts
+  `normal`.
+- In `autoApprove`, the `askUser` callback bypasses an ordinary rule-derived
+  `ask` result without prompting — **but never**:
+  - a `deny` result (never bypassed, in any posture),
+  - a result with `wasUnresolved: true` (the bash normalizer couldn't
+    safely classify it),
+  - a result with `isGuarded: true` (the winning rule is `builtin-guarded`).
+
+  This last exclusion is what prevents a secret-path read or network-egress
+  command from being silently waved through just because the session happens
+  to be in auto-approve posture.
+- Sub-agent calls (`src/agent.ts`, threaded through
+  `src/orchestrator/index.ts`) share the same `askUser` callback as the
+  top-level agent — a sub-agent's ask-tier call surfaces to the same prompt
+  flow, labeled with which sub-agent is asking, rather than being silently
+  denied headlessly.
 
 ## The Ask Prompt
 
-When a tool call resolves to `ask` (and approval mode doesn't upgrade it):
+Four options, cursor-navigable or number-keyed:
 
 ```
   [run_bash] npm install left-pad
-  Allow? (y)es once · (a)llow for session · (n)o  >
+  Risk: modifies state
+  1. Yes, just once
+  2. Yes, for this session
+  3. Yes, always allow
+  4. No
 ```
 
-| Answer | Effect |
-|--------|--------|
-| `y` | Run this one call |
-| `a` | Run it AND append a session rule: exact tool + generalized pattern (`npm install *` for bash commands, the file's directory for edit tools). Shown back to the user as it's added. |
-| `n` | Tool returns `PERMISSION_DENIED: denied by user` — the model sees it and can adjust course |
-
-`a` is the workhorse: the ruleset learns during the session, so the third
-`npm install` never prompts, without touching config. Session rules are
-listed by `/approve` and die with the session.
+A destructive-origin match (`winningRule.origin === "builtin-destructive"`)
+renders `DestructiveConfirmPrompt` instead — visually distinct (red border,
+explicit warning banner) — rather than the standard prompt. It offers the
+same four options; the load-bearing safety property is the engine forcing
+`kind: "exact"` on approval, not the prompt's interaction style.
 
 ## Headless Interaction (cli-spec.md)
 
-- Default: fail closed — `ask` resolves to deny (unchanged).
-- `-p --approve all` (or `edits`): applies the overlay for scripted runs.
-  This is how golden tasks execute fixtures without per-call prompts.
-  `deny` rules still hold, per the invariant.
+- Default: fail closed — `ask` resolves to deny (unchanged from prior
+  behavior).
+- Headless exec mode (`src/exec-runner.ts`) currently does not construct a
+  `PermissionEngine` at all — every tool call runs unchecked. This is a
+  pre-existing gap, not something this rewrite addressed; flagged here since
+  it means the fail-closed default above does not currently apply to `-x`.
 
 ## Design Decisions
 
-1. **Overlay, not rule rewriting.** Approval mode never mutates the ruleset;
-   it changes only how `ask` resolves. Rules stay the single source of truth
-   and `/approve manual` instantly restores them.
-2. **Two tiers, not three.** Claude Code needs a plan mode; heirloom's
-   read-only personas already gate harder (the tools don't exist). No
-   redundant third tier.
-3. **`deny` is absolute.** The alternative (bypass mode overrides deny, like
-   Claude Code's `bypassPermissions`) makes `all` too sharp for a
-   default-shipped feature. Users who truly want that can delete the deny rule.
+1. **Rule-based, not scope-buckets.** The prior design classified every call
+   into one of 11 coarse buckets (`read-in-cwd`, `write-in-cwd`, ...); there
+   was no way to allow `git status` forever without also exposing
+   `git push --force` under the same bucket. Rules match tool + argument
+   pattern directly.
+2. **Deny wins by default, not raw specificity argmax.** An early design
+   ranked all matching rules by specificity regardless of action and let the
+   highest score win — this let a blanket glob allow numerically outrank a
+   narrow deny, and let a global `any`-kind deny "lose" to any real allow
+   rule (since `any` scores the floor). The action-tier partition plus the
+   `any`-kind absolute-kill-switch exception fixes both.
+3. **Two extra builtin tiers, not baked into ordinary config.** Destructive
+   and guarded rules exist independent of what the user configures, and
+   can't be silently removed — only overridden by a strictly narrower user
+   rule, or (for guarded) simply answered "yes" at the prompt.
+4. **Posture is UI state, not engine state.** The engine has no notion of
+   "auto-approve this session" — that decision is made once, at the point an
+   `ask` result reaches a UI, by checking `wasUnresolved`/`isGuarded` first.
+   This keeps the engine deterministic and testable independent of any UI.
+5. **Approval narrows, never broadens.** Every persistence path (session or
+   always) defaults to the narrowest rule that satisfies the specific call
+   just approved — an exact match on the literal subject text unless a
+   broader `winningRule` already existed to approve. A destructive or
+   guarded match is *always* narrowed to exact on approval, regardless of
+   what rule shape was offered.

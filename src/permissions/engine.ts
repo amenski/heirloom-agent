@@ -5,6 +5,7 @@ import type { PermissionAction, PermissionRule, PermissionSubject } from "./rule
 import { buildSubject, patternMatches, specificity, serializeRulePattern } from "./rules.js";
 import { buildBashSubject } from "./bash-normalize.js";
 import { BUILTIN_DESTRUCTIVE_RULES } from "./destructive.js";
+import { BUILTIN_GUARDED_RULES } from "./guarded.js";
 
 export type { PermissionAction, PermissionRule, PatternKind, RuleOrigin } from "./rules.js";
 
@@ -18,7 +19,12 @@ export interface ResolveResult {
   winningRule?: PermissionRule;
   /** True when any bash segment couldn't be safely classified — see bash-normalize.ts. Never bypassable by an auto-approve posture. */
   wasUnresolved: boolean;
+  /** True when the winning rule is origin "builtin-guarded" (secret-adjacent path). Never bypassable by an auto-approve posture, same as wasUnresolved. */
+  isGuarded: boolean;
 }
+
+/** Internal shape used by the private resolution helpers, before isGuarded is derived at the resolve() boundary. */
+type InternalResolveResult = Omit<ResolveResult, "isGuarded">;
 
 interface OnDiskRule {
   tool: string;
@@ -49,12 +55,11 @@ export class PermissionEngine {
   resolve(toolName: string, args?: Record<string, unknown>): ResolveResult {
     const a = args ?? {};
 
-    if (toolName === "run_bash") {
-      return this.resolveBash(String(a.command ?? ""));
-    }
+    const internal = toolName === "run_bash"
+      ? this.resolveBash(String(a.command ?? ""))
+      : this.resolveSubject(toolName, this.relativizeSubject(buildSubject(toolName, a)));
 
-    const subject = this.relativizeSubject(buildSubject(toolName, a));
-    return this.resolveSubject(toolName, subject);
+    return { ...internal, isGuarded: internal.winningRule?.origin === "builtin-guarded" };
   }
 
   /**
@@ -75,14 +80,14 @@ export class PermissionEngine {
     return { ...subject, resolvedPath: `./${rel}` };
   }
 
-  private resolveBash(command: string): ResolveResult {
+  private resolveBash(command: string): InternalResolveResult {
     const { segments, wasUnresolved } = buildBashSubject(command);
 
     if (segments.length === 0) {
       return { action: "ask", wasUnresolved: true };
     }
 
-    let combined: ResolveResult = this.resolveSubject("run_bash", { tool: "run_bash", text: segments[0] });
+    let combined: InternalResolveResult = this.resolveSubject("run_bash", { tool: "run_bash", text: segments[0] });
     for (const segment of segments.slice(1)) {
       const result = this.resolveSubject("run_bash", { tool: "run_bash", text: segment });
       combined = this.combineMostRestrictive(combined, result);
@@ -94,20 +99,20 @@ export class PermissionEngine {
     return { action: finalAction, winningRule: combined.winningRule, wasUnresolved: combined.wasUnresolved || wasUnresolved };
   }
 
-  private combineMostRestrictive(a: ResolveResult, b: ResolveResult): ResolveResult {
+  private combineMostRestrictive(a: InternalResolveResult, b: InternalResolveResult): InternalResolveResult {
     const rank: Record<PermissionAction, number> = { deny: 2, ask: 1, allow: 0 };
     if (rank[b.action] > rank[a.action]) return b;
     return a;
   }
 
-  private resolveSubject(toolName: string, subject: PermissionSubject): ResolveResult {
-    const allRules = [...BUILTIN_DESTRUCTIVE_RULES, ...this.configRules, ...this.sessionRules];
+  private resolveSubject(toolName: string, subject: PermissionSubject): InternalResolveResult {
+    const allRules = [...BUILTIN_DESTRUCTIVE_RULES, ...BUILTIN_GUARDED_RULES, ...this.configRules, ...this.sessionRules];
     const matches = allRules.filter((r) => patternMatches(r, subject));
 
     if (matches.length === 0) {
       // Only user-configured rules count toward "this tool is recognized" —
-      // builtin destructive rules exist for every install regardless of user
-      // intent, so they can't be what makes an unconfigured tool "known."
+      // builtin destructive/guarded rules exist for every install regardless
+      // of user intent, so they can't be what makes an unconfigured tool "known."
       const userRules = [...this.configRules, ...this.sessionRules];
       const hasAnyRuleForTool = userRules.some((r) => r.tool === toolName || r.tool === "*" || (r.tool === "mcp__*" && toolName.startsWith("mcp__")));
       if (this.defaultMode === "allowAll" && hasAnyRuleForTool) {
@@ -137,7 +142,7 @@ export class PermissionEngine {
    * satisfied by literally any real allow rule, defeating the point of a
    * deliberately unqualified catch-all block.
    */
-  private resolveTier(tierMatches: PermissionRule[], allowMatches: PermissionRule[], tier: PermissionAction): ResolveResult {
+  private resolveTier(tierMatches: PermissionRule[], allowMatches: PermissionRule[], tier: PermissionAction): InternalResolveResult {
     const bestTierRule = this.highestSpecificity(tierMatches)!;
     if (tierMatches.some((r) => r.kind === "any")) {
       return { action: tier, winningRule: bestTierRule, wasUnresolved: false };
@@ -177,29 +182,30 @@ export class PermissionEngine {
 
   /**
    * Approves `rule` for this process only. Never written to disk, cleared on
-   * restart. A destructive-origin match is forced to kind "exact" on the
-   * literal subject text — approving one instance never broadens to the
-   * whole category.
+   * restart. A destructive- or guarded-origin match is forced to kind
+   * "exact" on the literal subject text — approving one instance never
+   * broadens to the whole category (all destructive commands of that shape,
+   * or all secret-adjacent paths of that shape).
    */
-  approveForSession(rule: PermissionRule, matchedDestructive?: PermissionRule): void {
-    const narrowed = matchedDestructive ? this.narrowToExact(rule, matchedDestructive) : rule;
+  approveForSession(rule: PermissionRule, matchedBuiltin?: PermissionRule): void {
+    const narrowed = matchedBuiltin ? this.narrowToExact(rule, matchedBuiltin) : rule;
     this.sessionRules.push({ ...narrowed, origin: "session" });
   }
 
   /**
    * Approves `rule` for this process and persists it to .deepcode/settings.json
-   * via an atomic write (temp file + rename). A destructive-origin match is
-   * forced to kind "exact" on the literal subject text.
+   * via an atomic write (temp file + rename). A destructive- or
+   * guarded-origin match is forced to kind "exact" on the literal subject text.
    */
-  approveAlways(rule: PermissionRule, matchedDestructive?: PermissionRule): void {
-    const narrowed = matchedDestructive ? this.narrowToExact(rule, matchedDestructive) : rule;
+  approveAlways(rule: PermissionRule, matchedBuiltin?: PermissionRule): void {
+    const narrowed = matchedBuiltin ? this.narrowToExact(rule, matchedBuiltin) : rule;
     const configRule: PermissionRule = { ...narrowed, origin: "config" };
     this.configRules.push(configRule);
     this.persist();
   }
 
-  private narrowToExact(rule: PermissionRule, matchedDestructive: PermissionRule): PermissionRule {
-    if (matchedDestructive.origin !== "builtin-destructive") return rule;
+  private narrowToExact(rule: PermissionRule, matchedBuiltin: PermissionRule): PermissionRule {
+    if (matchedBuiltin.origin !== "builtin-destructive" && matchedBuiltin.origin !== "builtin-guarded") return rule;
     return { ...rule, kind: "exact" };
   }
 

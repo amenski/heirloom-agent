@@ -588,16 +588,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             if (preview) scheduleOutput(preview);
           }
 
-          const { action, winningRule, wasUnresolved } = ctx.permissions.resolve(toolName, args);
+          const { action, winningRule, wasUnresolved, isGuarded } = ctx.permissions.resolve(toolName, args);
 
           // deny should never reach askUser (agent.ts only calls it for "ask"),
           // but handle defensively rather than assume the caller's invariant.
           if (action === "deny") return false;
 
           // Auto-approve posture bypasses an ordinary rule-derived ask, but
-          // never a result the bash normalizer couldn't safely classify —
-          // that must always surface the real prompt, regardless of posture.
-          if (ctx.mutable.posture === "autoApprove" && !wasUnresolved) {
+          // never a result the bash normalizer couldn't safely classify, and
+          // never a secret-adjacent path guard — both must always surface the
+          // real prompt, regardless of posture.
+          if (ctx.mutable.posture === "autoApprove" && !wasUnresolved && !isGuarded) {
             return true;
           }
 
@@ -919,11 +920,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
     if (decision === "session" || decision === "always") {
       const rule = askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args);
-      const matchedDestructive = askPrompt.winningRule?.origin === "builtin-destructive" ? askPrompt.winningRule : undefined;
+      const isBuiltinOrigin = askPrompt.winningRule?.origin === "builtin-destructive" || askPrompt.winningRule?.origin === "builtin-guarded";
+      const matchedBuiltin = isBuiltinOrigin ? askPrompt.winningRule : undefined;
       if (decision === "session") {
-        ctx.permissions.approveForSession(rule, matchedDestructive);
+        ctx.permissions.approveForSession(rule, matchedBuiltin);
       } else {
-        ctx.permissions.approveAlways(rule, matchedDestructive);
+        ctx.permissions.approveAlways(rule, matchedBuiltin);
       }
     }
 

@@ -1,6 +1,14 @@
 export type PermissionAction = "allow" | "ask" | "deny";
 export type PatternKind = "exact" | "prefix" | "glob" | "any";
-export type RuleOrigin = "builtin-destructive" | "config" | "session";
+/**
+ * "builtin-guarded" covers secret-adjacent paths (.env, ~/.ssh, ~/.aws,
+ * credentials files): always resolves to "ask" (never silently auto-allowed
+ * by posture or defaultMode: allowAll — see PermissionEngine's posture
+ * bypass and resolveSubject), unlike "builtin-destructive" which denies.
+ * Reading your own .env once is legitimate; silently exfiltrating it is not
+ * — the guarantee is "a human always sees this," not "this never runs."
+ */
+export type RuleOrigin = "builtin-destructive" | "builtin-guarded" | "config" | "session";
 
 export interface PermissionRule {
   tool: string;
@@ -36,9 +44,7 @@ function matchesTokenBoundary(patternToken: string, textToken: string): boolean 
   return nextChar !== undefined && !/[A-Za-z0-9]/.test(nextChar);
 }
 
-function matchesPrefix(pattern: string, text: string): boolean {
-  const patternTokens = pattern.trim().split(/\s+/).filter(Boolean);
-  const textTokens = text.trim().split(/\s+/).filter(Boolean);
+function matchesTokenSequence(patternTokens: string[], textTokens: string[]): boolean {
   if (patternTokens.length > textTokens.length) return false;
   for (let i = 0; i < patternTokens.length; i++) {
     const isLast = i === patternTokens.length - 1;
@@ -49,6 +55,108 @@ function matchesPrefix(pattern: string, text: string): boolean {
     }
   }
   return true;
+}
+
+function matchesPrefix(pattern: string, text: string): boolean {
+  const patternTokens = pattern.trim().split(/\s+/).filter(Boolean);
+  const textTokens = text.trim().split(/\s+/).filter(Boolean);
+  return matchesTokenSequence(patternTokens, textTokens);
+}
+
+const SHORT_FLAG_CLUSTER = /^-[a-zA-Z]+$/;
+
+/**
+ * Merges the first run of consecutive single-dash short-flag tokens (e.g.
+ * "-r", "-f", "-rf", "-fr") — wherever it starts, not necessarily
+ * immediately after the first token, since some commands have a subcommand
+ * before their flags ("git clean -fdx") — into one canonical cluster with
+ * its letters lowercased and sorted. This makes "-fr"/"-rf"/"-r -f"/"-f -r"
+ * (and their uppercase variants) all normalize identically before matching.
+ * Long-form flags are mapped to their short equivalent first (see
+ * LONG_FLAG_MAP) when the command is one we have a mapping for, so
+ * "rm --recursive --force /" also normalizes to "rm -rf /". Flagless
+ * arguments and tokens outside the run are left untouched; this only
+ * targets the specific reordering/case/long-form evasion, not general
+ * argument parsing.
+ */
+function normalizeShortFlagCluster(tokens: string[]): string[] {
+  const command = tokens[0];
+  const longMap = LONG_FLAG_MAP[command];
+  const mapped = longMap ? tokens.map((t) => longMap[t] ?? t) : tokens;
+
+  const startIdx = mapped.findIndex((t) => SHORT_FLAG_CLUSTER.test(t));
+  if (startIdx === -1) return mapped;
+
+  let endIdx = startIdx;
+  let mergedFlags = "";
+  while (endIdx < mapped.length && SHORT_FLAG_CLUSTER.test(mapped[endIdx])) {
+    mergedFlags += mapped[endIdx].slice(1).toLowerCase();
+    endIdx++;
+  }
+
+  const canonicalCluster = `-${[...mergedFlags].sort().join("")}`;
+  return [...mapped.slice(0, startIdx), canonicalCluster, ...mapped.slice(endIdx)];
+}
+
+/**
+ * Per-command long-form → short-flag equivalents, applied before
+ * flag-cluster normalization so e.g. "rm --recursive --force /" folds to
+ * the same canonical form as "rm -rf /". Deliberately a small, explicit,
+ * per-binary table (each command's flag grammar differs) rather than a
+ * generic getopt parser — scoped to exactly the flags the destructive/
+ * guarded seed rules care about.
+ */
+const LONG_FLAG_MAP: Record<string, Record<string, string>> = {
+  rm: { "--recursive": "-r", "--force": "-f" },
+};
+
+/**
+ * Resolves a token that may be a path-qualified command invocation
+ * ("/usr/bin/rm", "./rm") down to its bare basename, and lowercases it, so
+ * destructive-rule matching isn't defeated by absolute-path invocation or
+ * case variation ("RM -RF /"). Only applied to the first (command) token —
+ * arguments and paths elsewhere in the command are left case-sensitive,
+ * since file paths on most filesystems are case-sensitive.
+ */
+function normalizeCommandToken(token: string): string {
+  const base = token.includes("/") ? token.slice(token.lastIndexOf("/") + 1) : token;
+  return base.toLowerCase();
+}
+
+/**
+ * Command names where a suffix genuinely denotes the same family of tool
+ * (mkfs.ext4/mkfs.vfat are all "mkfs"), so the command-name token is allowed
+ * to boundary-extend like any other token. Every other single-token builtin
+ * pattern requires an EXACT command-name match — "curl" must not match
+ * "curl-config" (a real, unrelated, harmless tool bundled with libcurl;
+ * confirmed present on a real machine during review), and there's no
+ * general rule that distinguishes "legitimate tool-family variant" from
+ * "different binary that happens to share a prefix" without an explicit list.
+ */
+const COMMAND_NAME_BOUNDARY_EXTENDABLE = new Set(["mkfs"]);
+
+/**
+ * Hardened prefix matching used only for builtin rules (origin
+ * "builtin-destructive" or "builtin-guarded"): resolves the invoked command
+ * to its lowercase basename and canonicalizes a leading short-flag cluster
+ * before comparing, closing the absolute-path, case, and flag-reordering
+ * evasions found during security review. Ordinary user-authored rules keep
+ * matchesPrefix's literal semantics — this is deliberately not the default
+ * so a user's own rule isn't silently reinterpreted.
+ */
+function matchesBuiltinPrefix(pattern: string, text: string): boolean {
+  const patternTokens = pattern.trim().split(/\s+/).filter(Boolean);
+  const textTokens = text.trim().split(/\s+/).filter(Boolean);
+  if (textTokens.length === 0) return false;
+
+  const normalizedText = normalizeShortFlagCluster([normalizeCommandToken(textTokens[0]), ...textTokens.slice(1)]);
+  const normalizedPattern = normalizeShortFlagCluster([normalizeCommandToken(patternTokens[0]), ...patternTokens.slice(1)]);
+
+  if (normalizedPattern.length === 1 && !COMMAND_NAME_BOUNDARY_EXTENDABLE.has(normalizedPattern[0])) {
+    return normalizedText[0] === normalizedPattern[0];
+  }
+
+  return matchesTokenSequence(normalizedPattern, normalizedText);
 }
 
 function globToRegex(pattern: string): RegExp {
@@ -77,7 +185,9 @@ export function patternMatches(rule: PermissionRule, subject: PermissionSubject)
     case "exact":
       return rule.pattern === subject.text;
     case "prefix":
-      return matchesPrefix(rule.pattern, subject.text);
+      return rule.origin === "builtin-destructive" || rule.origin === "builtin-guarded"
+        ? matchesBuiltinPrefix(rule.pattern, subject.text)
+        : matchesPrefix(rule.pattern, subject.text);
     case "glob": {
       const target = subject.resolvedPath ?? subject.text;
       return globToRegex(rule.pattern).test(target);

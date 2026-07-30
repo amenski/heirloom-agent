@@ -410,4 +410,48 @@ describe("PermissionEngine.resolve", () => {
       expect(engine.resolve("read_file", { path: "/workspace/docs/readme.md" }).action).toBe("ask");
     });
   });
+
+  describe("guarded tier: secret-adjacent paths always ask, never silently auto-allow", () => {
+    it("reading .env resolves to ask with isGuarded true, even with no config at all", () => {
+      const result = engine.resolve("read_file", { path: "/workspace/.env" });
+      expect(result.action).toBe("ask");
+      expect(result.isGuarded).toBe(true);
+    });
+
+    it("an ordinary read (no guarded match) has isGuarded false", () => {
+      const result = engine.resolve("read_file", { path: "/workspace/src/main.ts" });
+      expect(result.isGuarded).toBe(false);
+    });
+
+    it("defaultMode allowAll does NOT silently allow a guarded path — ask still wins over the fallback", () => {
+      engine = new PermissionEngine({ defaultMode: "allowAll", rules: [{ tool: "read_file", kind: "any", pattern: "", action: "allow", origin: "config" }] }, "/workspace");
+      const result = engine.resolve("read_file", { path: "/workspace/.env" });
+      expect(result.action).toBe("ask");
+      expect(result.isGuarded).toBe(true);
+    });
+
+    it("a strictly-more-specific user allow can still override a guarded ask (same override mechanics as any other ask-tier rule)", () => {
+      engine = new PermissionEngine(
+        { rules: [{ tool: "read_file", kind: "exact", pattern: "/workspace/.env", action: "allow", origin: "config" }] },
+        "/workspace",
+      );
+      const result = engine.resolve("read_file", { path: "/workspace/.env" });
+      expect(result.action).toBe("allow");
+    });
+
+    it("approveAlways on a guarded match forces kind exact, mirroring destructive narrowing", () => {
+      const dir = mkdtempSync(join(tmpdir(), "heirloom-engine-guarded-"));
+      try {
+        const scopedEngine = new PermissionEngine(undefined, dir);
+        const envPath = join(dir, ".env");
+        const guardedMatch: PermissionRule = { tool: "read_file", kind: "glob", pattern: "**/.env*", action: "ask", origin: "builtin-guarded" };
+        scopedEngine.approveAlways(scopedEngine.buildDefaultRule("read_file", { path: envPath }), guardedMatch);
+        const result = scopedEngine.resolve("read_file", { path: envPath });
+        expect(result.action).toBe("allow");
+        expect(result.winningRule?.kind).toBe("exact");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });
