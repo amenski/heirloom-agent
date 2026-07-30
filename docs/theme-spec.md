@@ -3,10 +3,9 @@
 Status: **partly implemented, partly planned.** Gutter/prompt contrast fix and
 real system-theme detection shipped 2026-08-01 (`ansi256()` bridge, tuned slots,
 injectable detector + tests; note: detection must use static ESM imports — a
-`require()` there silently breaks in the tsup bundle). `/theme` command, extra
-presets, and `ThemeableStatic` still planned. The token model + resolver exist
-and are wired in; the runtime `/theme` switcher, a working system-detect, and the
-gutter/prompt contrast fix below are planned.
+`require()` there silently breaks in the tsup bundle). The token model +
+resolver were already wired in. Still planned: the runtime `/theme` switcher,
+extra presets, and `ThemeableStatic`.
 
 Heirloom's theme system lives in `src/ui/theme.ts`: a fully offline, config-driven
 color engine with ~20 semantic slots, a 19-color `SyntaxColors` set, and a
