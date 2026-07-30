@@ -13,6 +13,7 @@ export interface ModelCapabilities {
 
 export type StreamEvent =
   | { type: "text_delta"; content: string }
+  | { type: "reasoning_delta"; content: string }
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; id: string; arguments: string }
   | { type: "usage"; inputTokens: number; outputTokens: number }

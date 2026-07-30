@@ -9,7 +9,6 @@ import { Box, Text, useInput, useApp } from "ink";
 import { previewEdit } from "../permissions/diffpreview.js";
 import type { AppContext, StatusSegment, GitStatus } from "./types.js";
 import type { PermissionScope } from "../permissions/index.js";
-import type { ModelEntry } from "./ModelSelector.js";
 import type { KeybindingConfig } from "./keybindings.js";
 
 import {
@@ -32,9 +31,12 @@ import CommandPalette, {
 import OutputArea from "./OutputArea.js";
 import Spinner from "./Spinner.js";
 import PermissionPrompt from "./PermissionPrompt.js";
-import ChatInput from "./ChatInput.js";
-import StatusBar from "./StatusBar.js";
-import ModelSelector from "./ModelSelector.js";
+import WelcomeScreen from "./views/WelcomeScreen.js";
+import PromptInput from "./views/PromptInput.js";
+import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
+import type { AskQuestionItem } from "../tools/types.js";
+import { setAskQuestion } from "../tools/index.js";
+import { ModelsDropdown } from "./components/index.js";
 import {
   SILENT_TOOLS,
   describeToolCall,
@@ -64,9 +66,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     toolName: string;
     args: Record<string, unknown>;
     scopes: PermissionScope[];
+    scopeIndex: number;
+    cursor: number;
+    alwaysAllows: PermissionScope[];
+    denied: boolean;
   } | null>(null);
-  const [modelPicker, setModelPicker] = useState<{
-    entries: ModelEntry[];
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [askQuestionPrompt, setAskQuestionPrompt] = useState<{
+    questions: AskQuestionItem[];
+    resolve: (answers: Record<string, string> | null) => void;
   } | null>(null);
 
   const [showHelp, setShowHelp] = useState(false);
@@ -159,6 +167,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     lines: string[];
   }>({ active: false, lines: [] });
 
+  const reasoningRef = useRef<{ buffer: string; flushed: boolean }>({ buffer: "", flushed: false });
+
   function setActiveLineBoth(v: string) {
     activeLineRef.current = v;
     setActiveLine(v);
@@ -218,7 +228,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   }
 
   const runAgentTurn = useCallback(
-    async (input: string) => {
+    async (input: string, imageUrls?: string[]) => {
       if (!input.trim()) return;
 
       const scheduleOutput = (line: string) =>
@@ -230,13 +240,27 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       startFlushTimer();
       startSpinner();
       cancelled.current = false;
+      reasoningRef.current = { buffer: "", flushed: false };
 
       announceToScreenReader("Heirloom is processing your request", "polite");
 
       let textBuffer = "";
 
+      function flushReasoning() {
+        const { buffer, flushed } = reasoningRef.current;
+        if (flushed || !buffer.trim()) return;
+        reasoningRef.current.flushed = true;
+        const summary = buffer.trim().replace(/\s+/g, " ").slice(0, 100);
+        const line = theme.colorEnabled ? `\x1b[2m✱ ${summary}\x1b[0m` : `✱ ${summary}`;
+        scheduleOutput(line);
+      }
+
       const callbacks = {
+        onReasoning: (c: string) => {
+          reasoningRef.current.buffer += c;
+        },
         onText: (c: string) => {
+          flushReasoning();
           if (!firstTokenRef.current) {
             setFirstTokenBoth(true);
             setBusy(false);
@@ -279,6 +303,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           }
         },
         onToolStart: (name: string, args: Record<string, unknown>) => {
+          flushReasoning();
           if (activeLineRef.current) scheduleOutput(activeLineRef.current);
           setActiveLineBoth("");
           if (SILENT_TOOLS.has(name)) {
@@ -353,13 +378,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           }
           const scopes = ctx.permissions.classifyScopes(toolName, args);
           return new Promise<boolean>((resolve) => {
-            setAskPrompt({ resolve, toolName, args, scopes });
+            setAskPrompt({ resolve, toolName, args, scopes, scopeIndex: 0, cursor: 0, alwaysAllows: [], denied: false });
           });
         },
       };
 
+      setAskQuestion(async (questions) => {
+        return new Promise<Record<string, string> | null>((resolve) => {
+          setAskQuestionPrompt({ questions, resolve });
+        });
+      });
+
       try {
-        const result = await ctx.runAgentTurnCore(input, callbacks);
+        const result = await ctx.runAgentTurnCore(input, callbacks, imageUrls);
 
         flushOutputQueue();
 
@@ -388,6 +419,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           "assertive",
         );
       } finally {
+        setAskQuestion(undefined);
+        setAskQuestionPrompt(null);
         stopFlushTimer();
         setBusy(false);
         stopSpinner();
@@ -405,7 +438,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
     if (trimmed === "/model") {
-      setModelPicker({ entries: ctx.getModelEntries() });
+      setShowModelDropdown(true);
       return;
     }
     ctx.handleSlash(trimmed).then((lines) => {
@@ -457,7 +490,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         description: "Switch model",
         category: "command",
         execute: () =>
-          setModelPicker({ entries: ctx.getModelEntries() }),
+          setShowModelDropdown(true),
       },
       {
         id: "cmd-checkpoint",
@@ -514,35 +547,94 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         description: "Select a different AI model",
         category: "action",
         execute: () =>
-          setModelPicker({ entries: ctx.getModelEntries() }),
+          setShowModelDropdown(true),
       },
     ],
     [ctx, exit],
   );
 
+  function advancePrompt(decision: "allow" | "deny"): void {
+    setAskPrompt((prev) => {
+      if (!prev) return null;
+      const nextIndex = prev.scopeIndex + 1;
+      if (nextIndex >= prev.scopes.length) {
+        const { resolve } = prev;
+        setTimeout(() => resolve(!prev.denied), 0);
+        return null;
+      }
+      return { ...prev, scopeIndex: nextIndex, cursor: 0 };
+    });
+    setBusy(true);
+    startSpinner();
+  }
+
   useInput((value: string, key: any) => {
     if (showHelp) return;
     if (showCommandPalette) return;
-    if (modelPicker) return;
+    if (showModelDropdown) return;
+
+    if (askQuestionPrompt) {
+      return;
+    }
 
     if (askPrompt) {
       const lower = value.toLowerCase();
-      const enterPressed = key.return;
-      if (enterPressed || lower === "y" || lower === "n" || lower === "a") {
-        const resolve = askPrompt.resolve;
-        const scopes = askPrompt.scopes;
 
-        const isAlways = lower === "a";
-        const isDeny = lower === "n";
-
-        if (isAlways) {
-          ctx.permissions.persistAllow(scopes);
-        }
-
+      if (key.escape) {
+        const { resolve } = askPrompt;
         setAskPrompt(null);
-        resolve(enterPressed ? true : !isDeny);
-        setBusy(true);
-        startSpinner();
+        resolve(false);
+        return;
+      }
+
+      if (key.upArrow) {
+        setAskPrompt((prev) => prev ? { ...prev, cursor: Math.max(0, prev.cursor - 1) } : null);
+        return;
+      }
+      if (key.downArrow) {
+        setAskPrompt((prev) => prev ? { ...prev, cursor: Math.min(2, prev.cursor + 1) } : null);
+        return;
+      }
+
+      if (lower === "1" || lower === "2" || lower === "3") {
+        const idx = Number(lower) - 1;
+        const kinds: Array<"allow" | "always" | "deny"> = ["allow", "always", "deny"];
+        const decision = kinds[idx];
+        const scope = askPrompt.scopes[askPrompt.scopeIndex];
+        if (!scope) return;
+
+        if (decision === "always") {
+          ctx.permissions.persistAllow([scope]);
+          const isFirstScope = askPrompt.scopeIndex === 0;
+          if (isFirstScope) {
+            firstTokenRef.current = askPrompt.scopes.every(s => s === scope);
+          }
+          advancePrompt("allow");
+        } else if (decision === "deny") {
+          setAskPrompt((prev) => prev ? { ...prev, denied: true } : null);
+          advancePrompt("deny");
+        } else {
+          advancePrompt("allow");
+        }
+        return;
+      }
+
+      if (key.return) {
+        const kinds: Array<"allow" | "always" | "deny"> = ["allow", "always", "deny"];
+        const decision = kinds[askPrompt.cursor];
+        const scope = askPrompt.scopes[askPrompt.scopeIndex];
+        if (!scope) return;
+
+        if (decision === "always") {
+          ctx.permissions.persistAllow([scope]);
+          advancePrompt("allow");
+        } else if (decision === "deny") {
+          setAskPrompt((prev) => prev ? { ...prev, denied: true } : null);
+          advancePrompt("deny");
+        } else {
+          advancePrompt("allow");
+        }
+        return;
       }
       return;
     }
@@ -564,7 +656,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
 
     if (actions.includes("openModelPicker")) {
-      setModelPicker({ entries: ctx.getModelEntries() });
+      setShowModelDropdown(true);
       return;
     }
 
@@ -579,13 +671,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const colorEnabled = theme.colorEnabled;
   const term = useTerminalInfo();
 
+  const showWelcome = outputLines.length === 0 && !busy;
+
   return (
     <Box flexDirection="column" width={term.columns}>
-      <OutputArea
-        lines={outputLines}
-        activeLine={activeLine}
-        busy={busy}
-      />
+      {showWelcome ? (
+        <WelcomeScreen
+          model={`${ctx.providerName}/${ctx.activeModel ?? "unknown"}`}
+          thinkingEnabled={true}
+          cwd={process.cwd()}
+          width={term.columns}
+        />
+      ) : (
+        <OutputArea
+          lines={outputLines}
+          activeLine={activeLine}
+          busy={busy}
+        />
+      )}
 
       <Spinner busy={busy} firstToken={firstToken} frame={spinnerFrame} />
 
@@ -598,61 +701,73 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {askQuestionPrompt && (
+        <AskUserQuestionPrompt
+          questions={askQuestionPrompt.questions}
+          resolve={(answers) => {
+            setAskQuestionPrompt(null);
+            askQuestionPrompt.resolve(answers);
+          }}
+          width={term.columns}
+        />
+      )}
+
       {askPrompt && (
         <PermissionPrompt
-          toolName={askPrompt.toolName}
-          args={askPrompt.args}
-          scopes={askPrompt.scopes}
-          colorEnabled={colorEnabled}
-        />
-      )}
-
-      {modelPicker && (
-        <ModelSelector
-          entries={modelPicker.entries}
-          onSelect={async (entry) => {
-            setModelPicker(null);
-            if (entry) {
-              const lines = await ctx.handleSlash(
-                `/model ${entry.provider}/${entry.model}`,
-              );
-              for (const line of lines) pushOutput(line);
-              setStatusLine(ctx.buildStatusBar());
-            }
+          request={{ toolName: askPrompt.toolName, command: String(askPrompt.args?.command ?? askPrompt.args?.path ?? ""), scopes: askPrompt.scopes }}
+          scopeIndex={askPrompt.scopeIndex}
+          cursor={askPrompt.cursor}
+          onChoose={() => {}}
+          onCancel={() => {
+            const { resolve } = askPrompt;
+            setAskPrompt(null);
+            resolve(false);
           }}
-          currentProvider={ctx.providerName}
-          currentModel={ctx.activeModel ?? ""}
-          colorEnabled={colorEnabled}
         />
       )}
 
-      {!busy && !askPrompt && !modelPicker && !showHelp && !showCommandPalette && (
-        <ChatInput
-          promptStr={promptStr}
+      {showModelDropdown && (
+        <ModelsDropdown
+          open={showModelDropdown}
+          providerName={ctx.providerName}
+          currentModel={ctx.activeModel}
+          thinkingEnabled={true}
+          reasoningEffort={undefined}
+          width={term.columns}
+          onClose={() => setShowModelDropdown(false)}
+          onSelect={async (provider, model, thinkingEnabled, reasoningEffort) => {
+            const lines = await ctx.handleSlash(`/model ${provider}/${model}`);
+            for (const line of lines) pushOutput(line);
+            setStatusLine(ctx.buildStatusBar());
+          }}
+        />
+      )}
+
+      {!busy && !askPrompt && !askQuestionPrompt && !showModelDropdown && !showHelp && !showCommandPalette && (
+        <PromptInput
+          screenWidth={term.columns}
+          promptHistory={[]}
           busy={busy}
-          onSubmit={(text) => {
+          placeholder="Type your message..."
+          onSubmit={({ text, command, imageUrls }) => {
+            if (command) {
+              if (command === "exit") { ctx.logSessionEnd().finally(() => exit()); return; }
+              handleSlashCommand(`/${command}`);
+              return;
+            }
             if (text.startsWith("/")) {
               handleSlashCommand(text);
             } else {
-              runAgentTurn(text);
+              runAgentTurn(text, imageUrls);
             }
           }}
-          onCompletions={(lines) => pushOutput(lines.join("  "))}
-          completer={ctx.completer}
-          onModelPickerOpen={() =>
-            setModelPicker({ entries: ctx.getModelEntries() })
-          }
+          onInterrupt={() => ctx.provideAbortController().abort()}
+          onExitShortcut={() => ctx.logSessionEnd().finally(() => exit())}
+          onModelPickerOpen={() => setShowModelDropdown(true)}
+          statusLineSegments={statusLine}
+          statusLineSeparator=" · "
         />
       )}
-
-      <StatusBar
-        segments={statusLine}
-        gitStatus={gitStatus}
-        showTimer={true}
-        sessionStart={sessionStart}
-        tokenCounts={tokenCounts}
-        busy={busy}
-      />
     </Box>
   );
 }
