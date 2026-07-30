@@ -2,9 +2,9 @@ import type { ModeConfig } from "./modes/loader.js";
 import type { SkillDef } from "./skills/index.js";
 import type { RepoMap } from "./repomap/index.js";
 import type { ToolGroup } from "./tools/types.js";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { platform } from "node:os";
 
 export interface PromptContext {
@@ -43,6 +43,9 @@ export function buildStablePreamble(ctx: PromptContext): string {
 
   const proj = getProjectInstructions(ctx.workingDir);
   if (proj) sections.push(proj);
+
+  const rules = loadProjectRules(ctx.workingDir);
+  if (rules) sections.push(rules);
 
   if (ctx.skills && ctx.skills.length > 0) {
     sections.push(getSkillsIndex(ctx.skills));
@@ -183,6 +186,109 @@ function getProjectInstructions(cwd: string): string {
   }
 
   return "";
+}
+
+/** Max total bytes of assembled rule content injected into the prompt. */
+const MAX_RULES_BYTES = 20 * 1024;
+
+/**
+ * Recursively load `.heirloom/rules/**\/*.md` and assemble them into a single
+ * "# Project Rules" block. Each file becomes a "### Rule: <scope>" section,
+ * where <scope> is the file's path relative to the rules dir without the `.md`
+ * suffix (e.g. `rules/api/naming.md` → `api/naming`).
+ *
+ * Ordering is deterministic: within every directory, files are emitted before
+ * subdirectories, each group sorted alphabetically. Empty or unreadable files
+ * are skipped. Files that resolve (via symlink) outside the project directory
+ * are skipped as a safety measure. Total content is capped at MAX_RULES_BYTES
+ * and truncated with a note if exceeded. Returns null when the rules dir is
+ * absent or yields no usable content. Rule content is treated as
+ * user-authored, at the same trust level as `.heirloom/instructions.md`.
+ */
+export function loadProjectRules(projectDir: string): string | null {
+  const rulesDir = join(projectDir, ".heirloom", "rules");
+  if (!existsSync(rulesDir)) return null;
+
+  // Resolve the project root once so symlink-escape checks are stable even if
+  // the project path itself contains symlinks.
+  let projectRoot: string;
+  try {
+    projectRoot = realpathSync(projectDir);
+  } catch {
+    return null;
+  }
+
+  const sections: string[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+
+  // Collect .md files in deterministic order: files-then-dirs, alphabetical
+  // within each group, recursing depth-first.
+  const walk = (dir: string): void => {
+    if (truncated) return;
+
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable directory — skip
+    }
+
+    const files = entries
+      .filter((e) => e.isFile() && e.name.endsWith(".md"))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const dirs = entries
+      .filter((e) => e.isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const file of files) {
+      if (truncated) return;
+      const fullPath = join(dir, file.name);
+
+      // Reject anything that resolves outside the project (symlink escape).
+      let realPath: string;
+      try {
+        realPath = realpathSync(fullPath);
+      } catch {
+        continue; // dangling symlink or unreadable — skip
+      }
+      const rel = relative(projectRoot, realPath);
+      if (rel === "" || rel.startsWith("..") || rel.startsWith(sep)) {
+        continue; // escapes the project directory — skip
+      }
+
+      let content: string;
+      try {
+        content = readFileSync(fullPath, "utf-8").trim();
+      } catch {
+        continue; // unreadable file — skip
+      }
+      if (!content) continue; // empty file — skip
+
+      const scope = relative(rulesDir, fullPath).slice(0, -3).split(sep).join("/");
+      const section = `### Rule: ${scope}\n${content}`;
+      const sectionBytes = Buffer.byteLength(section, "utf-8");
+
+      if (totalBytes + sectionBytes > MAX_RULES_BYTES) {
+        sections.push("*(Project rules truncated: size cap reached.)*");
+        truncated = true;
+        return;
+      }
+
+      sections.push(section);
+      totalBytes += sectionBytes;
+    }
+
+    for (const sub of dirs) {
+      if (truncated) return;
+      walk(join(dir, sub.name));
+    }
+  };
+
+  walk(rulesDir);
+
+  if (sections.length === 0) return null;
+  return `# Project Rules\n${sections.join("\n\n")}`;
 }
 
 function getSkillsIndex(skills: SkillDef[]): string {
