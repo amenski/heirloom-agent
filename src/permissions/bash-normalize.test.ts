@@ -126,8 +126,9 @@ describe("isUnresolved: fail-closed detection", () => {
     expect(isUnresolved("echo `rm -rf ~`")).toBe(true);
   });
 
-  it("flags process substitution", () => {
+  it("flags process substitution (both <( and >( directions)", () => {
     expect(isUnresolved("diff <(cat a) <(cat b)")).toBe(true);
+    expect(isUnresolved("tee >(cat)")).toBe(true);
   });
 
   it("flags a bare sh/bash first token not already a full wrapper", () => {
@@ -137,6 +138,23 @@ describe("isUnresolved: fail-closed detection", () => {
   it("does not flag an ordinary command", () => {
     expect(isUnresolved("git status")).toBe(false);
     expect(isUnresolved("npm test")).toBe(false);
+  });
+
+  it("flags a backslash-escaped first token (fail-closed instead of silently falling through)", () => {
+    expect(isUnresolved("\\rm -rf /")).toBe(true);
+  });
+
+  it("flags a quoted first token", () => {
+    expect(isUnresolved("'rm' -rf /")).toBe(true);
+    expect(isUnresolved('"rm" -rf /')).toBe(true);
+  });
+
+  it("does not flag ordinary paths starting with . / ~ or -", () => {
+    // These are legitimate leading characters for real commands/args and
+    // must not be swept up by the not-a-bare-word check.
+    expect(isUnresolved("./script.sh")).toBe(false);
+    expect(isUnresolved("~/bin/tool")).toBe(false);
+    expect(isUnresolved("-x")).toBe(false);
   });
 });
 

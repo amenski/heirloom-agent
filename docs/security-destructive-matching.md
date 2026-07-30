@@ -1,17 +1,21 @@
 # Blocking destructive commands — matching-strategy research
 
-Status: **research complete; core mechanism now largely implemented, one gap
-remains.** Companion to [security-spec.md](./security-spec.md); this is the
-deep-dive behind its **D3** defect and threat **T2** ("`rm -rf` evadable via
+Status: **implemented and closed.** Companion to
+[security-spec.md](./security-spec.md); this is the deep-dive behind the
+destructive-tier matching hardening (formerly D3/T2, "`rm -rf` evadable via
 flag reordering").
 
-> **Update:** since this doc was started, `src/permissions/rules.ts` gained
-> `normalizeShortFlagCluster` + `normalizeCommandToken` + `matchesDestructivePrefix`
-> — i.e. Heirloom **now does flag-cluster normalization** (the approach the
-> research below endorses). The flag-reordering / absolute-path / case evasions
-> in T2/D3 are closed. **One concrete gap remains:** no long-form→short-flag
-> mapping, so `rm --recursive --force /` still doesn't match the `rm -rf /`
-> builtin. See [Recommendation](#recommendation).
+> **Update (2026-07-31):** `src/permissions/rules.ts` has
+> `normalizeShortFlagCluster` + `normalizeCommandToken` + `LONG_FLAG_MAP` +
+> `matchesBuiltinPrefix` (renamed from an earlier `matchesDestructivePrefix`
+> — it now also covers the guarded tier's prefix rules, e.g. network-egress
+> commands, not just destructive ones). **The flag-reordering, absolute-path,
+> case, and long-form-flag evasions in the table below are all closed.** The
+> long-form→short-flag map recommended below is implemented, scoped to `rm`
+> (`--recursive`→`-r`, `--force`→`-f`) — the only builtin rule with both a
+> short-flag cluster and commonly-used long forms. Verified by
+> `destructive.test.ts`'s evasion-resistance suite, including the specific
+> `rm --recursive --force /` case this doc identified as the one remaining gap.
 
 ---
 
@@ -58,22 +62,31 @@ Three cooperating pieces (all in `src/permissions/`):
 
 3. **`rules.ts` — the matcher.** Ordinary user rules use `matchesPrefix`
    (ordered tokens at the start, final token at a **word boundary** via
-   `matchesTokenBoundary`, so `mkfs` catches `mkfs.ext4`). The
-   **builtin-destructive** rules instead use `matchesDestructivePrefix`, which
-   first **normalizes**: `normalizeCommandToken` resolves the command to its
-   lowercase **basename** (`/usr/bin/RM` → `rm`), and `normalizeShortFlagCluster`
-   merges the leading short-flag run and **sorts its letters lowercased**
-   (`-fr`/`-rf`/`-r -f`/`-FR` → one canonical `-fr`) before comparing.
+   `matchesTokenBoundary`, so `mkfs` catches `mkfs.ext4`). Builtin rules
+   (`origin: "builtin-destructive"` or `"builtin-guarded"`) instead use
+   `matchesBuiltinPrefix`, which first **normalizes**: `normalizeCommandToken`
+   resolves the command to its lowercase **basename** (`/usr/bin/RM` → `rm`),
+   `LONG_FLAG_MAP` folds known long-form flags to their short equivalent per
+   command (`--recursive`/`--force` → `-r`/`-f` for `rm`), and
+   `normalizeShortFlagCluster` merges the leading short-flag run and **sorts
+   its letters lowercased** (`-fr`/`-rf`/`-r -f`/`-FR`/`--recursive --force` →
+   one canonical `-fr`) before comparing. A single-token pattern (`curl`,
+   `mkfs`) requires an exact command-name match by default — boundary
+   extension (matching `mkfs.ext4`) is opt-in per command
+   (`COMMAND_NAME_BOUNDARY_EXTENDABLE`), since applying it uniformly would
+   let `curl` incorrectly match the real, unrelated `curl-config` tool.
 
-### The gap (now narrowed)
+### The gap — closed
 
 Steps 1–2 handle chaining/wrappers/fail-closed well, and step 3's
-`matchesDestructivePrefix` now closes the flag-reordering, absolute-path, and
-case evasions that were security-spec **D3/T2**. **What remains:**
-`normalizeShortFlagCluster` deliberately leaves **long-form flags untouched**
-(see its doc comment at `rules.ts:67`), so `rm --recursive --force /` does **not**
-normalize to `rm -rf /` and slips the builtin rule. That single row of the table
-above is the outstanding gap; the rest are covered.
+`matchesBuiltinPrefix` closes every evasion in the table above, including the
+long-form-flag gap this doc originally flagged as outstanding:
+`normalizeShortFlagCluster` now consults `LONG_FLAG_MAP` before clustering,
+so `rm --recursive --force /` normalizes identically to `rm -rf /` and no
+longer slips the builtin rule. Verified in `destructive.test.ts`'s
+evasion-resistance suite (long-form, mixed short/long-form, and the
+`curl-config` false-positive regression this same hardening pass surfaced
+and fixed).
 
 ---
 
@@ -209,8 +222,8 @@ real isolation. The research endorses exactly the shape Heirloom already has:
    (Heirloom's commit `86d17ea` "default to askAll, allow only in-cwd reads" is
    this.) ✅ already done.
 2. **Argv parse-then-normalize for the deny list** — compound-split, wrapper
-   strip, decluster+sort flags, basename+lowercase. ✅ already done
-   (`bash-normalize.ts` + `matchesDestructivePrefix`).
+   strip, long-form→short-flag folding, decluster+sort flags, basename+lowercase.
+   ✅ already done (`bash-normalize.ts` + `matchesBuiltinPrefix`).
 3. **Fail closed on anything unresolved** — `$()`, backticks, process
    substitution, leading `VAR=`, escaped `\rm`, command-carrying wrappers ⇒ ask,
    never silent allow. ✅ `isUnresolved` does this.
@@ -224,13 +237,15 @@ real isolation. The research endorses exactly the shape Heirloom already has:
    and recommend running in a container/VM; a future lightweight OS sandbox
    (Seatbelt/bubblewrap) is the step that actually changes the security model.
 
-### The one concrete code change to make now
+### The one concrete code change — done
 
-Add a **long-form→short-flag map** for the guarded binaries so
-`matchesDestructivePrefix` folds `--recursive`→`-r`, `--force`→`-f` (and the
-`git`/`dd`/`mkfs` equivalents) before clustering. This closes the last row of the
-[problem table](#the-problem) — currently `rm --recursive --force /` slips the
-`rm -rf /` rule. Small, per-binary table; pairs with the existing declustering.
+`LONG_FLAG_MAP` in `rules.ts` maps `rm`'s long-form flags (`--recursive`→`-r`,
+`--force`→`-f`) before clustering, closing the last row of the
+[problem table](#the-problem). Scoped to `rm` only for now — none of the
+other builtin rules (`git push --force`, `git reset --hard`,
+`git clean -fdx`, `mkfs`, `dd if=`) combine a short-flag-cluster pattern with
+a commonly-used long-form alternative the way `rm -rf` does, so extending
+the map further is deferred until a real gap surfaces.
 
 ### Bigger, roadmap
 
@@ -241,10 +256,13 @@ Codex/Claude Code. Currently a stated v1 non-goal — but it's the only thing th
 "holds regardless of what the model chose to run." Worth a separate design doc if
 Heirloom ever targets untrusted repos.
 
-## Verification (for whatever is chosen)
+## Verification — done
 
-A table-driven evasion test: every row in [The problem](#the-problem) must
-resolve to **deny/ask**, never silent allow — plus the negative cases that must
-**not** trip (`rm -rf ./build` in-cwd where policy allows it, `git reset --soft`,
-`ddrescue`, a file literally named `mkfs-notes.txt`). This test is the
-acceptance criterion and should live beside `destructive.test.ts`.
+`src/permissions/destructive.test.ts`'s "evasion resistance" describe block
+covers every row in [The problem](#the-problem) table (absolute path, case,
+flag reordering, combined evasion, long-form flags, mixed short/long-form),
+plus the named negative cases: `git reset --soft` (not `--hard`), `ddrescue`
+(not `dd`), and unrelated safe commands. `bash-normalize.test.ts` separately
+covers the `isUnresolved` fail-closed side (indirection, wrappers,
+substitution, escaped/quoted first tokens). All green as of the hardening
+pass that closed the long-form-flag gap.
