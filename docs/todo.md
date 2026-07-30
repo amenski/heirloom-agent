@@ -189,65 +189,24 @@ Reference: `src_ui_views_McpStatusList.tsx` (report §6). Wire to `src/mcp/conne
 
 ---
 
-## 6. Raw display modes (Lite / Normal / Raw scrollback) + RawModeContext
+## 6. Raw display modes (Lite / Normal / Raw scrollback) + RawModeContext [DONE]
 
-Reference: `src_ui_contexts_RawModeContext.tsx`, `src_ui_components_RawModeExitPrompt_index.tsx`,
-`src_ui_components_RawModelDropdown_index.tsx` (report §11). Note: our App.tsx renders a flat
-scrolling output buffer (`outputLines`/`activeLine`), not deepcode-cli's `SessionMessage[]`-driven
-`<Static>` list — adapt accordingly rather than porting 1:1.
-
-- [ ] New context `src/ui/contexts/RawModeContext.tsx` (or add to existing `src/ui/contexts.tsx`):
-      `mode: "lite" | "normal" | "raw"`, default `"lite"`.
-      - `lite`: current behavior (reasoning collapses to one-liner, per task #15/16 already done).
-      - `normal`: reasoning renders in full instead of collapsing (skip the `flushReasoning()`
-        truncation in `App.tsx`, print the full accumulated buffer instead).
-      - `raw`: bypass the queued/flushed output pipeline — write each chunk directly to
-        `process.stdout` as plain text (no ANSI dimming, no code-block buffering) so native
-        terminal scrollback/copy works. Replaying prior history on mode entry is optional given
-        our flat-buffer architecture — at minimum, new output must go straight to stdout.
-- [ ] `/raw` slash command with args hint `lite | normal | raw-scrollback` cycles modes (reuse the
-      generic `DropdownMenu` component already in `src/ui/components/DropdownMenu/`, following the
-      same pattern as `ModelsDropdown`/`SkillsDropdown`).
-- [ ] Ctrl+R (currently unbound in our `PromptInput.tsx`? verify — deepcode-cli uses it to open
-      the raw-mode dropdown; check our keybindings.ts for conflicts first, since Ctrl+R also means
-      "rename" in SessionList — scope Ctrl+R to whichever view is focused).
-- [ ] Esc exits raw mode back to the previously active mode.
-
-**Acceptance criteria:**
-- `/raw normal` shows full (untruncated) reasoning text on the next turn instead of a collapsed
-  summary line.
-- `/raw raw-scrollback` writes subsequent output directly via `process.stdout.write`, bypassing
-  the dimmed tool-call formatting — verify by capturing stdout in a test harness and checking for
-  absence of ANSI dim codes.
-- Esc from raw mode returns to `lite` (or whichever mode was active before).
+Completed:
+- `src/ui/contexts.tsx`: added `RawModeContext`, `RawModeProvider`, `useRawMode()`, `RawMode` type.
+- `src/ui/App.tsx`: wrapped with RawModeProvider; flushReasoning() shows full text in normal mode;
+  raw mode writes directly to process.stdout; /raw slash cycles modes; Esc exits raw.
+- `src/ui/core/slash-commands.ts` & `src/ui/views/PromptInput.tsx`: added /raw command.
 - `npx tsc --noEmit` and `npm test` pass.
 
 ---
 
-## 7. Exit summary (usage table) + resume hint
+## 7. Exit summary (usage table) + resume hint [DONE]
 
-Reference: `src_ui_exit-summary.ts` (report §6).
-
-- [ ] New module `src/ui/exit-summary.ts`:
-      - `buildExitSummaryText(usagePerModel)`: renders a boxed Unicode usage table, one row per
-        model used this session — columns: Reqs, Input Tokens, Output Tokens, Cached Tokens, all
-        `toLocaleString("en-US")`-formatted and right-aligned, fixed ~98-col width matching
-        deepcode-cli's box-drawing style.
-      - Source the per-model usage data from wherever `shared.sessionInput`/`sessionOutput` are
-        tracked in `cli.tsx` — may need to extend that tracking to be per-model (currently it
-        looks like a single running total; check `runAgentTurnBridge`'s `onUsage` in `cli.tsx`
-        around the `shared.sessionInput += input` line) since multiple models could be used in
-        one session via `/model` switching.
-      - `buildResumeHintText(sessionId)`: prints `"heirloom --resume <id>"` in an accent color.
-- [ ] Wire into the exit flow (`handleExit`/`onExitShortcut` path in `App.tsx`) — print both boxes
-      after the `/exit` echo, before disposing the session and calling Ink's `exit()`.
-
-**Acceptance criteria:**
-- Exiting a session that used one model shows a usage table with exactly one row and correct
-  cumulative token counts (verify against `shared.sessionInput`/`sessionOutput`).
-- Exiting a session where the user ran `/model` mid-session to switch models shows two rows, one
-  per model, each with only that model's usage (not double-counted or merged).
-- The resume hint always shows the correct current `sessionId`.
+Completed:
+- `src/cli.tsx`: per-model usage tracking (`modelUsage` map in shared state).
+- `src/ui/exit-summary.ts`: `buildExitSummaryText()` renders Unicode boxed table; `buildResumeHintText()` prints resume hint.
+- `src/ui/App.tsx`: `handleExit()` prints summary before exiting; wired into all exit paths.
+- `src/ui/types.ts`: added `modelUsage` to `MutableState`.
 - `npx tsc --noEmit` and `npm test` pass.
 
 ---

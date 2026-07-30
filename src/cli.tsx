@@ -186,6 +186,7 @@ async function main() {
     sessionUserInputs: [] as string[],
     abort: new AbortController(),
     toolUsage: {} as Record<string, number>,
+    modelUsage: {} as Record<string, { input: number; output: number }>,
   };
 
   async function logSessionEnd() {
@@ -618,6 +619,9 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,
     onUsage: (input: number, output: number) => {
       shared.sessionInput += input; shared.sessionOutput += output; shared.lastContextTokens = input + output;
+      const modelKey = `${providerName}/${activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown"}`;
+      const existing = shared.modelUsage[modelKey] || { input: 0, output: 0 };
+      shared.modelUsage[modelKey] = { input: existing.input + input, output: existing.output + output };
       sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: shared.sessionInput, cumulativeOutput: shared.sessionOutput });
       cb.onUsage(input, output);
     },

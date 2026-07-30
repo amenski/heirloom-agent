@@ -118,6 +118,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "skills") { const text = "/skills"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
     if (item.kind === "plan") { onTogglePlanMode?.(); return; }
+    if (item.kind === "raw") { const text = "/raw"; setBuffer({ text, cursor: text.length }); return; }
   }
 
   function submitCurrent(): void {

@@ -164,3 +164,25 @@ export function AccessibilityProvider({
 export function useAccessibility(): AccessibilityState {
   return useContext(AccessibilityContext);
 }
+
+export type RawMode = "lite" | "normal" | "raw";
+
+export interface RawModeState {
+  mode: RawMode;
+  setMode: (mode: RawMode) => void;
+}
+
+const RawModeContext = createContext<RawModeState>({
+  mode: "lite",
+  setMode: () => {},
+});
+
+export function RawModeProvider({ children }: { children: React.ReactNode }) {
+  const [mode, setMode] = React.useState<RawMode>("lite");
+  const value = useMemo(() => ({ mode, setMode }), [mode]);
+  return <RawModeContext.Provider value={value}>{children}</RawModeContext.Provider>;
+}
+
+export function useRawMode(): RawModeState {
+  return useContext(RawModeContext);
+}
