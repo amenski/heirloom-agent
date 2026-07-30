@@ -1165,11 +1165,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           open={showModelDropdown}
           providerName={ctx.providerName}
           currentModel={ctx.activeModel}
-          thinkingEnabled={true}
-          reasoningEffort={undefined}
           width={term.columns}
           onClose={() => setShowModelDropdown(false)}
-          onSelect={async (provider, model, thinkingEnabled, reasoningEffort) => {
+          onSelect={async (provider, model) => {
             const lines = await ctx.handleSlash(`/model ${provider}/${model}`);
             for (const line of lines) pushOutput(line);
             setStatusLine(ctx.buildStatusBar());
