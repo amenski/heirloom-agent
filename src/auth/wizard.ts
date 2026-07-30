@@ -1,19 +1,9 @@
 import { createInterface } from "node:readline/promises";
-import { writeFile, readFile, chmod, stat, mkdir } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { BUILTIN_PRESETS } from "../providers/presets.js";
 import { readHiddenLine } from "./hidden-input.js";
-
-// Resolved lazily so tests can mock `homedir()` (the value is read per call,
-// not baked in at module load).
-function credsDir(): string {
-  return join(homedir(), ".heirloom");
-}
-function credsFile(): string {
-  return join(credsDir(), "credentials.yaml");
-}
+import { credsDir, credsFile, readCredentialsFile } from "../config/credentials.js";
 
 const WIZARD_PRESETS: { name: string; keyEnv: string }[] = [
   { name: "deepseek",   keyEnv: "DEEPSEEK_API_KEY" },
@@ -30,39 +20,6 @@ export interface CredentialEntry {
   source: "env" | "credentials" | "none";
 }
 
-async function readCredentials(): Promise<Record<string, string>> {
-  const file = credsFile();
-  if (!existsSync(file)) return {};
-
-  const perms = (await stat(file)).mode & 0o777;
-  if (perms !== 0o600) {
-    console.warn(
-      `warning: ${file} permissions are ${perms.toString(8)}, expected 600. Fixing.`,
-    );
-    await chmod(file, 0o600);
-  }
-
-  const raw = await readFile(file, "utf-8");
-  return parseFlatYaml(raw);
-}
-
-function parseFlatYaml(content: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx === -1) continue;
-    const key = trimmed.slice(0, idx).trim();
-    let value = trimmed.slice(idx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (key) result[key] = value;
-  }
-  return result;
-}
-
 async function writeCredentials(creds: Record<string, string>): Promise<void> {
   const dir = credsDir();
   if (!existsSync(dir)) await mkdir(dir, { recursive: true });
@@ -77,7 +34,7 @@ async function writeCredentials(creds: Record<string, string>): Promise<void> {
  * non-interactive (`--api-key` / piped-stdin) paths.
  */
 export async function authSaveKey(name: string, key: string): Promise<void> {
-  const existing = await readCredentials();
+  const existing = readCredentialsFile();
   existing[name] = key;
   await writeCredentials(existing);
 
@@ -131,7 +88,7 @@ export async function authWizard(): Promise<void> {
 }
 
 export async function authList(): Promise<void> {
-  const creds = await readCredentials();
+  const creds = readCredentialsFile();
 
   const allPresets = new Map<string, string>();
   for (const p of WIZARD_PRESETS) {
@@ -163,7 +120,7 @@ export async function authLogout(name: string): Promise<void> {
     return;
   }
 
-  const creds = await readCredentials();
+  const creds = readCredentialsFile();
   if (!(name in creds)) {
     console.log(`No credentials saved for "${name}".`);
     return;
