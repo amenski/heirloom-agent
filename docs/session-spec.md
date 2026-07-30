@@ -38,7 +38,8 @@ Without this, heirloom is a calculator that forgets (see subsystems.md §1).
 
 ## Record Types
 
-Each line is one JSON object with a `type` field. Four types:
+Each line is one JSON object with a `type` field. Six types: `meta`,
+`message`, `state`, `compaction`, `permission`, `token`.
 
 ### `meta` — always the first line
 
@@ -88,26 +89,88 @@ transcript stays on disk for rewind and audit.
 
 ```json
 {"type":"permission","at":"...","toolCallId":"call_1","tool":"run_bash",
- "subject":"rm -rf /","decision":"deny",
+ "subject":"rm -rf /","decision":"deny-by-rule",
+ "reason":"deny rule matched (builtin-destructive)",
  "winningRule":{"tool":"run_bash","kind":"prefix","pattern":"rm -rf /","action":"deny","origin":"builtin-destructive"}}
 ```
 
-One row per permission decision — `decision` is `"deny" | "once" | "session" |
-"always"`. `subject` (the literal command/path the decision was made
-against) is redacted through the same secret-pattern redactor as message
-content. `winningRule` is the rule that produced the outcome, absent when
-the decision came from a `defaultMode` fallthrough with no matching rule.
-Written from two call sites (`SessionStore.appendPermission`): `agent.ts`
-for auto-resolved outcomes (deny, or allow with no prompt needed), and
-`App.tsx`'s `handlePermissionDecision` for a real prompted decision — never
-both for the same call, since `agent.ts` only calls `askUser` when a prompt
-is actually needed and stays silent on that path. Queried via
+One row per permission decision. The canonical agent-emitted `decision`
+vocabulary (one value per resolution path in `agent.ts`) is:
+
+| `decision` | Meaning |
+|---|---|
+| `allow-by-rule` | An allow rule matched; the call ran with no prompt. |
+| `allow-by-posture` | Auto-approve posture let an ordinary ask through. Emitted UI-side; agent-side this surfaces as `ask-approved` (see caveat below). |
+| `ask-approved` | An interactive prompt was answered yes. |
+| `ask-denied` | An interactive prompt was answered no. |
+| `deny-by-rule` | A deny rule matched (destructive / guarded / config). |
+| `headless-deny` | Resolved to ask but no interactive prompter was available (headless / sub-agent). |
+| `unresolved-ask` | A bash segment couldn't be safely classified; fail-closed to ask, then approved. |
+
+`subject` (the literal command/path the decision was made against) and
+`reason` are both redacted through the same secret-pattern redactor as
+message content. `winningRule` is the rule that produced the outcome, absent
+when the decision came from a `defaultMode` fallthrough with no matching rule.
+
+**Legacy / UI-side values.** The four finer-grained values `"once" |
+"session" | "always" | "deny"` are still accepted on read and write: the TUI
+(`App.tsx handlePermissionDecision`) writes them for an interactively-answered
+prompt (it alone knows which of the four buttons the user pressed), and older
+sessions carry them. Readers must tolerate both sets.
+
+**Write sites & the interactive-path caveat.** `agent.ts` writes exactly one
+row for *every* path it resolves (`SessionStore.appendPermission`), using the
+canonical vocabulary above. On the interactive approval path `App.tsx` *also*
+writes its own finer-grained (`once`/`session`/`always`) row — so an
+interactively-approved call produces two rows: the agent's coarse
+`ask-approved` and the UI's fine-grained one. This is intentional: the agent
+guarantees a row exists on approval paths the UI never logs (notably
+auto-approve posture, where `App.tsx` writes nothing), at the cost of a
+duplicate on the one path the UI does log. Queried via
 `SessionStore.queryPermissionHistory(sessionId)`; surfaced in the TUI via
 `/permissions` (permission-spec.md).
 
 Permission records are ignored by `load()`/`loadEffective()` — they don't
 appear in the conversation and don't affect message indexing or compaction's
 `replacesThrough` offsets.
+
+### `token` — per-turn token-usage entry
+
+```json
+{"type":"token","at":"...","turnTokens":4210,"totalUsed":88123,"budgetMax":200000}
+```
+
+One row per model turn, written by `agent.ts` after the turn's assistant
+message is assembled (`SessionStore.appendToken`).
+
+- `turnTokens` — the provider-reported input + output tokens for that turn
+  (summed from the `usage` stream event).
+- `totalUsed` — current context occupancy, measured with the same
+  `estimateTokens` used by compaction, so `remaining = budgetMax - totalUsed`
+  agrees with the headroom compaction sees.
+- `budgetMax` — the context-window ceiling (`AgentOptions.contextWindow`,
+  default `128000`).
+
+`remaining` is **derived on read** (`budgetMax - totalUsed`), never stored.
+Queried via `SessionStore.queryTokenUsage(sessionId)`, which returns each row
+with `remaining` computed. Like `permission` rows, `token` rows are ignored by
+`load()`/`loadEffective()`.
+
+---
+
+## Read-side Query API
+
+Plain JSONL filtering on `SessionStore` — no index, no SQL. Each reads the
+file, filters by record `type`, and shapes the result:
+
+| Method | Returns |
+|---|---|
+| `queryPermissionHistory(sessionId)` | Every `permission` row in order, each as `PermissionAuditRecord & { at }`. Empty array for a missing session or one with no permission rows. |
+| `queryTokenUsage(sessionId)` | Every `token` row in order, each as `TokenUsageRecord & { at, remaining }` with `remaining = budgetMax - totalUsed` computed. Empty array for a missing session or one with no token rows. |
+
+Both are **backward-compatible**: a session written before these record types
+existed simply has no matching rows, so the queries return `[]` and resuming
+it via `load()`/`loadEffective()` is entirely unaffected.
 
 ---
 

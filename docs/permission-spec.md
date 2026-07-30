@@ -281,14 +281,61 @@ same four options; the load-bearing safety property is the engine forcing
 
 ## Audit Trail
 
-Every permission decision — deny, allow with no prompt, or a prompted
-once/session/always/no answer — is recorded as a `permission` record in the
+Every permission decision is recorded as a `permission` record in the
 session's JSONL file (see [session-spec.md](./session-spec.md#permission--audit-trail-entry)
-for the record shape). `/permissions` opens a TUI view listing this
+for the record shape and the read-side query API). `agent.ts` writes exactly
+one row for **every** resolution path it handles, so the trail answers "why did
+this run without asking me" and "what did I approve earlier this session"
+without grepping the raw file. `/permissions` opens a TUI view listing this
 session's decisions in order, most recent selected by default; arrow keys
-browse, Esc closes. Answers the "why did this run without asking me" /
-"what did I approve earlier this session" questions without needing to grep
-the raw session file by hand.
+browse, Esc closes.
+
+### Decision vocabulary — one value per resolution path
+
+Each agent-side path emits a distinct `decision`, plus a human-readable
+`reason` (both `subject` and `reason` are secret-redacted):
+
+| `decision` | Path in `agent.ts` | `reason` (example) |
+|---|---|---|
+| `deny-by-rule` | `resolve()` returned `deny` | `deny rule matched (builtin-destructive)` |
+| `allow-by-rule` | `resolve()` returned `allow` (no prompt) | `allow rule matched (config)` |
+| `ask-approved` | `resolve()` returned `ask`, `askUser` → true | `approved by user (or auto-approve posture)` |
+| `ask-denied` | `resolve()` returned `ask`, `askUser` → false | `denied by user at prompt` |
+| `unresolved-ask` | `ask` approved but a bash segment was `wasUnresolved` | `approved by user; bash segment was unresolved (fail-closed ask)` |
+| `headless-deny` | `resolve()` returned `ask` with no `askUser` supplied | `resolved to ask with no interactive prompter (headless)` |
+| `allow-by-posture` | *(UI-side only — see below)* | — |
+
+`winningRule` is attached whenever the resolution had one (absent only for a
+`defaultMode` fallthrough with no matching rule).
+
+### UI-side nuances (agent-side approximations)
+
+Two distinctions are only knowable in the TUI, so `agent.ts` records its best
+approximation and the finer detail is left to `App.tsx`:
+
+- **Fine-grained approval (`once` / `session` / `always`).** `askUser` returns
+  a bare boolean, so the agent can't tell which button the user pressed; it
+  records `ask-approved`. `App.tsx handlePermissionDecision` *additionally*
+  writes a row carrying the precise `once` / `session` / `always` (or `deny`)
+  value. An interactively-approved call therefore yields **two** rows — the
+  agent's `ask-approved` and the UI's fine-grained one. Accepted on purpose:
+  the agent's write is the one that guarantees coverage of paths the UI never
+  logs.
+- **`allow-by-posture`.** When the auto-approve posture short-circuits an
+  ordinary ask, `App.tsx`'s `askUser` returns `true` **without** showing a
+  prompt or writing any row. The agent sees only "ask → approved" and records
+  `ask-approved` — it cannot distinguish a posture auto-approval from a real
+  interactive yes. `allow-by-posture` is reserved as the canonical value for
+  this case should a UI-side write ever be added; today it is not emitted by
+  `agent.ts`. This is the one path the agent-side trail approximates rather
+  than names exactly.
+
+### Token-usage trail
+
+Alongside permission rows, `agent.ts` writes one `token` record per turn
+(`turnTokens`, `totalUsed`, `budgetMax`; `remaining` derived on read). See
+[session-spec.md](./session-spec.md#token--per-turn-token-usage-entry) and
+`SessionStore.queryTokenUsage(sessionId)`.
 
 ## Headless Interaction (cli-spec.md)
 

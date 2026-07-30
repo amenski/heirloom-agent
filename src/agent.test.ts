@@ -149,10 +149,10 @@ describe("runAgent", () => {
 
   describe("permission audit logging", () => {
     function fakeSessionStore() {
-      return { appendPermission: vi.fn(async () => {}) };
+      return { appendPermission: vi.fn(async () => {}), appendToken: vi.fn(async () => {}) };
     }
 
-    it("logs a deny decision when a rule denies the call outright", async () => {
+    it("logs a deny-by-rule decision when a rule denies the call outright", async () => {
       const { provider } = makeProvider([
         [
           { type: "tool_call_start", id: "call_1", name: "run_bash" },
@@ -170,11 +170,11 @@ describe("runAgent", () => {
       expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
         tool: "run_bash",
         subject: "rm -rf /",
-        decision: "deny",
+        decision: "deny-by-rule",
       }));
     });
 
-    it("logs a once decision when a rule allows the call with no prompt needed", async () => {
+    it("logs an allow-by-rule decision when a rule allows the call with no prompt needed", async () => {
       const { provider } = makeProvider([
         [
           { type: "tool_call_start", id: "call_1", name: "run_bash" },
@@ -195,11 +195,11 @@ describe("runAgent", () => {
       expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
         tool: "run_bash",
         subject: "npm test",
-        decision: "once",
+        decision: "allow-by-rule",
       }));
     });
 
-    it("does not double-log when askUser is provided and prompts (App.tsx owns that log line)", async () => {
+    it("logs an ask-approved decision when askUser approves the prompt", async () => {
       const { provider } = makeProvider([
         [
           { type: "tool_call_start", id: "call_1", name: "run_bash" },
@@ -215,10 +215,36 @@ describe("runAgent", () => {
 
       await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1" });
 
-      expect(sessionStore.appendPermission).not.toHaveBeenCalled();
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        tool: "run_bash",
+        subject: "npm test",
+        decision: "ask-approved",
+      }));
     });
 
-    it("logs a deny decision for the headless-ask-becomes-deny path", async () => {
+    it("logs an ask-denied decision when askUser rejects the prompt", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"command":"npm test"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("ok"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+      const sessionStore = fakeSessionStore();
+      const askUser = vi.fn(async () => false);
+
+      await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1" });
+
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        decision: "ask-denied",
+      }));
+    });
+
+    it("logs a headless-deny decision for the headless-ask path", async () => {
       const { provider } = makeProvider([
         [
           { type: "tool_call_start", id: "call_1", name: "run_bash" },
@@ -233,7 +259,7 @@ describe("runAgent", () => {
 
       await runAgent("run", { provider, tools: [], executeTool, permissions, sessionStore: sessionStore as any, sessionId: "s1" });
 
-      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "deny" }));
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "headless-deny" }));
     });
 
     it("does not throw or log when permissions is absent entirely", async () => {
@@ -244,6 +270,83 @@ describe("runAgent", () => {
       await runAgent("hi", { provider, tools: [], executeTool, sessionStore: sessionStore as any, sessionId: "s1" });
 
       expect(sessionStore.appendPermission).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("token-usage logging", () => {
+    function fakeSessionStore() {
+      return {
+        appendPermission: vi.fn(async (_id: string, _rec: unknown) => {}),
+        appendToken: vi.fn(async (_id: string, _rec: unknown) => {}),
+      };
+    }
+
+    it("records one token row per turn with the turn's reported usage", async () => {
+      const provider: Provider = {
+        name: "fake",
+        async *streamChat() {
+          yield { type: "text_delta", content: "hi" } as StreamEvent;
+          yield { type: "usage", inputTokens: 100, outputTokens: 40 } as StreamEvent;
+          yield { type: "done", finishReason: "stop" } as StreamEvent;
+        },
+      };
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("hi", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "" }),
+        sessionStore: sessionStore as any,
+        sessionId: "s1",
+        contextWindow: 200000,
+      });
+
+      expect(sessionStore.appendToken).toHaveBeenCalledTimes(1);
+      expect(sessionStore.appendToken).toHaveBeenCalledWith("s1", expect.objectContaining({
+        turnTokens: 140,
+        budgetMax: 200000,
+      }));
+    });
+
+    it("accumulates one token row per turn across a tool-call turn and the final turn", async () => {
+      const provider = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "read" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+          { type: "usage", inputTokens: 200, outputTokens: 30 },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        [
+          { type: "text_delta", content: "done" },
+          { type: "usage", inputTokens: 260, outputTokens: 10 },
+          { type: "done", finishReason: "stop" },
+        ],
+      ]).provider;
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "file contents" }),
+        sessionStore: sessionStore as any,
+        sessionId: "s1",
+      });
+
+      expect(sessionStore.appendToken).toHaveBeenCalledTimes(2);
+      const firstCall = sessionStore.appendToken.mock.calls[0][1] as any;
+      const secondCall = sessionStore.appendToken.mock.calls[1][1] as any;
+      expect(firstCall.turnTokens).toBe(230);
+      expect(secondCall.turnTokens).toBe(270);
+      // totalUsed reflects live context growth across turns.
+      expect(secondCall.totalUsed).toBeGreaterThanOrEqual(firstCall.totalUsed);
+      // remaining is derived on read; budgetMax defaults to 128000.
+      expect(firstCall.budgetMax).toBe(128000);
+    });
+
+    it("does not record token rows without a session store", async () => {
+      const { provider } = makeProvider([textTurn("hi")]);
+      // No sessionStore/sessionId — must not throw.
+      await runAgent("hi", { provider, tools: [], executeTool: async () => ({ content: "" }) });
     });
   });
 });

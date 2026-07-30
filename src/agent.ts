@@ -9,8 +9,9 @@ import type { ErrorRecovery } from "./errorrecovery/index.js";
 import type { SkillDef } from "./skills/index.js";
 import type { RepoMap } from "./repomap/index.js";
 import type { MemoryStore } from "./memory/store.js";
-import type { SessionStore, CompactionSummary } from "./sessions/store.js";
+import type { SessionStore, CompactionSummary, PermissionDecision } from "./sessions/store.js";
 import { buildStablePreamble, buildVolatileContext, type PromptContext } from "./prompt.js";
+import { estimateTokens } from "./compaction/budget.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
@@ -62,6 +63,8 @@ export interface AgentOptions {
   errorReflector?: ErrorReflector;
   errorRecovery?: ErrorRecovery;
   maxTurns?: number;
+  /** Context-window ceiling used as budgetMax for per-turn token rows. Defaults to 128000, the codebase-wide fallback. */
+  contextWindow?: number;
   skills?: SkillDef[];
   repomap?: RepoMap;
   memory?: string;
@@ -158,6 +161,7 @@ export async function runAgent(
 
     let content = "";
     let reasoning = "";
+    let turnTokens = 0;
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
 
     try {
@@ -181,6 +185,7 @@ export async function runAgent(
           break;
         }
         case "usage":
+          turnTokens += event.inputTokens + event.outputTokens;
           options.onUsage?.(event.inputTokens, event.outputTokens, event.cachedInputTokens);
           break;
         case "done":
@@ -200,8 +205,23 @@ export async function runAgent(
 
     if (reasoning) messages.push({ role: "assistant", content: reasoning, meta: { asThinking: true } });
 
+    // One token-usage row per turn: turnTokens is the provider-reported
+    // input+output for this turn; totalUsed mirrors what compaction measures
+    // (estimateTokens of the live message set) so remaining = budgetMax -
+    // totalUsed agrees with the compaction headroom; budgetMax is the context
+    // window. remaining is derived on read, never stored.
+    const recordTokens = async (): Promise<void> => {
+      if (!options.sessionStore || !options.sessionId) return;
+      await options.sessionStore.appendToken(options.sessionId, {
+        turnTokens,
+        totalUsed: estimateTokens(messages),
+        budgetMax: options.contextWindow ?? 128000,
+      });
+    };
+
     if (pendingCalls.size === 0) {
       if (content) messages.push({ role: "assistant", content });
+      await recordTokens();
       break;
     }
 
@@ -235,57 +255,67 @@ export async function runAgent(
       toolCalls,
     });
 
+    await recordTokens();
+
     diagnostics?.snapshot();
 
     for (const tc of toolCalls) {
       options.onToolStart?.(tc.name, tc.arguments);
 
       if (permissions) {
-        const { action, winningRule } = permissions.resolve(tc.name, tc.arguments);
+        const { action, winningRule, wasUnresolved } = permissions.resolve(tc.name, tc.arguments);
         const subject = permissionSubjectText(tc.name, tc.arguments);
+        const audit = async (
+          decision: PermissionDecision,
+          reason: string,
+        ): Promise<void> => {
+          if (!options.sessionStore || !options.sessionId) return;
+          await options.sessionStore.appendPermission(options.sessionId, {
+            toolCallId: tc.id, tool: tc.name, subject, decision, winningRule, reason,
+          });
+        };
 
         if (action === "deny") {
           const msg = `Permission denied for ${tc.name}`;
           options.onDiagnostic?.("denied");
-          if (options.sessionStore && options.sessionId) {
-            await options.sessionStore.appendPermission(options.sessionId, {
-              toolCallId: tc.id, tool: tc.name, subject, decision: "deny", winningRule,
-            });
-          }
+          await audit("deny-by-rule", `deny rule matched (${winningRule?.origin ?? "rule"})`);
           messages.push({ role: "tool", toolCallId: tc.id, content: msg });
           continue;
         }
         if (action === "ask") {
           if (options.askUser) {
-            // askUser's boolean doesn't distinguish once/session/always — the
-            // UI layer (App.tsx) logs that finer-grained outcome itself, since
-            // only it knows which of the 4 options the user picked. Nothing
-            // to log here on the allow path; a denial from the prompt is
-            // still recorded below since it's equivalent to a deny outcome.
             const allowed = await options.askUser(tc.name, tc.arguments);
             if (!allowed) {
               const msg = "PERMISSION_DENIED: denied by user";
               options.onDiagnostic?.("denied");
+              await audit("ask-denied", "denied by user at prompt");
               messages.push({ role: "tool", toolCallId: tc.id, content: msg });
               continue;
             }
+            // Approved via askUser. The TUI (App.tsx) writes a finer-grained
+            // once/session/always row when it actually shows a prompt, but it
+            // writes nothing when an auto-approve posture short-circuits the
+            // prompt — so the agent records the coarse "approved" outcome here
+            // to guarantee a row exists on every approval path. On the
+            // interactive path this coexists with the UI's fine-grained row
+            // (see UI-side approximation note in permission-spec.md).
+            await audit(
+              wasUnresolved ? "unresolved-ask" : "ask-approved",
+              wasUnresolved
+                ? "approved by user; bash segment was unresolved (fail-closed ask)"
+                : "approved by user (or auto-approve posture)",
+            );
           } else {
             const msg = "PERMISSION_DENIED: headless — rule resolved to ask";
             options.onDiagnostic?.("denied");
-            if (options.sessionStore && options.sessionId) {
-              await options.sessionStore.appendPermission(options.sessionId, {
-                toolCallId: tc.id, tool: tc.name, subject, decision: "deny", winningRule,
-              });
-            }
+            await audit("headless-deny", "resolved to ask with no interactive prompter (headless)");
             messages.push({ role: "tool", toolCallId: tc.id, content: msg });
             continue;
           }
-        } else if (action === "allow" && options.sessionStore && options.sessionId) {
+        } else if (action === "allow") {
           // Rule-derived allow with no prompt at all — still worth an audit
           // row so "why did this run without asking me" is answerable.
-          await options.sessionStore.appendPermission(options.sessionId, {
-            toolCallId: tc.id, tool: tc.name, subject, decision: "once", winningRule,
-          });
+          await audit("allow-by-rule", `allow rule matched (${winningRule?.origin ?? "rule"})`);
         }
       }
 
