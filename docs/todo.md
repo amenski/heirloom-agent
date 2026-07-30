@@ -111,7 +111,18 @@ method names).
 
 ---
 
-## 4. UndoSelector view (`/undo`) + checkpoint restore wiring
+## 4. UndoSelector view (`/undo`) + checkpoint restore wiring [DONE]
+
+Completed:
+- `src/checkpoints/index.ts`: added `restoreFrom(hash)` for restoring from a specific commit.
+- `src/cli.tsx`: `runAgentTurnBridge` now saves checkpoints before each turn with `[convLen:N]`
+  marker in commit message; `restoreCheckpoint` callback in appCtx handles code restore and
+  conversationHistory truncation.
+- `src/ui/views/UndoSelector.tsx`: two-phase view — pick checkpoint, then choose restore mode
+  (code+conversation or conversation only).
+- `src/ui/App.tsx`: `showUndoSelector` state, intercepts `/undo`, renders UndoSelector, sets
+  `promptDraft` after restore.
+- `npx tsc --noEmit` and `npm test` pass.
 
 Reference: `src_ui_views_UndoSelector.tsx` (report §6). Wire to `src/checkpoints/index.ts`
 (`CheckpointManager` — confirm current restore method signatures before assuming).

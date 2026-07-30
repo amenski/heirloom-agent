@@ -355,7 +355,7 @@ async function main() {
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls, planMode),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls, planMode, checkpoints),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -366,6 +366,26 @@ async function main() {
         } catch {
           return false;
         }
+      },
+      restoreCheckpoint: async (hash: string, restoreCode: boolean) => {
+        const ck = checkpoints;
+        if (restoreCode) {
+          const result = await ck.restoreFrom(hash);
+          if (!result.restored) return { restored: false, promptDraft: "" };
+        }
+        const entries = ck.list();
+        const found = entries.find((e) => e.hash === hash);
+        if (found) {
+          const convMatch = found.message.match(/\[convLen:(\d+)\]/);
+          if (convMatch) {
+            const len = parseInt(convMatch[1], 10);
+            if (len >= 0 && len <= shared.conversationHistory.length) {
+              shared.conversationHistory = shared.conversationHistory.slice(0, len);
+            }
+          }
+        }
+        const msgMatch = found?.message.match(/\]\s+(.+)/);
+        return { restored: true, promptDraft: msgMatch ? msgMatch[1] : "" };
       },
       showResumeOnStart: resumeSessionId === true,
       theme: resolvedTheme,
@@ -576,7 +596,11 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined, imageUrls?: string[], planMode?: boolean): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager): Promise<any> {
+  if (checkpoints) {
+    const convLen = shared.conversationHistory.length;
+    await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
+  }
   shared.sessionUserInputs.push(input);
   const processed = await processAtMentions(input);
   const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
