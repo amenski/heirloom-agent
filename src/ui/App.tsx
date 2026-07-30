@@ -37,6 +37,7 @@ import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
 import UndoSelector from "./views/UndoSelector.js";
+import McpStatusList from "./views/McpStatusList.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
@@ -87,6 +88,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   } | null>(null);
   const [showSessionList, setShowSessionList] = useState(false);
   const [showUndoSelector, setShowUndoSelector] = useState(false);
+  const [showMcpStatus, setShowMcpStatus] = useState(false);
   const [promptDraft, setPromptDraft] = useState<{ nonce: number; text: string } | null>(null);
   const draftNonceRef = useRef(0);
 
@@ -485,6 +487,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowUndoSelector(true);
       return;
     }
+    if (trimmed === "/mcp") {
+      setShowMcpStatus(true);
+      return;
+    }
     ctx.handleSlash(trimmed).then((lines) => {
       for (const line of lines) pushOutput(line);
       setStatusLine(ctx.buildStatusBar());
@@ -626,6 +632,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
 
     if (showUndoSelector) {
+      return;
+    }
+
+    if (showMcpStatus) {
       return;
     }
 
@@ -842,6 +852,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showMcpStatus && (
+        <McpStatusList
+          onClose={() => setShowMcpStatus(false)}
+          width={term.columns}
+        />
+      )}
+
       {showModelDropdown && (
         <ModelsDropdown
           open={showModelDropdown}
@@ -859,7 +876,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showModelDropdown && !showHelp && !showCommandPalette && (
+      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && (
         <>
           {planMode && (
             <Box>

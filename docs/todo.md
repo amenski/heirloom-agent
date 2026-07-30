@@ -152,7 +152,16 @@ Reference: `src_ui_views_UndoSelector.tsx` (report §6). Wire to `src/checkpoint
 
 ---
 
-## 5. McpStatusList view (`/mcp`)
+## 5. McpStatusList view (`/mcp`) [DONE]
+
+Completed:
+- `src/mcp/connector.ts`: restructured — added `McpServerStatus` tracking (connected/failed/
+  reconnecting/starting), `getMCPServerStatuses()`, `getMCPServerTools()`, `reconnectMCPServer()`,
+  `getServerConfigs()`, per-server status map.
+- `src/ui/views/McpStatusList.tsx`: new view — server list with status icons, drill-down to tools,
+  R to reconnect failed servers, auto-refresh on 2s interval.
+- `src/ui/App.tsx`: `showMcpStatus` state, intercepts `/mcp`, renders McpStatusList.
+- `npx tsc --noEmit` and `npm test` pass.
 
 Reference: `src_ui_views_McpStatusList.tsx` (report §6). Wire to `src/mcp/connector.ts`
 (`connectMCPServers`, per-server tool/prompt/resource snapshots already tracked in
