@@ -69,8 +69,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [outputLines, setOutputLines] = useState<string[]>([]);
   const [activeLine, setActiveLine] = useState("");
   const [busy, setBusy] = useState(false);
-  const [firstToken, setFirstToken] = useState(false);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
+  // A turn-scoped "working" indicator, distinct from `busy` (which flips false at
+  // the first streamed token so the input unlocks mid-turn). `turnActive` stays
+  // true for the whole turn — including the silent stretches during tool calls
+  // and follow-up model turns — so progress is always visible while working.
+  const [turnActive, setTurnActive] = useState(false);
+  const [turnElapsed, setTurnElapsed] = useState(0);
+  const elapsedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [statusLine, setStatusLine] = useState<StatusSegment[]>(() =>
     ctx.buildStatusBar(),
   );
@@ -242,7 +248,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   function setFirstTokenBoth(v: boolean) {
     firstTokenRef.current = v;
-    setFirstToken(v);
   }
 
   function flushOutputQueue() {
@@ -281,9 +286,28 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   }
 
+  // Turn-scoped elapsed clock driving the "working" indicator. Ticks once a
+  // second from turn start until the turn's `finally`.
+  function startElapsedTimer() {
+    stopElapsedTimer();
+    setTurnElapsed(0);
+    const started = Date.now();
+    elapsedTimer.current = setInterval(() => {
+      setTurnElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+  }
+
+  function stopElapsedTimer() {
+    if (elapsedTimer.current) {
+      clearInterval(elapsedTimer.current);
+      elapsedTimer.current = null;
+    }
+  }
+
   useEffect(() => {
     return () => {
       stopSpinner();
+      stopElapsedTimer();
       stopFlushTimer();
       flushOutputQueue();
     };
@@ -355,9 +379,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
       setActiveLineBoth("");
       setBusy(true);
+      setTurnActive(true);
       setFirstTokenBoth(false);
       startFlushTimer();
       startSpinner();
+      startElapsedTimer();
       cancelled.current = false;
       reasoningRef.current = { buffer: "", flushed: false };
       const turnStart = Date.now();
@@ -405,7 +431,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           if (!firstTokenRef.current) {
             setFirstTokenBoth(true);
             setBusy(false);
-            stopSpinner();
           }
           reasoningRef.current.buffer += c;
         },
@@ -414,7 +439,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           if (!firstTokenRef.current) {
             setFirstTokenBoth(true);
             setBusy(false);
-            stopSpinner();
           }
           if (needTextSeparator && textBuffer === "" && c.trim() !== "") {
             needTextSeparator = false;
@@ -603,7 +627,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         setAskQuestionPrompt(null);
         stopFlushTimer();
         setBusy(false);
+        setTurnActive(false);
         stopSpinner();
+        stopElapsedTimer();
         codeBlockRef.current = { active: false, lines: [] };
         ctx.renewAbortController();
         setStatusLine(ctx.buildStatusBar());
@@ -1002,7 +1028,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         busy={busy}
       />
 
-      <Spinner busy={busy} firstToken={firstToken} frame={spinnerFrame} />
+      <Spinner active={turnActive} frame={spinnerFrame} elapsed={turnElapsed} />
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 
