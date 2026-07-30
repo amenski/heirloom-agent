@@ -996,7 +996,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   function handleExit() {
     const usage = ctx.mutable.modelUsage;
     if (usage && Object.keys(usage).length > 0) {
-      pushOutput(buildExitSummaryText(usage as Record<string, { input: number; output: number }>));
+      pushOutput(buildExitSummaryText(usage));
     }
     pushOutput(buildResumeHintText(ctx.sessionId, colorEnabled));
     ctx.logSessionEnd().finally(() => exit());

@@ -6,7 +6,17 @@ formatting/gutter, bracketed-paste and Plan-mode bug fixes, dead `src/index.ts` 
 
 ---
 
-## 1. Stable prompt prefix + provider prompt caching
+## 1. Stable prompt prefix + provider prompt caching — ✅ DONE (2026-07-30)
+
+Implemented: `buildSystemPrompt` split into `buildStablePreamble` (cached, byte-stable, skills
+sorted) + `buildVolatileContext` (RepoMap/env/plan-mode); the stable preamble is the sole system
+message at index 0 and is reused across turns (cache keyed on mode/skills/memory/workingDir refs);
+volatile context is injected only into the per-turn `streamChat` request (never stored in history);
+tool defs sorted by name; and cached tokens surfaced via `usage.inputTokenDetails.cacheReadTokens`
+into the exit-summary "Cached Tokens" column. Verified against `ai@7` type defs and real DeepSeek
+debug logs (non-zero `cacheReadTokens`). tsc clean, 143 tests pass. Original plan retained below for
+reference.
+
 
 **Motivation:** From "How ChatGPT Optimizes Its Agent Loop" (bytebytego), the one client-applicable
 technique is **stable prompt prefixes to preserve the provider's KV/prompt cache** (their §2, with
@@ -77,5 +87,5 @@ schema overhead is negligible.
 
 ## Suggested next step
 
-Commit the current working tree first (it's a large, verified batch of UI/loop work), then take
-item 1 as its own focused change.
+Item 1 is done and verified in the working tree. Nothing else is queued — add new forward-looking
+items here as they come up.

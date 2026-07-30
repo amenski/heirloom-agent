@@ -4,7 +4,8 @@ import type { Provider, StreamEvent } from "./providers/types.js";
 import type { Message } from "./types.js";
 
 vi.mock("./prompt.js", () => ({
-  buildSystemPrompt: vi.fn(async () => "SYSTEM PROMPT"),
+  buildStablePreamble: vi.fn(() => "SYSTEM PROMPT"),
+  buildVolatileContext: vi.fn(async () => ""),
 }));
 
 type TurnScript = StreamEvent[];
