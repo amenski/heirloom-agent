@@ -777,7 +777,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowThemeDropdown(true);
       return;
     }
-    if (trimmed === "/resume" || trimmed === "/continue") {
+    if (trimmed === "/new") {
+      // Start a fresh conversation: drop the model-visible history and wipe the
+      // scrollback so the session reads as new. Same history reset as /clear,
+      // plus a visible-transcript clear the bare /clear doesn't do.
+      ctx.mutable.conversationHistory = [];
+      setOutputLines([]);
+      pushOutput("[started a fresh conversation]");
+      return;
+    }
+    if (trimmed === "/plan") {
+      // Toggle the plan posture on/off — the same posture Shift+Tab cycles to.
+      applyPosture(posture === "plan" ? "normal" : "plan");
+      pushOutput(posture === "plan" ? "[plan mode off]" : "[plan mode on]");
+      return;
+    }
+    if (trimmed === "/resume" || trimmed === "/continue" || trimmed === "/sessions") {
       setShowSessionList(true);
       return;
     }
@@ -857,20 +872,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           setShowModelDropdown(true),
       },
       {
-        id: "cmd-checkpoint",
-        label: "/checkpoint",
-        description: "Save manual checkpoint",
-        category: "command",
-        execute: () => handleSlashCommand("/checkpoint"),
-      },
-      {
-        id: "cmd-checkpoints",
-        label: "/checkpoints",
-        description: "List checkpoints",
-        category: "command",
-        execute: () => handleSlashCommand("/checkpoints"),
-      },
-      {
         id: "cmd-sessions",
         label: "/sessions",
         description: "List sessions",
@@ -880,9 +881,16 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       {
         id: "cmd-new",
         label: "/new",
-        description: "Start new session",
+        description: "Start a fresh conversation",
         category: "command",
         execute: () => handleSlashCommand("/new"),
+      },
+      {
+        id: "cmd-plan",
+        label: "/plan",
+        description: "Toggle plan mode",
+        category: "command",
+        execute: () => handleSlashCommand("/plan"),
       },
       {
         id: "cmd-skills",
