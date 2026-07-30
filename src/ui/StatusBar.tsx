@@ -30,8 +30,6 @@ interface StatusBarProps {
   sessionStart?: number;
   /** Session token counts for display */
   tokenCounts?: { input: number; output: number } | null;
-  /** Whether the agent is currently busy */
-  busy?: boolean;
 }
 
 /**
@@ -99,7 +97,6 @@ function StatusBar({
   showTimer = false,
   sessionStart,
   tokenCounts,
-  busy,
 }: StatusBarProps) {
   const theme = useTheme();
   const term = useTerminalInfo();
@@ -176,14 +173,6 @@ function StatusBar({
     tokenStr = dim(` \u0394${inK}k/\u2191${outK}k`);
   }
 
-  // Busy indicator
-  let busyStr = "";
-  if (busy) {
-    busyStr = theme.colorEnabled
-      ? `\x1b[38;5;${t.warningFg}m\u25CF\x1b[0m `
-      : "* ";
-  }
-
   // A single status line (no extra horizontal rule \u2014 the input box above already
   // provides the visual divider). Fixed trailing info (git/timer/tokens) is
   // always kept; the model/mode/ctx/cost/effort segments fill the remaining
@@ -191,7 +180,7 @@ function StatusBar({
   const cleanLen = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").length;
   const sepLen = cleanLen(sep);
   const maxWidth = Math.max(term.columns - 1, 10);
-  const fixedLen = cleanLen(busyStr) + cleanLen(gitStr) + cleanLen(timerStr) + cleanLen(tokenStr);
+  const fixedLen = cleanLen(gitStr) + cleanLen(timerStr) + cleanLen(tokenStr);
 
   const segBudget = maxWidth - fixedLen;
   const fullSegLen = cleanLen(statusLine);
@@ -219,7 +208,6 @@ function StatusBar({
   return (
     <Box>
       <Text>
-        {busyStr}
         {segmentBody}
         {gitStr}
         {timerStr}

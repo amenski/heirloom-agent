@@ -28,7 +28,6 @@ interface Props {
   screenWidth: number;
   promptHistory: string[];
   busy: boolean;
-  queuedCount?: number;
   placeholder?: string;
   promptDraft?: { nonce: number; text: string } | null;
   onSubmit: (submission: PromptSubmission) => void;
@@ -39,7 +38,7 @@ interface Props {
 }
 
 const PromptInput = React.memo(function PromptInput({
-  screenWidth, promptHistory, busy, queuedCount = 0, placeholder,
+  screenWidth, promptHistory, busy, placeholder,
   promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture,
 }: Props): React.ReactElement {
   const undoRedoRef = useRef(createPromptUndoRedoState());
@@ -65,10 +64,11 @@ const PromptInput = React.memo(function PromptInput({
 
   const lastCtrlDAt = useRef<number>(0);
   const inputContentWidth = Math.max(1, screenWidth - PROMPT_PREFIX_WIDTH);
-  // Footer shows transient messages (e.g. "press ctrl+d again to exit") or a
-  // busy hint. When idle with nothing transient to say, it stays hidden so the
-  // status bar below is the only line under the input — no permanent hint line.
-  const footerText = statusMessage || (busy ? "working… · type to queue a follow-up · esc to interrupt" : "");
+  // Footer shows only transient messages (e.g. "press ctrl+d again to exit").
+  // The busy/"working" hint lives in the turn-scoped Spinner above the input,
+  // so duplicating it here would show two working indicators — hidden when idle
+  // so the status bar below is the only line under the input.
+  const footerText = statusMessage || "";
 
   useEffect(() => {
     if (!statusMessage) return;
@@ -285,9 +285,6 @@ const PromptInput = React.memo(function PromptInput({
       <SlashCommandMenu width={screenWidth} items={slashMenu} activeIndex={menuIndex} />
       {attachedImages.length > 0 && (
         <Box><Text color="yellow">📎 {attachedImages.length} image{attachedImages.length === 1 ? "" : "s"} attached (ctrl+x to clear)</Text></Box>
-      )}
-      {queuedCount > 0 && (
-        <Box><Text color="magenta" dimColor>⏳ {queuedCount} message{queuedCount === 1 ? "" : "s"} queued</Text></Box>
       )}
       {!showMenu && footerText !== "" && (
         <Box><Text dimColor>{footerText}</Text></Box>
