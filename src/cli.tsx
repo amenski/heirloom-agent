@@ -102,20 +102,18 @@ async function main() {
     }
   }
 
-  let activeModel: string | undefined = parsed.model ?? configResult.config.model ?? configEnv?.MODEL ?? undefined;
+  const initialModel: string | undefined = parsed.model ?? configResult.config.model ?? configEnv?.MODEL ?? undefined;
   const thinkingEnabled = configResult.config.thinkingEnabled ?? true;
   const reasoningEffort = configResult.config.reasoningEffort;
 
   function getActiveModelCaps(): ModelCapabilities | undefined {
-    const preset = getPreset(providerName);
+    const preset = getPreset(shared.providerName);
     if (!preset) return undefined;
-    return preset.models[activeModel ?? preset.defaultModel];
+    return preset.models[shared.activeModel ?? preset.defaultModel];
   }
 
-  let activeEffort: string | undefined = reasoningEffort || getActiveModelCaps()?.effort?.default;
-
   function getProvider() {
-    return createProvider(providerName, { modelOverride: activeModel, baseUrl: resolvedBaseUrl, apiKey: resolvedApiKey });
+    return createProvider(shared.providerName, { modelOverride: shared.activeModel, baseUrl: resolvedBaseUrl, apiKey: resolvedApiKey });
   }
 
   const modeLoader = new ModeLoader();
@@ -136,7 +134,7 @@ async function main() {
   const sessionCreateBase = {
     cwd: process.cwd(),
     provider: providerName,
-    model: activeModel || getPreset(providerName)?.defaultModel || "deepseek-chat",
+    model: initialModel || getPreset(providerName)?.defaultModel || "deepseek-chat",
     mode: parsed.mode || "code",
   };
 
@@ -190,7 +188,11 @@ async function main() {
     toolUsage: {} as Record<string, number>,
     modelUsage: {} as Record<string, { input: number; output: number; cached: number }>,
     posture: "normal" as "normal" | "autoApprove" | "plan",
+    providerName,
+    activeModel: initialModel as string | undefined,
+    activeEffort: undefined as string | undefined,
   };
+  shared.activeEffort = reasoningEffort || getActiveModelCaps()?.effort?.default;
 
   // A session resumed at startup (--resume/--last) must seed the live history so
   // the model actually sees the prior turns on the very first message. Without
@@ -251,8 +253,8 @@ async function main() {
       segments.push(dim(nextId(), "▶ normal (shift+tab)"));
     }
 
-    const modelId = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
-    segments.push(T(nextId(), `${getProviderLabel(providerName)}/${modelId}`, { bold: true }));
+    const modelId = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
+    segments.push(T(nextId(), `${getProviderLabel(shared.providerName)}/${modelId}`, { bold: true }));
 
     const ctxPercent = getContextPercent();
     if (ctxPercent !== null) {
@@ -267,8 +269,8 @@ async function main() {
   }
 
   function getContextPercent(): number | null {
-    const preset = getPreset(providerName);
-    const caps = preset?.models[activeModel ?? preset.defaultModel];
+    const preset = getPreset(shared.providerName);
+    const caps = preset?.models[shared.activeModel ?? preset.defaultModel];
     if (!caps?.contextWindow) return null;
     const total = shared.lastContextTokens;
     if (total === 0) return null;
@@ -276,8 +278,8 @@ async function main() {
   }
 
   function getCostStr(): string | null {
-    const preset = getPreset(providerName);
-    const caps = preset?.models[activeModel ?? preset.defaultModel];
+    const preset = getPreset(shared.providerName);
+    const caps = preset?.models[shared.activeModel ?? preset.defaultModel];
     if (!caps?.pricing) return null;
     if (shared.sessionInput === 0 && shared.sessionOutput === 0) return null;
     return ((shared.sessionInput * caps.pricing.inputPerM + shared.sessionOutput * caps.pricing.outputPerM) / 1_000_000).toFixed(4);
@@ -337,8 +339,8 @@ async function main() {
       checkpoints,
       modeLoader,
       skillLoader,
-      providerName,
-      activeModel,
+      get providerName() { return shared.providerName; },
+      get activeModel() { return shared.activeModel; },
       provideAbortController: () => shared.abort,
       renewAbortController: () => { shared.abort = new AbortController(); },
       processAtMentions,
@@ -352,11 +354,11 @@ async function main() {
         const lines: string[] = [];
         const origLog = console.log;
         console.log = (...args) => lines.push(args.map(String).join(" "));
-        try { await handleSlashCore(input, getProvider, providerName, activeModel, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, activeMode, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort, activeEffort); } finally { console.log = origLog; }
+        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, activeMode, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort); } finally { console.log = origLog; }
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls, planMode, checkpoints),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -572,13 +574,12 @@ async function runDoctor(): Promise<void> {
 }
 
 async function handleSlashCore(
-  input: string, getProvider: any, providerName: string, activeModel: string | undefined,
+  input: string, getProvider: any,
   configResult: any, modeLoader: ModeLoader, permissions: PermissionEngine, sessionStore: SessionStore,
   sessionId: string, checkpoints: CheckpointManager, memoryStore: MemoryStore, memoryInjection: string | null | undefined,
   getCompactor: () => Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], skillLoader: SkillLoader,
   shared: any, activeMode: ModeConfig | undefined, getActiveModelCaps: () => ModelCapabilities | undefined,
   getCostStr: () => string | null, colorEnabled: boolean, reasoningEffort: string | undefined,
-  activeEffort: string | undefined,
 ): Promise<void> {
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
@@ -614,8 +615,8 @@ async function handleSlashCore(
     case "/model": {
       const modelArg = input.slice(7).trim();
       if (!modelArg) {
-        const currentModel = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
-        console.log(`Current: ${providerName}/${currentModel}`);
+        const currentModel = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
+        console.log(`Current: ${shared.providerName}/${currentModel}`);
         for (const entry of listKnownModels()) {
           console.log(`  ${entry.provider}/${entry.model}`);
         }
@@ -623,17 +624,18 @@ async function handleSlashCore(
       }
       const slashIdx = modelArg.indexOf("/");
       if (slashIdx < 0) { console.log("Use /model <provider/model>"); return; }
-      providerName = modelArg.slice(0, slashIdx);
-      activeModel = modelArg.slice(slashIdx + 1);
-      console.log(`Model changed to ${providerName}/${activeModel}`);
+      shared.providerName = modelArg.slice(0, slashIdx);
+      shared.activeModel = modelArg.slice(slashIdx + 1);
+      console.log(`Model changed to ${shared.providerName}/${shared.activeModel}`);
       return;
     }
     case "/effort": {
       const arg = input.slice(7).trim();
       const caps = getActiveModelCaps();
       if (!caps?.effort) { console.log("Current model does not support reasoning effort."); return; }
-      if (!arg) { console.log(`Effort: ${activeEffort ?? caps.effort.default}\nValid: ${caps.effort.values.join(", ")}`); return; }
+      if (!arg) { console.log(`Effort: ${shared.activeEffort ?? caps.effort.default}\nValid: ${caps.effort.values.join(", ")}`); return; }
       if (!caps.effort.values.includes(arg)) { console.log(`Invalid effort. Valid: ${caps.effort.values.join(", ")}`); return; }
+      shared.activeEffort = arg;
       console.log(`Effort set to ${arg}.`);
       return;
     }
@@ -641,7 +643,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -654,7 +656,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     provider: getProvider(),
     tools, executeTool, permissions, mode: activeMode, compactor, diagnostics, skills,
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
-    signal: shared.abort.signal, effort: activeEffort,
+    signal: shared.abort.signal, effort: shared.activeEffort,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
     imageUrls,
     planMode,
@@ -663,7 +665,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,
     onUsage: (input: number, output: number, cached?: number) => {
       shared.sessionInput += input; shared.sessionOutput += output; shared.lastContextTokens = input + output;
-      const modelKey = `${providerName}/${activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown"}`;
+      const modelKey = `${shared.providerName}/${shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown"}`;
       const existing = shared.modelUsage[modelKey] || { input: 0, output: 0, cached: 0 };
       shared.modelUsage[modelKey] = { input: existing.input + input, output: existing.output + output, cached: existing.cached + (cached ?? 0) };
       sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: shared.sessionInput, cumulativeOutput: shared.sessionOutput });
