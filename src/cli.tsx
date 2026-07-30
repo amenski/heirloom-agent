@@ -16,7 +16,8 @@ import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
-import { authWizard, authList, authLogout } from "./auth/wizard.js";
+import { authWizard, authList, authLogout, authSaveKey } from "./auth/wizard.js";
+import { readHiddenLine } from "./auth/hidden-input.js";
 import { SessionStore, type CompactionSummary } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
@@ -47,12 +48,7 @@ async function main() {
   }
 
   if (process.argv[2] === "auth") {
-    const sub = process.argv[3];
-    if (sub === "list") { await authList(); }
-    else if (sub === "logout" && process.argv[4]) { await authLogout(process.argv[4]); }
-    else if (sub === "logout") { console.log("Usage: heirloom auth logout <provider>"); }
-    else { await authWizard(); }
-    process.exit(0);
+    process.exit(await runAuth(process.argv.slice(3)));
   }
 
   const parsed = await parseArguments();
@@ -557,6 +553,57 @@ async function processAtMentions(input: string): Promise<string> {
 function extractDecisions(summary: string | null): string[] {
   if (!summary) return [];
   return summary.split(/(?<=[.!?])\s+/).filter(s => /\b(decided|decision|chose|opted|selected|agreed|resolved|concluded|determined)\b/i.test(s)).map(s => s.trim());
+}
+
+// Dispatch for `heirloom auth ...`. Returns the process exit code.
+//   auth                          → interactive wizard (masked key prompt)
+//   auth list                     → list configured providers
+//   auth logout <provider>        → remove a credential
+//   auth <provider> --api-key <k> → non-interactive save (alias -k), no prompt
+//   auth <provider>               → save key for <provider>: masked prompt on a
+//                                   TTY, or one line read verbatim from a pipe
+//                                   (e.g. `echo KEY | heirloom auth <provider>`)
+async function runAuth(args: string[]): Promise<number> {
+  const sub = args[0];
+
+  if (sub === "list") { await authList(); return 0; }
+  if (sub === "logout") {
+    if (args[1]) { await authLogout(args[1]); return 0; }
+    console.log("Usage: heirloom auth logout <provider>");
+    return 0;
+  }
+  if (sub === undefined) { await authWizard(); return 0; }
+
+  // A provider name was given: `auth <provider> [--api-key <key>]`.
+  const provider = sub;
+  let apiKey: string | undefined;
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--api-key" || a === "-k") {
+      apiKey = args[++i];
+    } else if (a.startsWith("--api-key=")) {
+      apiKey = a.slice("--api-key=".length);
+    } else {
+      console.error(`Unknown argument: ${a}`);
+      console.error("Usage: heirloom auth <provider> [--api-key <key>]");
+      return 1;
+    }
+  }
+
+  if (apiKey !== undefined) {
+    const trimmed = apiKey.trim();
+    if (!trimmed) { console.error("API key cannot be empty."); return 1; }
+    await authSaveKey(provider, trimmed);
+    return 0;
+  }
+
+  // No flag: read the key from the masked TTY prompt, or verbatim from a pipe.
+  const key = await readHiddenLine(`Paste your API key for ${provider}: `);
+  if (key === null) { console.log("Cancelled. No credentials saved."); return 0; }
+  const trimmed = key.trim();
+  if (!trimmed) { console.error("API key cannot be empty."); return 1; }
+  await authSaveKey(provider, trimmed);
+  return 0;
 }
 
 async function runDoctor(): Promise<void> {
