@@ -1,6 +1,7 @@
 export interface ModelUsageEntry {
   input: number;
   output: number;
+  cached?: number;
 }
 
 function padRight(text: string, width: number): string {
@@ -30,17 +31,19 @@ export function buildExitSummaryText(usagePerModel: Record<string, ModelUsageEnt
 
   let totalInput = 0;
   let totalOutput = 0;
+  let totalCached = 0;
 
   for (const [model, usage] of entries) {
     totalInput += usage.input;
     totalOutput += usage.output;
-    const row = `${C} ${padRight(model.length > cols.model + 1 ? model.slice(0, cols.model + 1) : model, cols.model + 1)}${C} ${padLeft("-", cols.reqs - 1)} ${C} ${padLeft(usage.input.toLocaleString("en-US"), cols.input - 1)} ${C} ${padLeft(usage.output.toLocaleString("en-US"), cols.output - 1)} ${C} ${padLeft("0", cols.cached - 1)} ${C}`;
+    totalCached += usage.cached ?? 0;
+    const row = `${C} ${padRight(model.length > cols.model + 1 ? model.slice(0, cols.model + 1) : model, cols.model + 1)}${C} ${padLeft("-", cols.reqs - 1)} ${C} ${padLeft(usage.input.toLocaleString("en-US"), cols.input - 1)} ${C} ${padLeft(usage.output.toLocaleString("en-US"), cols.output - 1)} ${C} ${padLeft((usage.cached ?? 0).toLocaleString("en-US"), cols.cached - 1)} ${C}`;
     lines.push(row);
   }
 
   if (entries.length > 1) {
     lines.push("\u251C" + "\u2500".repeat(totalWidth) + "\u2524");
-    const totalRow = `${C} ${padRight("TOTAL", cols.model + 1)}${C} ${padLeft("-", cols.reqs - 1)} ${C} ${padLeft(totalInput.toLocaleString("en-US"), cols.input - 1)} ${C} ${padLeft(totalOutput.toLocaleString("en-US"), cols.output - 1)} ${C} ${padLeft("0", cols.cached - 1)} ${C}`;
+    const totalRow = `${C} ${padRight("TOTAL", cols.model + 1)}${C} ${padLeft("-", cols.reqs - 1)} ${C} ${padLeft(totalInput.toLocaleString("en-US"), cols.input - 1)} ${C} ${padLeft(totalOutput.toLocaleString("en-US"), cols.output - 1)} ${C} ${padLeft(totalCached.toLocaleString("en-US"), cols.cached - 1)} ${C}`;
     lines.push(totalRow);
   }
 

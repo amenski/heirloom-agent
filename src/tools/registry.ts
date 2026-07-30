@@ -15,7 +15,7 @@ export class ToolRegistry {
         defs.push(reg.def);
       }
     }
-    return defs;
+    return defs.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async execute(call: ToolCall, ctx: ToolContext): Promise<ToolOutput> {
@@ -31,6 +31,6 @@ export class ToolRegistry {
   }
 
   getAllDefs(): ToolDef[] {
-    return [...this.registrations.values()].map(r => r.def);
+    return [...this.registrations.values()].map(r => r.def).sort((a, b) => a.name.localeCompare(b.name));
   }
 }

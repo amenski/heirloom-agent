@@ -17,7 +17,14 @@ export interface PromptContext {
   planMode?: boolean;
 }
 
-export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
+/**
+ * The cacheable part of the system prompt: role, base rules, tool guide, mode
+ * custom instructions, project instructions, skills index, memory. These only
+ * change on mode/skill/config/memory change, so they form the stable prefix
+ * that providers cache across turns. Must be byte-stable given the same
+ * inputs — list-derived content (skills) is sorted for determinism.
+ */
+export function buildStablePreamble(ctx: PromptContext): string {
   const sections: string[] = [];
   const mode = ctx.mode;
 
@@ -32,18 +39,7 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   const toolGuide = getToolGuide(mode?.groups || []);
   if (toolGuide) sections.push(toolGuide);
 
-  if (ctx.planMode) {
-    sections.push(
-      "You are in planning mode. Do NOT execute any tool calls that modify files. " +
-      "Instead, analyze the request and produce a detailed plan. " +
-      "Your reply must end with a <proposed_plan>...</proposed_plan> block containing the step-by-step plan."
-    );
-  }
-
   if (mode?.customInstructions) sections.push(mode.customInstructions);
-
-  const env = getEnvironment(ctx.workingDir);
-  if (env) sections.push(env);
 
   const proj = getProjectInstructions(ctx.workingDir);
   if (proj) sections.push(proj);
@@ -54,6 +50,28 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
 
   if (ctx.memory) sections.push(ctx.memory);
 
+  return sections.join("\n\n");
+}
+
+/**
+ * The per-turn part of the system prompt: plan-mode instruction, environment
+ * (git/date), and the RepoMap (keyed on the latest user message). Rebuilt
+ * every turn — cheap, and must never be baked into the cached stable prefix.
+ */
+export async function buildVolatileContext(ctx: PromptContext): Promise<string> {
+  const sections: string[] = [];
+
+  if (ctx.planMode) {
+    sections.push(
+      "You are in planning mode. Do NOT execute any tool calls that modify files. " +
+      "Instead, analyze the request and produce a detailed plan. " +
+      "Your reply must end with a <proposed_plan>...</proposed_plan> block containing the step-by-step plan."
+    );
+  }
+
+  const env = getEnvironment(ctx.workingDir);
+  if (env) sections.push(env);
+
   if (ctx.repomap && ctx.conversation) {
     const map = await ctx.repomap.getMap(ctx.conversation, 1024);
     if (map && map !== "(empty repository)") {
@@ -62,6 +80,12 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   }
 
   return sections.join("\n\n");
+}
+
+export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
+  const stable = buildStablePreamble(ctx);
+  const volatile = await buildVolatileContext(ctx);
+  return [stable, volatile].filter(Boolean).join("\n\n");
 }
 
 function getBaseRules(): string {
@@ -162,8 +186,8 @@ function getProjectInstructions(cwd: string): string {
 }
 
 function getSkillsIndex(skills: SkillDef[]): string {
-  const lines = skills.map(
-    (s) => `- ${s.name}: ${s.description || "no description"}`,
-  );
+  const lines = [...skills]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((s) => `- ${s.name}: ${s.description || "no description"}`);
   return `# Available skills\n${lines.join("\n")}`;
 }

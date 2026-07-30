@@ -188,7 +188,7 @@ async function main() {
     sessionUserInputs: [] as string[],
     abort: new AbortController(),
     toolUsage: {} as Record<string, number>,
-    modelUsage: {} as Record<string, { input: number; output: number }>,
+    modelUsage: {} as Record<string, { input: number; output: number; cached: number }>,
     posture: "normal" as "normal" | "autoApprove" | "plan",
   };
 
@@ -661,11 +661,11 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     onText: cb.onText, onReasoning: cb.onReasoning, onToolStart: (name, args) => { shared.toolUsage[name] = (shared.toolUsage[name] || 0) + 1; cb.onToolStart(name, args); }, onToolResult: cb.onToolResult,
     onDiagnostic: cb.onDiagnostic, onRetry: cb.onRetry, onCompacted: cb.onCompacted,
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,
-    onUsage: (input: number, output: number) => {
+    onUsage: (input: number, output: number, cached?: number) => {
       shared.sessionInput += input; shared.sessionOutput += output; shared.lastContextTokens = input + output;
       const modelKey = `${providerName}/${activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown"}`;
-      const existing = shared.modelUsage[modelKey] || { input: 0, output: 0 };
-      shared.modelUsage[modelKey] = { input: existing.input + input, output: existing.output + output };
+      const existing = shared.modelUsage[modelKey] || { input: 0, output: 0, cached: 0 };
+      shared.modelUsage[modelKey] = { input: existing.input + input, output: existing.output + output, cached: existing.cached + (cached ?? 0) };
       sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: shared.sessionInput, cumulativeOutput: shared.sessionOutput });
       cb.onUsage(input, output);
     },

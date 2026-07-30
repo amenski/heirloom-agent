@@ -187,6 +187,7 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
               type: "usage",
               inputTokens: event.usage.inputTokens ?? 0,
               outputTokens: event.usage.outputTokens ?? 0,
+              cachedInputTokens: event.usage.inputTokenDetails?.cacheReadTokens ?? undefined,
             };
             logResponse(event.usage, Array.from(toolCallAccum.values()));
             break;

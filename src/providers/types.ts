@@ -16,7 +16,7 @@ export type StreamEvent =
   | { type: "reasoning_delta"; content: string }
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; id: string; arguments: string }
-  | { type: "usage"; inputTokens: number; outputTokens: number }
+  | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens?: number }
   | { type: "done"; finishReason: string };
 
 export interface Provider {

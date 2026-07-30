@@ -12,7 +12,7 @@ export interface MutableState {
   sessionOutput: number;
   lastContextTokens: number;
   sessionUserInputs: string[];
-  modelUsage?: Record<string, { input: number; output: number }>;
+  modelUsage?: Record<string, { input: number; output: number; cached: number }>;
   posture?: "normal" | "autoApprove" | "plan";
 }
 
