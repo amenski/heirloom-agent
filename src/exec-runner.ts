@@ -2,6 +2,7 @@ import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
 import { executeTool, registry, setSessionId, setSignal } from "./tools/index.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
+import { PermissionEngine } from "./permissions/index.js";
 
 export interface ExecRunnerOptions {
   prompt: string;
@@ -46,11 +47,30 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     const abortController = new AbortController();
     setSignal(abortController.signal);
 
+    // Same construction the TUI uses (cli.tsx). Headless mode does not remove
+    // the permission engine — explicit allow rules and defaultMode still apply,
+    // and the destructive-tier deny stays absolute. It only removes the human:
+    // any rule resolving to `ask` (including the guarded tier and unresolved
+    // bash segments) has no one to prompt, so the askUser below fails closed —
+    // it denies and prints one stderr line so a scripted user knows why a run
+    // did less than expected. See docs/permission-spec.md § Headless Interaction.
+    const permissions = new PermissionEngine(configResult.config.permissions, options.projectRoot);
+    const askUser = async (toolName: string, args: Record<string, unknown>): Promise<boolean> => {
+      const subject =
+        toolName === "run_bash"
+          ? String(args?.command ?? "")
+          : String(args?.path ?? args?.filePath ?? args?.query ?? "");
+      process.stderr.write(`permission denied (headless): ${toolName} ${subject}\n`);
+      return false;
+    };
+
     try {
       const result = await runAgent(prompt, {
         provider,
         tools: registry.getAllDefs(),
         executeTool,
+        permissions,
+        askUser,
         signal: abortController.signal,
       });
 
