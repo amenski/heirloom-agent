@@ -7,4 +7,4 @@ dist/
 !fixtures/**/*.js
 .idea/
 .DS_Store
-todo.md
+todo.md.heirloom/
