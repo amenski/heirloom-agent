@@ -74,7 +74,29 @@ mcp:
     type: local
     command: ["npx", "-y", "@playwright/mcp"]
     enabled: false
+
+# When true, only allowlisted MCP server commands may be spawned (default false)
+strictMcpConfig: false
 ```
+
+## `strictMcpConfig`
+
+Optional boolean, default `false`. When enabled, a local MCP server is only
+launched if the **basename** of its `command` (path stripped, compared
+case-sensitively) is on this allowlist:
+
+```
+npx, node, python3, python, uvx, uv, bun, deno, go, java
+```
+
+Any other command — e.g. `/usr/local/bin/malware` — is **not spawned**. The
+server is marked `failed` with an error that names the offending command, the
+allowlist, and how to disable the check (`strictMcpConfig: false`). The failure
+is visible through the `/mcp` status view; it never crashes the app.
+
+This is a low-cost hardening measure: MCP servers run as untrusted child
+processes, so restricting the launcher to well-known interpreters/runners blocks
+config that would otherwise execute an arbitrary binary at startup.
 
 ## Provider Entries
 
