@@ -4,9 +4,16 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { BUILTIN_PRESETS } from "../providers/presets.js";
+import { readHiddenLine } from "./hidden-input.js";
 
-const CREDS_DIR = join(homedir(), ".heirloom");
-const CREDS_FILE = join(CREDS_DIR, "credentials.yaml");
+// Resolved lazily so tests can mock `homedir()` (the value is read per call,
+// not baked in at module load).
+function credsDir(): string {
+  return join(homedir(), ".heirloom");
+}
+function credsFile(): string {
+  return join(credsDir(), "credentials.yaml");
+}
 
 const WIZARD_PRESETS: { name: string; keyEnv: string }[] = [
   { name: "deepseek",   keyEnv: "DEEPSEEK_API_KEY" },
@@ -24,17 +31,18 @@ export interface CredentialEntry {
 }
 
 async function readCredentials(): Promise<Record<string, string>> {
-  if (!existsSync(CREDS_FILE)) return {};
+  const file = credsFile();
+  if (!existsSync(file)) return {};
 
-  const perms = (await stat(CREDS_FILE)).mode & 0o777;
+  const perms = (await stat(file)).mode & 0o777;
   if (perms !== 0o600) {
     console.warn(
-      `warning: ${CREDS_FILE} permissions are ${perms.toString(8)}, expected 600. Fixing.`,
+      `warning: ${file} permissions are ${perms.toString(8)}, expected 600. Fixing.`,
     );
-    await chmod(CREDS_FILE, 0o600);
+    await chmod(file, 0o600);
   }
 
-  const raw = await readFile(CREDS_FILE, "utf-8");
+  const raw = await readFile(file, "utf-8");
   return parseFlatYaml(raw);
 }
 
@@ -56,10 +64,25 @@ function parseFlatYaml(content: string): Record<string, string> {
 }
 
 async function writeCredentials(creds: Record<string, string>): Promise<void> {
-  if (!existsSync(CREDS_DIR)) await mkdir(CREDS_DIR, { recursive: true });
+  const dir = credsDir();
+  if (!existsSync(dir)) await mkdir(dir, { recursive: true });
 
   const lines = Object.entries(creds).map(([k, v]) => `${k}: ${v}`);
-  await writeFile(CREDS_FILE, lines.join("\n") + "\n", { mode: 0o600 });
+  await writeFile(credsFile(), lines.join("\n") + "\n", { mode: 0o600 });
+}
+
+/**
+ * Persist a single provider's key to ~/.heirloom/credentials.yaml (0600),
+ * preserving any existing entries. Shared by the interactive wizard and the
+ * non-interactive (`--api-key` / piped-stdin) paths.
+ */
+export async function authSaveKey(name: string, key: string): Promise<void> {
+  const existing = await readCredentials();
+  existing[name] = key;
+  await writeCredentials(existing);
+
+  console.log(`API key for ${name} saved to ${credsFile()}`);
+  console.log("Run `heirloom` to start.");
 }
 
 export async function authWizard(): Promise<void> {
@@ -89,20 +112,22 @@ export async function authWizard(): Promise<void> {
     return;
   }
 
-  const key = await rl.question(`Paste your API key for ${name}: `);
+  // Close the readline interface before switching stdin into raw mode for the
+  // masked key prompt — the two cannot both own stdin at once.
+  rl.close();
+
+  const key = await readHiddenLine(`Paste your API key for ${name}: `);
+  if (key === null) {
+    console.log("Cancelled. No credentials saved.");
+    return;
+  }
   const trimmedKey = key.trim();
   if (!trimmedKey) {
     console.log("API key cannot be empty.");
-    rl.close();
     return;
   }
 
-  const existing = await readCredentials();
-  existing[name] = trimmedKey;
-  await writeCredentials(existing);
-
-  console.log(`API key for ${name} saved to ${CREDS_FILE}`);
-  rl.close();
+  await authSaveKey(name, trimmedKey);
 }
 
 export async function authList(): Promise<void> {
@@ -133,8 +158,8 @@ export async function authList(): Promise<void> {
 }
 
 export async function authLogout(name: string): Promise<void> {
-  if (!existsSync(CREDS_FILE)) {
-    console.log(`No credentials file found at ${CREDS_FILE}. Nothing to remove.`);
+  if (!existsSync(credsFile())) {
+    console.log(`No credentials file found at ${credsFile()}. Nothing to remove.`);
     return;
   }
 

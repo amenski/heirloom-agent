@@ -11,17 +11,39 @@ and skill-spec.md — this doc is now the authority; the others defer to it.
 ```
 heirloom [flags]               # interactive session (the normal case)
 heirloom -p "<prompt>" [flags] # headless: run one task, print, exit
-heirloom auth                  # interactive provider setup wizard
-heirloom auth list             # show configured providers + key sources
-heirloom auth logout <name>    # remove a credential
+heirloom auth                       # interactive provider setup wizard
+heirloom auth list                  # show configured providers + key sources
+heirloom auth logout <name>         # remove a credential
+heirloom auth <provider>            # set <provider>'s key (masked prompt)
+heirloom auth <provider> --api-key <key>   # non-interactive; -k alias
+echo <key> | heirloom auth <provider>      # piped: key read from stdin
 ```
 
 `auth` is the guided path for connecting LLM APIs (opencode's `auth login`
 pattern): choose a preset (DeepSeek, OpenRouter, Groq, Together, Ollama,
-OpenAI, Anthropic) or "custom" (asks for a baseUrl), paste the key, and it
+OpenAI, Anthropic) or "custom" (asks for a baseUrl), enter the key, and it
 writes `~/.heirloom/credentials.yaml` (0600) plus, for custom endpoints, the
 provider entry in config. Manual YAML editing (config-spec.md) remains the
 escape hatch. Arrives Phase 3 with the config layer.
+
+**The API key goes only to `~/.heirloom/credentials.yaml` (0600) — never into
+any `settings.json`.** Keys are not config (repo ethos).
+
+### Key entry
+
+- **Masked interactive input.** On a TTY the key prompt reads in raw mode and
+  echoes `*` per character — the key is never shown in plaintext. Backspace
+  (and Ctrl+H) erase one character, Ctrl+U clears the line, Enter submits, and
+  Ctrl+C cancels (nothing is written).
+- **Non-interactive `--api-key` (alias `-k`).** `heirloom auth <provider>
+  --api-key <key>` writes the credential with no prompt — for scripts and CI.
+- **Piped stdin.** When stdin is not a TTY, `heirloom auth <provider>` reads
+  one line from stdin as the key (`echo <key> | heirloom auth <provider>`),
+  with no prompt echoed.
+
+After a successful save, the credentials file path and a `Run \`heirloom\` to
+start.` hint are printed. `auth` (wizard), `auth list`, and `auth logout`
+behave as before.
 
 - Today (Phase 1): `npm start` runs `tsx src/index.ts`.
 - Target: a `bin` entry in package.json (`"heirloom": "dist/index.js"`) so
