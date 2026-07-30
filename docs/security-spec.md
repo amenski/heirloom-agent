@@ -44,7 +44,7 @@ bypassed (auto-approve posture, headless).
 | T8 | Runaway cost | Mitigated | maxTurns, loop detection; optional per-session token budget (future) |
 | T9 | Secrets copied into shadow checkpoint repo | **Partial — not re-verified this pass** | Holds only when `.env` is already gitignored: shadow repo honors the workspace `.gitignore` via `--work-tree`. A workspace with no `.gitignore` (or one added after `.env` exists) can commit `.env` into the shadow repo — there is no heirloom-side backstop independent of the workspace `.gitignore`. Unrelated to the permission-engine rewrite; not re-verified during this pass. |
 | T10 | MCP tool-description rug pull | **Open** | Pin tool definitions at connect; description/schema change → warning + re-approval |
-| T11 | Headless exec mode runs with no permission engine at all | **Open (new)** | `src/exec-runner.ts` does not construct a `PermissionEngine` or pass `permissions`/`askUser` to `runAgent` — every tool call in `-x`/exec mode currently runs unchecked, contradicting permission-spec.md's stated headless fail-closed default. Discovered during this pass; not yet fixed. |
+| T11 | Headless exec mode runs with no permission engine at all | **Fixed & verified (2026-07-31)** | `src/exec-runner.ts` now constructs a `PermissionEngine` the same way the TUI does (`new PermissionEngine(config.permissions, projectRoot)`) and passes it to `runAgent`, plus a headless `askUser` that fails closed — every rule resolving to `ask` (ordinary `ask`, guarded tier, unresolved bash) is denied (there is no human to prompt) with a single stderr line `permission denied (headless): <tool> <subject>`. Explicit `allow` rules and `defaultMode` still apply; destructive-tier `deny` stays absolute. Verified by `src/exec-runner.test.ts` (allow executes; ask/guarded/destructive denied and not executed; stderr notice emitted). |
 | T12 | No in-band marking of untrusted tool output (bash output, file reads, `docs_search` results all enter context raw) | **Open — hardening idea** | If adopted, must be one codebase-wide delimiter convention across *all* untrusted tool output, not per-tool (rejected as a one-off during `docs_search` implementation — see web-search-spec.md). Delimiters are a mitigation, not a boundary; the permission prompt remains the control. |
 
 ## Known Defects & Verified-Fixed Items
@@ -136,15 +136,28 @@ arbitrary command arguments for path-shaped substrings, which the rule
 model doesn't attempt. This was true of the original design too; not a
 regression, but not solved either.
 
-### Headless exec mode has no permission engine — OPEN (new, found this pass)
+### Headless exec mode has no permission engine — FIXED & VERIFIED (2026-07-31)
 
-`src/exec-runner.ts`'s `runExecMode` calls `runAgent` with no `permissions`
-option and no `askUser` callback — every tool call in `-x`/headless mode
-executes without any permission check at all, contradicting
-permission-spec.md's stated "headless fail closed" default. This predates
-the permission-engine rewrite (it's a gap in how exec mode was wired up, not
-something the rewrite introduced or fixed) but was only noticed during this
-pass's engine-focused review. Not yet fixed — flagged as T11 above.
+`src/exec-runner.ts`'s `runExecMode` previously called `runAgent` with no
+`permissions` option and no `askUser` callback — every tool call in
+`-x`/headless mode executed without any permission check at all, contradicting
+permission-spec.md's stated "headless fail closed" default. This predated
+the permission-engine rewrite (a gap in how exec mode was wired up, not
+something the rewrite introduced) and was noticed during this pass's
+engine-focused review.
+
+Fixed by constructing a `PermissionEngine` from the loaded config
+(`new PermissionEngine(config.permissions, projectRoot)`, mirroring `cli.tsx`)
+and passing it — plus a headless `askUser` — to `runAgent`. The headless
+`askUser` fails closed: since there is no human to prompt, any result that
+would ask (ordinary `ask`, the guarded tier, or an unresolved bash segment)
+is denied, and one stderr line `permission denied (headless): <tool>
+<subject>` is emitted so a scripted user understands why a run did less than
+expected. `runAgent` needed no change — its existing `action === "ask"` path
+already denied fail-closed when `askUser` was absent; the bug was purely that
+exec mode passed no engine at all. Explicit `allow` rules and `defaultMode`
+still apply; the destructive-tier `deny` (which never reaches `askUser`) stays
+absolute. Regression coverage in `src/exec-runner.test.ts`.
 
 ## Guarded Patterns (always ask, never silently auto-allow)
 
@@ -158,8 +171,8 @@ for the authoritative, current list and matching details. Summary:
 Rationale: auto-approve posture exists for flow, and flow never legitimately
 requires silent exfiltration or silent key reads. A user who disagrees
 writes an explicit `allow` rule — deliberate config beats a posture toggle.
-In headless mode (once T11 above is fixed), guarded rules should resolve to
-deny, since there is no one to ask.
+In headless mode (T11, fixed 2026-07-31), guarded rules resolve to deny,
+since there is no one to ask.
 
 ## Non-Goals (v1, stated honestly)
 

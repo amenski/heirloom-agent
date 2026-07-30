@@ -292,12 +292,26 @@ the raw session file by hand.
 
 ## Headless Interaction (cli-spec.md)
 
-- Default: fail closed — `ask` resolves to deny (unchanged from prior
-  behavior).
-- Headless exec mode (`src/exec-runner.ts`) currently does not construct a
-  `PermissionEngine` at all — every tool call runs unchecked. This is a
-  pre-existing gap, not something this rewrite addressed; flagged here since
-  it means the fail-closed default above does not currently apply to `-x`.
+Headless mode removes the human, not the engine. Headless exec mode
+(`src/exec-runner.ts`) constructs a `PermissionEngine` from the loaded config
+exactly as the TUI does (`new PermissionEngine(config.permissions,
+projectRoot)`) and passes it to `runAgent`, so every tool call is resolved
+normally: explicit `allow` rules and `defaultMode` apply, and the
+destructive-tier `deny` stays absolute.
+
+- **Fail closed on any ask.** There is no one to prompt, so `runExecMode`
+  supplies an `askUser` that always denies. Every result that would ask — an
+  ordinary rule-derived `ask`, a guarded-tier match (secret-adjacent read /
+  network egress), or an unresolved bash segment — resolves to deny; the tool
+  does not run. `defaultMode: askAll` therefore denies any unmatched call.
+- **One stderr line per denied ask**, `permission denied (headless): <tool>
+  <subject>`, so a scripted user can see why a run did less than expected.
+  (A destructive-tier `deny` blocks execution without reaching `askUser`, so
+  it does not emit this particular notice — it is denied at the `deny` branch.)
+- **`runAgent` was already fail-closed** on `ask` when no `askUser` is
+  supplied; the only defect was that exec mode passed no engine at all. Fixed
+  2026-07-31 (T11 in security-spec.md); regression coverage in
+  `src/exec-runner.test.ts`.
 
 ## Design Decisions
 
