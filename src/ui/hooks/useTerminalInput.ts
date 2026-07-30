@@ -98,10 +98,21 @@ function parseOseq(buf: string, offset: number): [InputKey, number] | null {
   return null;
 }
 
-export function parseTerminalInput(buf: string): InputKey[] {
+export interface ParseResult {
+  keys: InputKey[];
+  /** Incomplete paste content carried over if the buffer ended mid-paste (no \x1b[201~ yet). Pass back in as `pendingPaste` on the next call. */
+  pendingPaste: string | null;
+}
+
+/**
+ * Parses a chunk of raw terminal input into key events.
+ * `pendingPaste`, if provided, is treated as unterminated paste content carried over from a
+ * previous chunk (bracketed pastes can arrive split across multiple stdin `data` events).
+ */
+export function parseTerminalInput(buf: string, pendingPaste: string | null = null): ParseResult {
   const results: InputKey[] = [];
   let i = 0;
-  let pasteBuf: string[] | null = null;
+  let pasteBuf: string[] | null = pendingPaste !== null ? [pendingPaste] : null;
 
   while (i < buf.length) {
     const b = buf.charCodeAt(i);
@@ -111,17 +122,17 @@ export function parseTerminalInput(buf: string): InputKey[] {
       if (endIdx >= 0) {
         pasteBuf.push(buf.slice(i, endIdx));
         results.push(makeKey("", { paste: pasteBuf.join("") }));
-        i = endIdx + 7;
+        i = endIdx + "\x1b[201~".length;
         pasteBuf = null;
         continue;
       }
       pasteBuf.push(buf.slice(i));
-      break;
+      return { keys: results, pendingPaste: pasteBuf.join("") };
     }
 
     if (buf.startsWith("\x1b[200~", i)) {
       pasteBuf = [];
-      i += 7;
+      i += "\x1b[200~".length;
       continue;
     }
 
@@ -154,12 +165,13 @@ export function parseTerminalInput(buf: string): InputKey[] {
     i++;
   }
 
-  return results;
+  return { keys: results, pendingPaste: null };
 }
 
 export function useTerminalInput(handler: (key: InputKey) => void, { isActive }: { isActive: boolean }): void {
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
+  const pendingPasteRef = useRef<string | null>(null);
 
   const { stdin, setRawMode } = useStdin();
 
@@ -170,7 +182,8 @@ export function useTerminalInput(handler: (key: InputKey) => void, { isActive }:
 
     function onData(data: string | Buffer) {
       const chunk = typeof data === "string" ? data : data.toString("utf-8");
-      const keys = parseTerminalInput(chunk);
+      const { keys, pendingPaste } = parseTerminalInput(chunk, pendingPasteRef.current);
+      pendingPasteRef.current = pendingPaste;
       for (const k of keys) handlerRef.current(k);
     }
 

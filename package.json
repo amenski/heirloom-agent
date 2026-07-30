@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "bin": {
-    "heirloom": "dist/index.js"
+    "heirloom": "dist/cli.js"
   },
   "scripts": {
     "build": "tsup",
-    "start": "tsx src/index.ts",
+    "start": "tsx src/cli.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
     "eval": "tsx scripts/eval.ts"

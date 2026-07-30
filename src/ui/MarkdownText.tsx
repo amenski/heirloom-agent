@@ -48,14 +48,16 @@ interface MarkdownTextProps {
  * Supports: **bold**, *italic*, `code`, ~~strike~~, [text](url)
  * Priority: code > bold > italic > strike (code wins overlaps)
  */
-function parseInline(input: string): Segment[] {
+export function parseInline(input: string): Segment[] {
   // Normalize links before pattern matching: [text](url) → text (url)
   const normalized = input.replace(/\[(.+?)\]\((.+?)\)/g, "$1 ($2)");
 
   const patterns: { regex: RegExp; format: Format }[] = [
     { regex: /`(.+?)`/g, format: "code" },
     { regex: /\*\*(.+?)\*\*/g, format: "bold" },
-    { regex: /\*(.+?)\*/g, format: "italic" },
+    // Single-asterisk italics must not consume the asterisks of a ** pair —
+    // lookarounds keep this from matching inside/around **bold** spans.
+    { regex: /(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)/g, format: "italic" },
     { regex: /~~(.+?)~~/g, format: "strike" },
   ];
 
@@ -72,10 +74,11 @@ function parseInline(input: string): Segment[] {
     regex.lastIndex = 0;
     let m;
     while ((m = regex.exec(normalized)) !== null) {
-      // Check for overlap with higher-priority matches (code)
+      // Reject any overlap with an already-accepted match. Patterns run in
+      // priority order (code > bold > italic > strike), so earlier matches win —
+      // e.g. the italic regex must not re-match inside "**bold**".
       const overlaps = matches.some(
         (existing) =>
-          (existing.format === "code" || format === "code") &&
           m!.index < existing.end &&
           existing.start < m!.index + m![0].length,
       );
@@ -96,6 +99,7 @@ function parseInline(input: string): Segment[] {
   let pos = 0;
 
   for (const match of matches) {
+    if (match.start < pos) continue; // safety: never emit overlapping matches twice
     if (match.start > pos) {
       segments.push({ text: normalized.slice(pos, match.start), formats: [] });
     }
@@ -176,6 +180,10 @@ function CodeBlockBlock({
 function MarkdownText({ children, theme }: MarkdownTextProps) {
   const text = children;
 
+  // An empty string is an intentional blank line (used for spacing between
+  // blocks). Render it as a real empty line rather than collapsing to null,
+  // otherwise the surrounding output runs together with no breathing room.
+  if (text === "") return <Text>{" "}</Text>;
   if (!text) return null;
 
   // ── Fenced code block (multi-line, starts with ```) ──

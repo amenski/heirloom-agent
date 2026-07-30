@@ -32,6 +32,7 @@ import CommandPalette, {
 
 import OutputArea from "./OutputArea.js";
 import Spinner from "./Spinner.js";
+import StatusBar from "./StatusBar.js";
 import PermissionPrompt from "./PermissionPrompt.js";
 import WelcomeScreen from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
@@ -43,10 +44,11 @@ import McpStatusList from "./views/McpStatusList.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
+import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
 import {
-  SILENT_TOOLS,
-  describeToolCall,
   SPINNER_FRAMES,
+  formatToolCallHeader,
+  formatToolResultPreview,
 } from "./ToolCallFormatter.js";
 import {
   lookupAction,
@@ -85,7 +87,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     resolve: (answers: Record<string, string> | null) => void;
   } | null>(null);
 
-  const [planMode, setPlanMode] = useState(false);
+  // Permission/execution posture, cycled by Shift+Tab: normal → autoApprove → plan.
+  // - normal: permissions ask per policy.
+  // - autoApprove: non-denied tool calls run without prompting.
+  // - plan: model proposes a <proposed_plan> instead of executing.
+  type Posture = "normal" | "autoApprove" | "plan";
+  const [posture, setPosture] = useState<Posture>("normal");
+  const planMode = posture === "plan";
   const [planPrompt, setPlanPrompt] = useState<{
     planText: string;
     followUpPrompt: string;
@@ -107,10 +115,29 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
 
+  // Queue of user submissions (messages or slash commands) entered while a turn
+  // is in flight. Drained FIFO, one turn at a time, when the active turn ends.
+  type QueuedItem =
+    | { kind: "message"; text: string; imageUrls?: string[] }
+    | { kind: "slash"; text: string };
+  const messageQueueRef = useRef<QueuedItem[]>([]);
+  const [queuedCount, setQueuedCount] = useState(0);
+  // Mirrors "any modal footer view is open" for the queue drain, which runs
+  // outside React's render cycle and can't read the latest state directly.
+  const modalOpenRef = useRef(false);
+  // True from the moment a turn starts until its `finally` runs. Distinct from
+  // `busy` (the UI flag), which flips false on the first streamed token so the
+  // input becomes interactive mid-turn — the queue must drain on real turn
+  // completion, not on that first-token signal.
+  const turnActiveRef = useRef(false);
+
   useEffect(() => {
     if (ctx.showResumeOnStart) {
       setShowSessionList(true);
       ctx.showResumeOnStart = false;
+    }
+    if (ctx.initialNotice) {
+      setOutputLines((prev) => [...prev, theme.colorEnabled ? `\x1b[2m${ctx.initialNotice}\x1b[0m` : ctx.initialNotice!]);
     }
   }, []);
 
@@ -261,6 +288,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     async (input: string, imageUrls?: string[]) => {
       if (!input.trim()) return;
 
+      turnActiveRef.current = true;
+
       const scheduleOutput = (line: string) => {
         if (rawMode.mode === "raw") {
           process.stdout.write(line + "\n");
@@ -276,10 +305,31 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       startSpinner();
       cancelled.current = false;
       reasoningRef.current = { buffer: "", flushed: false };
+      const turnStart = Date.now();
 
       announceToScreenReader("Heirloom is processing your request", "polite");
 
+      // Echo the user's message as a full-width highlighted bar with a "›"
+      // chevron (Claude Code style) — the background fill makes input
+      // unmistakable, so the assistant reply below can stay plain flush-left
+      // text marked only by a leading "●" bullet.
+      scheduleOutput("");
+      scheduleOutput(USER_ECHO_TAG + input);
+      scheduleOutput("");
+
+      // The assistant's answer opens with a dim "●" bullet on the first line of
+      // a fresh answer block; continuation lines stay plain. `atBlockStart` is
+      // true until the first non-empty text line of the current block is
+      // emitted, then resets after each tool call so the next answer re-bullets.
+      let atBlockStart = true;
+      const bullet = theme.colorEnabled ? "\x1b[2m●\x1b[0m " : "● ";
+      const withBullet = (line: string): string =>
+        atBlockStart ? bullet + line : line;
+
       let textBuffer = "";
+      // The blank line after the echo already separates the reply, so the first
+      // text/tool block does not need to add its own leading blank.
+      let needTextSeparator = false;
 
       function flushReasoning() {
         const { buffer, flushed } = reasoningRef.current;
@@ -297,6 +347,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
       const callbacks = {
         onReasoning: (c: string) => {
+          if (!firstTokenRef.current) {
+            setFirstTokenBoth(true);
+            setBusy(false);
+            stopSpinner();
+          }
           reasoningRef.current.buffer += c;
         },
         onText: (c: string) => {
@@ -305,6 +360,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             setFirstTokenBoth(true);
             setBusy(false);
             stopSpinner();
+          }
+          if (needTextSeparator && textBuffer === "" && c.trim() !== "") {
+            needTextSeparator = false;
+            scheduleOutput("");
           }
           textBuffer += c;
           const rawLines = textBuffer.split("\n");
@@ -316,7 +375,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
                 codeBlockRef.current.lines.push(line);
                 const block = codeBlockRef.current.lines.join("\n");
                 codeBlockRef.current = { active: false, lines: [] };
-                scheduleOutput(block);
+                scheduleOutput(withBullet(block));
+                atBlockStart = false;
               } else {
                 codeBlockRef.current = { active: true, lines: [line] };
               }
@@ -330,43 +390,47 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               continue;
             }
 
-            scheduleOutput(line);
+            scheduleOutput(withBullet(line));
+            atBlockStart = false;
           }
           textBuffer = rawLines[rawLines.length - 1];
           if (codeBlockRef.current.active) {
             const preview =
               codeBlockRef.current.lines.join("\n") +
               (textBuffer ? "\n" + textBuffer : "");
-            setActiveLineBoth(preview);
+            setActiveLineBoth(withBullet(preview));
           } else {
-            setActiveLineBoth(textBuffer);
+            setActiveLineBoth(textBuffer === "" ? "" : withBullet(textBuffer));
           }
         },
         onToolStart: (name: string, args: Record<string, unknown>) => {
           flushReasoning();
           if (activeLineRef.current) scheduleOutput(activeLineRef.current);
           setActiveLineBoth("");
-          if (SILENT_TOOLS.has(name)) {
-            textBuffer = "";
-            return;
-          }
-          const desc = describeToolCall(name, args);
-          if (theme.colorEnabled) {
-            scheduleOutput(`\x1b[2m  ${desc}\x1b[0m`);
-          } else {
-            scheduleOutput(`  ${desc}`);
-          }
           textBuffer = "";
+          atBlockStart = true; // next answer block re-bullets after this tool call
+          scheduleOutput("");
+          const header = formatToolCallHeader(name, args);
+          scheduleOutput(header);
         },
         onToolResult: (
           _name: string,
           result: { content: string; error?: string },
         ) => {
-          if (result.content?.startsWith("PERMISSION_DENIED")) {
-            scheduleOutput("  Permission denied");
-          } else if (result.content?.startsWith("COMMAND_FAILED")) {
-            scheduleOutput(`  Command failed: ${result.content.slice(16)}`);
+          const content = result.error
+            ? `Error: ${result.error}`
+            : (result.content ?? "");
+          if (content.trim() !== "") {
+            const isError = !!result.error || content.startsWith("PERMISSION_DENIED") || content.startsWith("COMMAND_FAILED");
+            for (const line of formatToolResultPreview(content)) {
+              if (theme.colorEnabled) {
+                scheduleOutput(isError ? `\x1b[31m${line}\x1b[0m` : `\x1b[2m${line}\x1b[0m`);
+              } else {
+                scheduleOutput(line);
+              }
+            }
           }
+          needTextSeparator = true;
         },
         onDiagnostic: () => {},
         onRetry: () => {},
@@ -438,12 +502,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           codeBlockRef.current.active &&
           codeBlockRef.current.lines.length > 0
         ) {
-          pushOutput(codeBlockRef.current.lines.join("\n"));
+          pushOutput(withBullet(codeBlockRef.current.lines.join("\n")));
           codeBlockRef.current = { active: false, lines: [] };
         }
         if (activeLineRef.current) pushOutput(activeLineRef.current);
         setActiveLineBoth("");
         textBuffer = "";
+
+        // Per-turn completion footer: "✳ Worked for Ns" (dim), mirroring Claude
+        // Code — a subtle marker that closes each response block. Padded with a
+        // blank line on each side so it isn't crammed against the reply above or
+        // the next turn below.
+        const elapsedS = Math.max(1, Math.round((Date.now() - turnStart) / 1000));
+        const footer = `✳ Worked for ${elapsedS}s`;
+        pushOutput("");
+        pushOutput(theme.colorEnabled ? `\x1b[2m${footer}\x1b[0m` : footer);
+        pushOutput("");
 
         if (result.stopReason === "done") {
           ctx.mutable.conversationHistory = result.messages;
@@ -478,17 +552,84 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         codeBlockRef.current = { active: false, lines: [] };
         ctx.renewAbortController();
         setStatusLine(ctx.buildStatusBar());
+        turnActiveRef.current = false;
+        drainQueueRef.current();
       }
     },
-    [ctx, theme, rawMode],
+    [ctx, theme, rawMode, planMode],
   );
 
-  function togglePlanMode() {
-    setPlanMode((prev) => !prev);
+  // Drain the next queued submission (message or slash command) after a turn
+  // ends. Held in a ref so `runAgentTurn`'s `finally` can call the latest
+  // version without listing it as a useCallback dependency.
+  const drainQueueRef = useRef<() => void>(() => {});
+  drainQueueRef.current = () => {
+    if (turnActiveRef.current) return;
+    // Run queued slash commands synchronously in order; stop at the first
+    // message, which starts an async turn that re-triggers this drain from its
+    // `finally` when it completes. A modal-opening slash command (e.g. /model,
+    // /resume) also stops the drain — the modal owns the screen until dismissed,
+    // and the remaining queue drains when the turn/modal flow next completes.
+    while (!turnActiveRef.current) {
+      const next = messageQueueRef.current.shift();
+      setQueuedCount(messageQueueRef.current.length);
+      if (!next) return;
+      if (next.kind === "slash") {
+        handleSlashCommand(next.text);
+        if (modalOpenRef.current) return;
+      } else {
+        runAgentTurn(next.text, next.imageUrls);
+        return;
+      }
+    }
+  };
+
+  // Handles a submission from the input box: runs it now if idle, otherwise
+  // enqueues it to drain after the in-flight turn(s) complete.
+  function submitFromInput({ text, command, imageUrls }: { text: string; command?: string; imageUrls?: string[] }) {
+    if (command) {
+      if (command === "exit") { handleExit(); return; }
+      if (turnActiveRef.current) {
+        messageQueueRef.current.push({ kind: "slash", text: `/${command}` });
+        setQueuedCount(messageQueueRef.current.length);
+        return;
+      }
+      handleSlashCommand(`/${command}`);
+      return;
+    }
+    const isSlash = text.startsWith("/");
+    if (turnActiveRef.current) {
+      messageQueueRef.current.push(isSlash ? { kind: "slash", text } : { kind: "message", text, imageUrls });
+      setQueuedCount(messageQueueRef.current.length);
+      return;
+    }
+    if (isSlash) {
+      handleSlashCommand(text);
+    } else {
+      runAgentTurn(text, imageUrls);
+    }
+  }
+
+  function applyPosture(next: Posture) {
+    setPosture(next);
     setPlanPrompt(null);
+    ctx.mutable.posture = next;
+    // autoApprove flips the permission engine's session override; plan/normal clear it.
+    ctx.permissions.setAutoApprove(next === "autoApprove");
+    setStatusLine(ctx.buildStatusBar());
+  }
+
+  function cyclePosture() {
+    const order: Posture[] = ["normal", "autoApprove", "plan"];
+    const idx = order.indexOf(posture);
+    applyPosture(order[(idx + 1) % order.length]);
   }
 
   function handleSlashCommand(trimmed: string) {
+    // Echo the command into scrollback as a lightweight dim line, so there's a
+    // visible record of what was typed. Commands make no model call, so this is
+    // never counted toward context usage.
+    pushOutput(COMMAND_ECHO_TAG + trimmed);
     if (trimmed === "/exit") {
       handleExit();
       return;
@@ -748,21 +889,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
+    // No modal view is active, so PromptInput is the focused input surface and
+    // owns typing, submission/queuing, and Esc/Ctrl+C interrupt (whether idle or
+    // busy). This top-level handler only governs modal views (handled above) and
+    // global chord shortcuts below — it must NOT consume plain keys or re-handle
+    // interrupt here, or it would double-fire against PromptInput.
     const actions = lookupAction(key, bindings);
-
-    if (busy) {
-      if (actions.includes("abort") || actions.includes("cancel") ||
-          key.escape || (key.ctrl && key.name === "c")) {
-        ctx.provideAbortController().abort();
-      }
-      return;
-    }
-
-    if (key.ctrl && key.name === "c" && !value) {
-      ctx.provideAbortController().abort();
-      ctx.renewAbortController();
-      return;
-    }
 
     if (actions.includes("openModelPicker")) {
       setShowModelDropdown(true);
@@ -789,24 +921,26 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const colorEnabled = theme.colorEnabled;
   const term = useTerminalInfo();
 
-  const showWelcome = outputLines.length === 0 && !busy;
+  const modalOpen =
+    !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList ||
+    showUndoSelector || showMcpStatus || showModelDropdown || showHelp || showCommandPalette;
+  modalOpenRef.current = modalOpen;
 
   return (
     <Box flexDirection="column" width={term.columns}>
-      {showWelcome ? (
-        <WelcomeScreen
-          model={`${ctx.providerName}/${ctx.activeModel ?? "unknown"}`}
-          thinkingEnabled={true}
-          cwd={process.cwd()}
-          width={term.columns}
-        />
-      ) : (
-        <OutputArea
-          lines={outputLines}
-          activeLine={activeLine}
-          busy={busy}
-        />
-      )}
+      {/* Banner stays pinned at the top of the frame for the whole session;
+          the conversation renders below it rather than replacing it. */}
+      <WelcomeScreen
+        model={`${ctx.providerName}/${ctx.activeModel ?? "unknown"}`}
+        thinkingEnabled={true}
+        cwd={process.cwd()}
+        width={term.columns}
+      />
+      <OutputArea
+        lines={outputLines}
+        activeLine={activeLine}
+        busy={busy}
+      />
 
       <Spinner busy={busy} firstToken={firstToken} frame={spinnerFrame} />
 
@@ -849,7 +983,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           planText={planPrompt.planText}
           onImplement={(followUpPrompt) => {
             setPlanPrompt(null);
-            setPlanMode(false);
+            applyPosture("normal");
             runAgentTurn(followUpPrompt);
           }}
           onStayInPlan={() => {
@@ -857,7 +991,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           }}
           onSwitchToDefault={() => {
             setPlanPrompt(null);
-            setPlanMode(false);
+            applyPosture("normal");
           }}
         />
       )}
@@ -928,42 +1062,30 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && (
-        <>
-          {planMode && (
-            <Box>
-              <Text color="yellow" dimColor>{colorEnabled ? "\x1b[2m\x1b[33m\uD83D\uDCA1 Plan mode (Shift+Tab to toggle)\x1b[0m" : "\uD83D\uDCA1 Plan mode (Shift+Tab to toggle)"}</Text>
-            </Box>
-          )}
-          <PromptInput
-            screenWidth={term.columns}
-            promptHistory={[]}
-            busy={busy}
-            placeholder="Type your message..."
-            promptDraft={promptDraft}
-            onSubmit={({ text, command, imageUrls }) => {
-              if (command) {
-                if (command === "exit") { handleExit(); return; }
-                handleSlashCommand(`/${command}`);
-                return;
-              }
-              if (text.startsWith("/")) {
-                handleSlashCommand(text);
-              } else if (planMode) {
-                runAgentTurn(text, imageUrls);
-              } else {
-                runAgentTurn(text, imageUrls);
-              }
-            }}
-            onInterrupt={() => ctx.provideAbortController().abort()}
-            onExitShortcut={() => handleExit()}
-            onModelPickerOpen={() => setShowModelDropdown(true)}
-            onTogglePlanMode={() => togglePlanMode()}
-            statusLineSegments={statusLine}
-            statusLineSeparator=" · "
-          />
-        </>
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && (
+        <PromptInput
+          screenWidth={term.columns}
+          promptHistory={[]}
+          busy={busy}
+          queuedCount={queuedCount}
+          placeholder="Type your message..."
+          promptDraft={promptDraft}
+          onSubmit={submitFromInput}
+          onInterrupt={() => ctx.provideAbortController().abort()}
+          onExitShortcut={() => handleExit()}
+          onModelPickerOpen={() => setShowModelDropdown(true)}
+          onCyclePosture={() => cyclePosture()}
+        />
       )}
+
+      <StatusBar
+        segments={statusLine}
+        gitStatus={gitStatus}
+        showTimer
+        sessionStart={sessionStart}
+        tokenCounts={tokenCounts}
+        busy={busy}
+      />
     </Box>
   );
 }

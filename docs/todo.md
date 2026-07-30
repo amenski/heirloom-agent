@@ -1,390 +1,81 @@
-# Heirloom ⇐ deepcode-cli feature parity — TODO
+# TODO — deferred work
 
-Source reference: deepcode-cli `packages/cli` (github.com/lessweb/deepcode-cli), full source
-cached locally at `/private/tmp/claude-502/-Users-amanuel-Documents-prg-proj-heirloom-agent/5b843ff9-bd04-4aa0-bc24-d97cba5cd07b/scratchpad/deepcode/` (63 files, `src_*` filename = original path with `/` → `_`).
-
-Already completed (see git log / this session): config system (`.deepcode/settings.json`),
-scope-based permissions engine, provider layer rewrite, theming, keybindings, command palette,
-status line, exec mode, `loading-text.ts`, `clipboard.ts`, Ctrl+V image paste with full
-multimodal support (Message.imageUrls → aisdk.ts → AI SDK file/image parts), reasoning/thinking
-stream plumbing (aisdk.ts reasoning-delta → agent.ts onReasoning → App.tsx collapsed one-liner).
-
-Each task below is independent unless noted. Work top to bottom; check off acceptance criteria
-before marking done. Typecheck (`npx tsc --noEmit`) and test (`npm test`) must stay clean after
-every task.
+The prior items in this file (persistent input, message queue, status-bar revamp, output
+formatting/gutter, bracketed-paste and Plan-mode bug fixes, dead `src/index.ts` removal) are all
+**done and merged into the working tree** as of this session. What remains below is forward-looking.
 
 ---
 
-## 1. AskUserQuestion tool + UI [DONE]
+## 1. Stable prompt prefix + provider prompt caching
 
-Reference: `src_ui_core_ask-user-question.ts`, `src_ui_views_AskUserQuestionPrompt.tsx`.
+**Motivation:** From "How ChatGPT Optimizes Its Agent Loop" (bytebytego), the one client-applicable
+technique is **stable prompt prefixes to preserve the provider's KV/prompt cache** (their §2, with
+§1 append-only history and §5 delta-tokenization as the server-side complements we get for free via
+the AI SDK). We currently violate this in two ways:
 
-Already done this session:
-- `src/tools/types.ts`: added `AskQuestionOption`, `AskQuestionItem`, `ToolContext.askQuestion`.
-- `src/tools/ask_user_question.ts`: new tool `ask_user_question`, registered in `src/tools/index.ts`
-  with `setAskQuestion()` setter.
+1. **We never enable prompt caching.** No `cache_control` / `providerOptions` anywhere in
+   `src/providers/`. So even the fixed ~1.5KB preamble (role, base rules, tool guide — see
+   `src/prompt.ts` `getBaseRules()` / `getToolGuide()`) is re-billed at full input price every turn.
+   DeepSeek (the configured provider) supports context caching; Anthropic supports explicit
+   `cache_control` breakpoints; OpenAI caches automatically on stable prefixes.
 
-Completed this session:
-- `src/cli.tsx` already imported `setAskQuestion` (was wired but never called). `App.tsx` now
-  imports `setAskQuestion` and calls it before/after each agent turn with the bridging callback.
-- `src/ui/App.tsx`: added `askQuestionPrompt` state parallel to `askPrompt`, wired lifecycle in
-  `runAgentTurn` (set before, clear in finally), added early return in `useInput`, rendered
-  `AskUserQuestionPrompt` gated on state.
-- `src/ui/views/AskUserQuestionPrompt.tsx`: new view with single-select (radio `●`/`○`), multi-select
-  (`[x]`/`[ ]` checkboxes), Space toggle, Enter confirm, digit keys 1-9 direct select/digit for
-  single-select, always-appended "Other" option with focused text field (border color changes),
-  Esc cancels whole prompt (resolves `null`).
+2. **Volatile content is baked into the system-prompt prefix**, so even if caching were on, it would
+   bust every turn. In `src/prompt.ts` `buildSystemPrompt()`:
+   - **RepoMap** (lines ~57-62) is keyed on `ctx.conversation` (the latest user message), so the
+     system prompt *content* changes every single turn.
+   - **Plan-mode instruction** (lines ~35-41) appears/disappears when the user toggles posture.
+   - **git status** (`getEnvironment()`, lines ~117-146) changes as the working tree changes.
+   - Additionally, `src/agent.ts` (lines ~78-79) `shift()`s the old system message and `unshift()`s
+     a freshly-built one every user turn — even when nothing in the stable part changed.
 
-**Acceptance criteria:**
-- A test tool call to `ask_user_question` with 2 single-select questions pauses the turn, renders
-  the prompt view, and resolves with `{"question text": "chosen label"}` after the user picks
-  answers for both.
-- Choosing "Other" and typing free text returns that exact text as the answer.
-- A `multiSelect: true` question lets the user toggle 2+ checkboxes before advancing; the answer
-  string contains all selected labels.
-- Pressing Esc at any point returns `null` to the tool handler, which then returns
-  `formatAskUserQuestionDecline()` as the tool's output content (not an error).
-- `npx tsc --noEmit` and `npm test` pass.
+### Plan
 
----
+- **Split `buildSystemPrompt` into two parts:**
+  - `buildStablePreamble(ctx)` — role/persona, `getBaseRules()`, `getToolGuide()`, mode
+    `customInstructions`, skills index, project instructions (AGENTS.md / .heirloom/instructions.md),
+    memory. These change rarely (only on mode/skill/config change), so they form the cacheable
+    prefix. Sort any list-derived content **deterministically** (skills, tool defs) so the bytes are
+    stable across turns.
+  - `buildVolatileContext(ctx)` — RepoMap, plan-mode instruction, environment/git block. Emit these
+    as a **separate message placed AFTER the stable system message** (e.g. a second system message,
+    or folded into the user turn), so they never mutate the cached prefix.
+- **Enable prompt caching in `src/providers/aisdk.ts`:**
+  - For the Anthropic path, add `providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } }`
+    on the last content block of the stable system message (and optionally on the last stable history
+    message) — cache breakpoints. Verify against the installed `@ai-sdk/anthropic` API shape via
+    context7 before writing (the exact key has changed across versions).
+  - For the OpenAI-compatible path (DeepSeek), caching is automatic on stable prefixes — the win
+    comes purely from #2 above (stop mutating the prefix). Confirm DeepSeek returns
+    `prompt_cache_hit_tokens` in usage and surface it (the exit-summary already has a "Cached Tokens"
+    column that currently always shows 0 — wire it up from real usage).
+- **Stop rebuilding the stable preamble every turn in `src/agent.ts`:** only rebuild it when the
+  inputs that feed it actually changed (mode, skills, memory, project instructions). Keep the volatile
+  context rebuilt per turn (cheap). Preserve current behavior: system prompt still at index 0.
+- **Tool-definition ordering:** `registry.getAllDefs()` / `getByMode()` iterate a `Map` — insertion
+  order is stable today, but make it explicit (sort by name) so tool schemas in the request are
+  byte-stable across turns (schemas are part of what providers cache).
 
-## 2. Plan mode (Shift+Tab toggle + PlanImplementationPrompt) [DONE]
+### Acceptance criteria
 
-Completed:
-- `src/ui/core/slash-commands.ts`: added `plan` to `SlashCommandKind` and `/plan` to `BUILTIN_SLASH_COMMANDS`.
-- `src/ui/views/PromptInput.tsx`: Shift+Tab calls `onTogglePlanMode()`; `/plan` slash selection also triggers toggle.
-- `src/ui/App.tsx`: `planMode` boolean state; toggle function; yellow/dim banner above PromptInput when active.
-- `src/prompt.ts`: `PromptContext.planMode` flag → when true, injects "You are in planning mode. Do NOT execute any tool calls... Your reply must end with <proposed_plan>...</proposed_plan>".
-- `src/agent.ts`: `AgentOptions.planMode` piped to `buildSystemPrompt`.
-- `src/cli.tsx` & `src/ui/types.ts`: `planMode` threaded through `runAgentTurnCore` → `runAgentTurnBridge` → `runAgent`.
-- `src/ui/App.tsx`: after turn completes, scans `result.newMessages` for `<proposed_plan>...</proposed_plan>`, renders `PlanImplementationPrompt` if found.
-- `src/ui/views/PlanImplementationPrompt.tsx`: new view, 3 choices with arrow-key navigation, CJK heuristic for follow-up prompt language.
-- `npx tsc --noEmit` and `npm test` pass.
+- On a multi-turn session against DeepSeek, `prompt_cache_hit_tokens` (or the provider's equivalent)
+  is > 0 from the second turn onward, and the exit-summary "Cached Tokens" column reflects it.
+- Toggling plan mode / posture no longer changes the cached system-prefix bytes (verify by logging
+  the stable-preamble hash across turns — it stays constant while only the volatile message changes).
+- No behavior regression: the model still receives the RepoMap, plan-mode instruction, and env/git
+  info each turn (just repositioned); plan mode still produces `<proposed_plan>`; edits still work.
+- `npx tsc --noEmit` and `npm test` pass; verify with a real multi-turn run, not just types.
 
----
+### Not worth doing (from the same article)
 
-## 3. SessionList view (`/resume`, `/continue`, `--resume` picker) [DONE]
-
-Completed:
-- `src/sessions/store.ts`: added `deleteSession(id)` and `getSummary(id)` methods.
-- `src/ui/views/SessionList.tsx`: new view — live-filterable by typing, scrollable with arrow keys,
-  Enter to select/resume, Ctrl+R inline rename (persists via `appendState`), Delete/Backspace
-  (when search empty) confirm-delete, Esc clears search then closes.
-- `src/ui/App.tsx`: `showSessionList` state, intercepts `/resume`/`/continue` in `handleSlashCommand`,
-  renders `SessionList` component gated on state, `showResumeOnStart` effect for bare `--resume` flag.
-- `src/cli.tsx`: `resumeSession` callback in appCtx (loads session via `loadEffective`, sets
-  `conversationHistory` and `sessionId`), `showResumeOnStart: true` when `--resume` bare flag.
-- `src/ui/types.ts`: added `resumeSession` and `showResumeOnStart` to `AppContext`.
-- `npx tsc --noEmit` and `npm test` pass (121 tests).
-
-Reference: `src_ui_views_SessionList.tsx` (report §6). Wire to `src/sessions/store.ts`
-(`SessionStore` — check its current API for listing/renaming/deleting sessions before assuming
-method names).
-
-- [ ] New view `src/ui/views/SessionList.tsx`:
-      - Live-filterable list: typing any non-nav character appends to a search buffer; filter
-        sessions by substring match (case-insensitive) against summary/status/last-reply fields
-        available on our `SessionStore` records.
-      - Dynamic visible-row count from terminal rows (reuse `useTerminalInfo()`/`TerminalProvider`
-        already in `src/ui/contexts.tsx`), with scroll offset.
-      - Inline rename mode (Ctrl+R): full cursor-editable text field for the session summary;
-        Enter commits (persist via `SessionStore`), Esc cancels.
-      - Inline delete confirm (Delete/Backspace when search is empty): Enter confirms delete
-        (persist via `SessionStore`), Esc cancels.
-      - Esc semantics: clears search text first if present, else closes the view entirely.
-- [ ] Wire `/resume` and `/continue` (when no active session) slash commands to open this view.
-- [ ] Wire `--resume [sessionId]` CLI flag (see `src/cli-args.ts`) — bare flag opens the picker at
-      startup, `--resume <id>` loads that session directly without showing the picker.
-- [ ] On selecting a session, load its message history into `shared.conversationHistory` (see
-      `runAgentTurnBridge` in `cli.tsx`) and close the view.
-
-**Acceptance criteria:**
-- `/resume` with 3+ existing sessions shows a scrollable, searchable list; typing narrows results.
-- Selecting a session resumes it — the next prompt sent has that session's prior history as
-  context (verify by checking `shared.conversationHistory` is populated, or via an integration
-  test against `SessionStore`).
-- Ctrl+R renames a session; the new name persists across `SessionStore` reload.
-- Delete removes the session from `SessionStore` after confirmation.
-- `heirloom --resume <valid-uuid>` skips the picker and loads directly;
-  `heirloom --resume <invalid-id>` errors clearly before entering the TUI.
-- `npx tsc --noEmit` and `npm test` pass.
+Server-infra techniques with no client analog: persistent WebSockets, cache-aware GPU routing, KV
+eviction/tiering, speculative decoding, prefill/decode fleet separation, newer-CPU routing, parallel
+safety classifiers. **Deferred tool discovery** (their §3, BM25 tool search) is only worth it once
+MCP servers push the tool count high — revisit if/when that happens; with ~10 built-in tools the
+schema overhead is negligible.
 
 ---
 
-## 4. UndoSelector view (`/undo`) + checkpoint restore wiring [DONE]
+## Suggested next step
 
-Completed:
-- `src/checkpoints/index.ts`: added `restoreFrom(hash)` for restoring from a specific commit.
-- `src/cli.tsx`: `runAgentTurnBridge` now saves checkpoints before each turn with `[convLen:N]`
-  marker in commit message; `restoreCheckpoint` callback in appCtx handles code restore and
-  conversationHistory truncation.
-- `src/ui/views/UndoSelector.tsx`: two-phase view — pick checkpoint, then choose restore mode
-  (code+conversation or conversation only).
-- `src/ui/App.tsx`: `showUndoSelector` state, intercepts `/undo`, renders UndoSelector, sets
-  `promptDraft` after restore.
-- `npx tsc --noEmit` and `npm test` pass.
-
-Reference: `src_ui_views_UndoSelector.tsx` (report §6). Wire to `src/checkpoints/index.ts`
-(`CheckpointManager` — confirm current restore method signatures before assuming).
-
-- [ ] New view `src/ui/views/UndoSelector.tsx`, two-phase:
-      1. `message` phase: list past user-prompt checkpoints (from `CheckpointManager`), pick one.
-      2. `mode` phase: choose "Restore code and conversation" vs "Restore conversation only" —
-         only offer the code-restore option if the checkpoint has an associated code snapshot
-         (check `CheckpointManager`'s API for how it tracks this, e.g. a `canRestoreCode`-style
-         flag or the presence of a git stash/diff for that checkpoint).
-- [ ] Restoring calls into `CheckpointManager` to (a) revert working-tree files to the checkpoint
-      snapshot and/or (b) truncate `shared.conversationHistory` back to that point.
-- [ ] After restore, put the restored user message text back into the prompt draft (so the user
-      can edit and resubmit) — reuse the existing `promptDraft` mechanism already in `App.tsx`/
-      `PromptInput.tsx` (see `appliedDraftNonceRef` pattern).
-- [ ] Errors from either restore step (code vs conversation) are collected and shown without
-      blocking the other from completing.
-- [ ] Wire `/undo` slash command to open this view.
-
-**Acceptance criteria:**
-- `/undo` with 2+ prior checkpoints shows a selectable list of past user prompts.
-- Choosing "Restore code and conversation" reverts tracked files to the checkpoint's git state
-  (verify via `git status`/`git diff` in a test repo) and truncates history.
-- Choosing "Restore conversation" only truncates history, leaves working-tree files untouched.
-- The restored user message text appears back in the prompt input, editable.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 5. McpStatusList view (`/mcp`) [DONE]
-
-Completed:
-- `src/mcp/connector.ts`: restructured — added `McpServerStatus` tracking (connected/failed/
-  reconnecting/starting), `getMCPServerStatuses()`, `getMCPServerTools()`, `reconnectMCPServer()`,
-  `getServerConfigs()`, per-server status map.
-- `src/ui/views/McpStatusList.tsx`: new view — server list with status icons, drill-down to tools,
-  R to reconnect failed servers, auto-refresh on 2s interval.
-- `src/ui/App.tsx`: `showMcpStatus` state, intercepts `/mcp`, renders McpStatusList.
-- `npx tsc --noEmit` and `npm test` pass.
-
-Reference: `src_ui_views_McpStatusList.tsx` (report §6). Wire to `src/mcp/connector.ts`
-(`connectMCPServers`, per-server tool/prompt/resource snapshots already tracked in
-`toolSnapshots`).
-
-- [ ] New view `src/ui/views/McpStatusList.tsx`, two-level:
-      - Server list: name, status icon (✓ connected / ✗ failed / ↻ reconnecting / ● starting,
-        with animated "..." dots while starting/reconnecting), tool/prompt/resource counts.
-      - Drill-down: selecting a server shows its registered tools (from `toolSnapshots` in
-        `src/mcp/connector.ts` — may need to export a getter) — name + input schema summary.
-      - Reconnect action, surfaced only for servers in `failed` status: re-calls
-        `connectMCPServers({ [name]: config })` for just that one server.
-- [ ] `src/mcp/connector.ts` needs a per-server status field (`connected` | `failed` |
-      `reconnecting` | `starting`) if it doesn't already track one — check current state before
-      adding.
-- [ ] Wire `/mcp` slash command to open this view.
-
-**Acceptance criteria:**
-- `/mcp` with 1+ configured MCP servers (from `.deepcode/settings.json` `mcpServers`) shows each
-  server's live status and tool count.
-- Drilling into a connected server lists its tool names.
-- Triggering reconnect on a deliberately-broken server config (e.g. bad command path) shows
-  `reconnecting` then `failed` again, without crashing the app.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 6. Raw display modes (Lite / Normal / Raw scrollback) + RawModeContext [DONE]
-
-Completed:
-- `src/ui/contexts.tsx`: added `RawModeContext`, `RawModeProvider`, `useRawMode()`, `RawMode` type.
-- `src/ui/App.tsx`: wrapped with RawModeProvider; flushReasoning() shows full text in normal mode;
-  raw mode writes directly to process.stdout; /raw slash cycles modes; Esc exits raw.
-- `src/ui/core/slash-commands.ts` & `src/ui/views/PromptInput.tsx`: added /raw command.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 7. Exit summary (usage table) + resume hint [DONE]
-
-Completed:
-- `src/cli.tsx`: per-model usage tracking (`modelUsage` map in shared state).
-- `src/ui/exit-summary.ts`: `buildExitSummaryText()` renders Unicode boxed table; `buildResumeHintText()` prints resume hint.
-- `src/ui/App.tsx`: `handleExit()` prints summary before exiting; wired into all exit paths.
-- `src/ui/types.ts`: added `modelUsage` to `MutableState`.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 8. ProcessStdoutView (Ctrl+O background process viewer)
-
-Reference: `src_ui_views_ProcessStdoutView.tsx` (report §15). **Blocked on a prerequisite**: our
-`src/tools/bash.ts` currently has no background/detached-process concept at all (confirmed via
-`grep -n "background|detach|nohup|spawn" src/tools/bash.ts` returning nothing this session) — bash
-tool calls run synchronously to completion. Do NOT attempt this task until background process
-execution exists in `bash.ts`; scope that as a sub-step here rather than a separate assumed
-feature.
-
-- [ ] Design + implement background bash execution in `src/tools/bash.ts` (e.g. a `background:
-      true` arg, or trailing `&` detection) that returns immediately with a PID and streams stdout
-      into a bounded buffer (cap at 1MB per process, matching deepcode-cli) instead of blocking
-      the tool call.
-- [ ] Track running processes in `App.tsx` (a `runningProcesses: Map<pid, {command, startTime,
-      buffer}>` ref, capped per-process).
-- [ ] New view `src/ui/views/ProcessStdoutView.tsx`: Ctrl+O opens a scrollable panel tailing
-      buffered stdout per running PID, with `── Process PID [cmd] ──` separators between multiple
-      processes. Refresh on an interval (~150ms) while open.
-- [ ] Arrow keys scroll 10 lines, PageUp/PageDown scroll a full page, clamped to valid range. Show
-      a `"... (N lines above · ↑/↓ to scroll · M total lines) ..."` marker when scrolled.
-- [ ] Optional (matches deepcode-cli but not essential): `+`/`-` adjust the active bash tool call's
-      timeout live.
-
-**Acceptance criteria:**
-- A tool call that starts a long-running background command (e.g. a dev server) returns control
-  immediately; Ctrl+O opens a live-updating view of its stdout.
-- Scrolling up/down/page-up/page-down navigates correctly and clamps at the buffer's edges.
-- Closing the view (Esc) returns to the normal prompt without killing the background process.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 9. Self-update checker (update-check.ts + UpdatePrompt) [DONE]
-
-Reference: `src_common_update-check.ts`, `src_ui_views_UpdatePrompt.tsx` (report §3). Skip the
-Tencent Cloud npm mirror logic (China-market-specific, not relevant) — use the public npm registry
-directly.
-
-- [ ] New module `src/common/update-check.ts`:
-      - Persist state at `~/.heirloom/update-check.json` (adjust path prefix to match our existing
-        `~/.deepcode/` convention if that's the established dir — check `src/config/loader.ts`
-        for the canonical home-config path constant before hardcoding a new one).
-      - `checkForNpmUpdate(packageInfo)`: background check via `npm view heirloom dist-tags.latest
-        --json` (spawn with a hard timeout + kill, cap output size), compares against installed
-        version with a simple semver-like comparator, persists a `pending` entry if newer and not
-        already in `ignoredVersions`. All failures swallowed silently — must never block startup.
-      - `promptForPendingUpdate(packageInfo)`: called synchronously before the main TUI renders;
-        if a pending update exists, mounts a small dedicated Ink app and awaits the user's choice.
-- [ ] New view `src/ui/views/UpdatePrompt.tsx`: 3 choices — Install (`npm install -g
-      heirloom@<version>` with `stdio: "inherit"`), Ignore once, Ignore this version (persists to
-      `ignoredVersions`).
-- [ ] Wire into `src/cli.tsx`'s `main()`: call `promptForPendingUpdate()` after arg parsing but
-      before the TUI renders (see deepcode-cli's ordering — after version/help handling so those
-      still work without a check). Fire `checkForNpmUpdate()` in the background after the app
-      starts (fire-and-forget, not awaited).
-
-**Acceptance criteria:**
-- With a fake `ignoredVersions`/`pending` state file and a stubbed npm-view result, launching
-  shows the `UpdatePrompt` before the main chat UI.
-- "Ignore this version" persists that version to `~/.heirloom/update-check.json` and the prompt
-  does not reappear for that version on next launch.
-- "Install" spawns the correct `npm install -g heirloom@<version>` command (verify via a spied
-  `spawn` call in a test, do not actually run a real install in CI).
-- If the npm registry call fails/times out, startup proceeds normally with no error shown to the
-  user.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 10. Hand-rolled terminal input parser (useTerminalInput, cursor.ts) [DONE]
-
-Completed:
-- `src/ui/hooks/useTerminalInput.ts`: parser for ANSI/VT escape sequences, ctrl chars,
-  arrow/home/end/pgup/pgdn/backspace/delete/tab/enter/escape, Shift+Tab, modifiers,
-  bracketed paste detection with `ESC[200~ ... ESC[201~` reassembly into single paste event.
-- `src/ui/hooks/cursor.ts`: visual width (CJK/emoji support), cursor show/hide ANSI toggles,
-  bracketed paste mode toggles, `getPromptCursorPlacement()` for cursor positioning.
-- `src/ui/views/PromptInput.tsx`: migrated from Ink's `useInput` to `useTerminalInput`;
-  all existing keybindings preserved, bracketed paste support added.
-- `npx tsc --noEmit` and `npm test` pass.
-
-Reference: `src_ui_hooks_useTerminalInput.ts`, `src_ui_hooks_cursor.ts` (report §4.3-4.4). This is
-the largest and riskiest task — it replaces/augments Ink's `useInput` in `PromptInput.tsx` with a
-hand-written ANSI/VT parser. Do this LAST, after all other UI tasks are done, since it touches the
-same input-handling code every other prompt view depends on.
-
-- [ ] New module `src/ui/hooks/useTerminalInput.ts`: `parseTerminalInput(data: Buffer|string):
-      InputKey` — recognizes upArrow/downArrow/home/end/pageUp/pageDown/return/escape/ctrl/shift/
-      tab/backspace/delete/meta/focusIn/focusOut/paste, handling multiple escape-sequence variants
-      per key (different terminals send different sequences for the same logical key).
-- [ ] Bracketed paste detection/reassembly: `ESC[200~ ... ESC[201~`, buffering chunks in an array
-      (not string concatenation) to avoid O(n²) cost on large pastes, correctly handling paste
-      content split across multiple `data` events.
-- [ ] `useTerminalInput(handler, {isActive})` hook: uses Ink's `useStdin()` for raw mode, listens
-      to `stdin.on("data", ...)` directly instead of Ink's synthetic input dispatch.
-- [ ] `src/ui/hooks/cursor.ts`: raw ANSI toggles (show/hide cursor, focus reporting, bracketed
-      paste mode), `getPromptCursorPlacement()` accounting for East-Asian wide characters and
-      combining marks, `usePromptTerminalCursor()` using Ink 7's `useCursor()`/`useBoxMetrics()` to
-      place the real terminal cursor exactly on the simulated text cursor.
-- [ ] Migrate `PromptInput.tsx`'s existing `useInput`-based key handling to use the new parser,
-      preserving every existing keybinding (do not regress Ctrl+A/E/B/F/K/U/W/J, arrows, history
-      nav, slash menu nav, Ctrl+V/X image handling, Ctrl+D exit, etc. — re-verify each against the
-      current `useInput` callback before removing it).
-
-**Acceptance criteria:**
-- All existing `PromptInput.tsx` keybindings still work identically after migration (manual pass
-  through every binding listed in the current `useInput` callback, or a scripted stdin-injection
-  test if feasible with Ink's test renderer).
-- Bracketed paste of a large multi-line block (>1000 chars) is captured as a single paste event,
-  not character-by-character.
-- Terminal cursor visually sits on the correct character within wrapped multi-line input text
-  (manual verification in an actual terminal — this cannot be meaningfully unit-tested).
-- `npx tsc --noEmit` and `npm test` pass; run the app manually and confirm no input regressions
-  before considering this done (per this repo's UI-testing convention: type-checking and test
-  suites verify code correctness, not feature correctness for terminal UI).
-
----
-
-## 11. WelcomeScreen ascii-art + responsive layout polish
-
-Reference: `src_ui_ascii-art.ts`, `src_ui_views_WelcomeScreen.tsx`, `src_ui_views_ThemedGradient.tsx`
-(report §14). Lowest risk/priority — pure visual polish on an existing, working component.
-
-- [ ] New module `src/ui/ascii-art.ts`: block-letter logo for "HEIRLOOM" (rebrand deepcode-cli's
-      "DEEP CODE" Unicode box-character art — do not reuse their literal branding/name).
-- [ ] `src/ui/views/ThemedGradient.tsx`: wraps `ink-gradient`'s `<Gradient>` (check if
-      `ink-gradient`/`gradient-string` are already deps — they are not per current `package.json`,
-      so add them, or skip the gradient wrapper and just use a solid theme-accent color like
-      deepcode-cli's current flat-color placeholder actually does).
-- [ ] Bordered info panel: title + version, Model / Thinking Enabled / Reasoning Effort / CWD rows
-      (right-aligned values), CWD shown home-relative (`~/...`).
-- [ ] Random tip line drawn from the union of all slash commands + a hardcoded shortcut-tips list
-      (Enter, Shift+Enter, Ctrl+V, Ctrl+R, Esc, `/`, Ctrl+D twice), deduped against slash commands,
-      picked once per mount (`useState(() => ...)`, stable until remount via `/new`).
-- [ ] Responsive compact layout: if terminal width < ~112 cols, drop fixed panel width/height,
-      tighten margins.
-
-**Acceptance criteria:**
-- `WelcomeScreen` renders the new ascii-art logo without layout overflow at 80-col width (test at
-  both 80 and 160 col widths).
-- The info panel shows live values for Model/Thinking/Effort/CWD matching the current session
-  config.
-- The tip line changes across app restarts (`/new`) but stays fixed within a single session.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## 12. Verify hand-rolled markdown table renderer matches deepcode-cli
-
-Reference: `src_ui_components_MessageView_markdown.ts` (report §10). Comparison/audit task, not a
-full rewrite — only port what's genuinely missing.
-
-- [ ] Compare `src/ui/MarkdownText.tsx`/`src/ui/SyntaxHighlighter.tsx` against deepcode-cli's
-      table-rendering logic:
-      - CJK/emoji-aware visual width calculation (not `.length`) for column sizing.
-      - "Label column" heuristic: columns ≤12 chars keep natural width instead of being compressed.
-      - Grow-to-fill (proportional slack distribution) vs compress-to-fit (proportional deficit
-        budget) column sizing depending on available width vs `maxWidth`.
-      - Per-cell word wrapping (`wrapCell`): break on last space past 1/3 width, else force-break
-        mid-word.
-      - Full Unicode box-drawing character set (`┌┬┐│├┼┤└┴┘`).
-- [ ] Port only the pieces our renderer is missing — check current behavior first with a wide
-      table containing CJK text and a narrow-column header before assuming a gap exists.
-
-**Acceptance criteria:**
-- A markdown table with a mix of CJK and ASCII text renders with correctly aligned column borders
-  (CJK chars counted as width 2, not 1) — add a unit test asserting rendered line lengths match
-  across rows.
-- A table wider than the terminal compresses proportionally rather than truncating or overflowing
-  the terminal width.
-- `npx tsc --noEmit` and `npm test` pass.
-
----
-
-## Suggested execution order
-
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 ✅ → 7 ✅ → 9 ✅ → 11 ✅ → 12 ✅ → 8 (blocked — needs bash.ts prerequisite) → 10 ✅
+Commit the current working tree first (it's a large, verified batch of UI/loop work), then take
+item 1 as its own focused change.

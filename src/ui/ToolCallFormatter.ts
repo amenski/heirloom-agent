@@ -7,6 +7,50 @@ export function escapeRegex(s: string): string {
 // keep the chat focused on what the agent actually *changes*.
 export const SILENT_TOOLS = new Set(["list_files", "read_file", "glob", "search", "load_skill"]);
 
+/** Human-friendly display names for the ⏺ Tool(args) header. */
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  run_bash: "Bash",
+  read_file: "Read",
+  list_files: "List",
+  glob: "Glob",
+  search: "Search",
+  write_to_file: "Write",
+  edit: "Edit",
+  edit_file: "Edit",
+  search_replace: "Update",
+  apply_diff: "Patch",
+  apply_patch: "Patch",
+  load_skill: "Skill",
+  ask_user_question: "AskUserQuestion",
+};
+
+/** "⏺ Bash(grep -rn "x" src/…)" — headline for a tool call. */
+export function formatToolCallHeader(name: string, args: Record<string, unknown>): string {
+  const display = TOOL_DISPLAY_NAMES[name] ?? name;
+  const desc = describeToolCall(name, args);
+  // describeToolCall returns "name arg…" — strip the leading raw name to get just the arg.
+  const arg = desc.startsWith(name) ? desc.slice(name.length).trim() : desc;
+  return arg ? `⏺ ${display}(${arg})` : `⏺ ${display}`;
+}
+
+/**
+ * Claude Code-style collapsed result preview:
+ *   ⎿  first line
+ *      second line
+ *      … +N lines
+ */
+export function formatToolResultPreview(content: string, maxLines = 3): string[] {
+  const allLines = content.replace(/\s+$/, "").split("\n");
+  const shown = allLines.slice(0, maxLines);
+  const out: string[] = [];
+  shown.forEach((line, i) => {
+    out.push(i === 0 ? `  ⎿  ${line}` : `     ${line}`);
+  });
+  const hidden = allLines.length - shown.length;
+  if (hidden > 0) out.push(`     … +${hidden} line${hidden === 1 ? "" : "s"}`);
+  return out;
+}
+
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /**
