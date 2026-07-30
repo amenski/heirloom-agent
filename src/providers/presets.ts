@@ -1,6 +1,5 @@
 import { createAISDKProvider } from "./aisdk.js";
 import type { Provider, ModelCapabilities } from "./types.js";
-import type { ProviderConfig } from "../config/loader.js";
 import { getCredential } from "../config/credentials.js";
 
 export interface ProviderPreset {
@@ -60,9 +59,15 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
   },
 };
 
-let configProviders: Record<string, ProviderConfig> = {};
+export interface ProviderOptions {
+  modelOverride?: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
 
-export function setConfigProviders(entries: Record<string, ProviderConfig>): void {
+let configProviders: Record<string, { api: string; baseUrl?: string; apiKeyEnv?: string; models?: Record<string, { contextWindow: number }> }> = {};
+
+export function setConfigProviders(entries: Record<string, { api: string; baseUrl?: string; apiKeyEnv?: string; models?: Record<string, { contextWindow: number }> }>): void {
   configProviders = entries;
 }
 
@@ -105,24 +110,18 @@ export function getContextWindowForModel(
 export function initPresets(): void {
 }
 
-export function createProvider(name: string, modelOverride?: string): Provider {
+export function createProvider(name: string, options?: ProviderOptions): Provider {
   const configEntry = configProviders[name];
 
   if (configEntry) {
-    const apiKey = (configEntry.apiKeyEnv ? process.env[configEntry.apiKeyEnv] : undefined)
-      || getCredential(name)
+    const apiKey = options?.apiKey
+      || (configEntry.apiKeyEnv ? process.env[configEntry.apiKeyEnv] : undefined)
       || "";
-    if (configEntry.apiKeyEnv && !apiKey) {
-      throw new Error(
-        `Provider "${name}" requires ${configEntry.apiKeyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.yaml`,
-      );
-    }
-    const model =
-      modelOverride ??
+    const model = options?.modelOverride ??
       (configEntry.models ? Object.keys(configEntry.models)[0] : "default");
     const preset: ProviderPreset = {
       api: configEntry.api,
-      baseUrl: configEntry.baseUrl ?? "",
+      baseUrl: options?.baseUrl ?? configEntry.baseUrl ?? "",
       keyEnv: configEntry.apiKeyEnv ?? "",
       defaultModel: model,
       models: {},
@@ -132,20 +131,24 @@ export function createProvider(name: string, modelOverride?: string): Provider {
 
   const preset = BUILTIN_PRESETS[name];
   if (!preset) {
-    const known = getKnownProviderNames();
     throw new Error(
-      `Unknown provider: "${name}". Known: ${known.join(", ")}`,
+      `Unknown provider: "${name}". Known: ${getKnownProviderNames().join(", ")}`,
     );
   }
 
-  const apiKey = (preset.keyEnv ? process.env[preset.keyEnv] : undefined)
+  const apiKey = options?.apiKey
+    || (preset.keyEnv ? process.env[preset.keyEnv] : undefined)
     || getCredential(name)
     || "";
-  if (preset.keyEnv && !apiKey) {
+  if (!apiKey && preset.keyEnv) {
     throw new Error(
-      `Provider "${name}" requires ${preset.keyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.yaml`,
+      `Provider "${name}" requires ${preset.keyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.json`,
     );
   }
 
-  return createAISDKProvider(preset, modelOverride ?? preset.defaultModel, apiKey);
+  return createAISDKProvider(
+    preset,
+    options?.modelOverride ?? preset.defaultModel,
+    apiKey,
+  );
 }
