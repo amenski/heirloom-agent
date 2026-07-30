@@ -1,0 +1,239 @@
+import { describe, it, expect } from "vitest";
+import {
+  visualWidth,
+  visualLength,
+  parseTable,
+  isTableBlock,
+  wrapCell,
+  renderTable,
+} from "./MarkdownTable.js";
+
+describe("visualWidth", () => {
+  it("returns 1 for ASCII characters", () => {
+    expect(visualWidth("a")).toBe(1);
+    expect(visualWidth("1")).toBe(1);
+    expect(visualWidth(" ")).toBe(1);
+  });
+
+  it("returns 2 for CJK characters", () => {
+    expect(visualWidth("你")).toBe(2);
+    expect(visualWidth("好")).toBe(2);
+  });
+
+  it("returns 2 for fullwidth forms", () => {
+    expect(visualWidth("\uff21")).toBe(2);
+  });
+
+  it("returns 0 for zero-width characters", () => {
+    expect(visualWidth("\u200d")).toBe(0);
+    expect(visualWidth("\ufe0f")).toBe(0);
+  });
+});
+
+describe("visualLength", () => {
+  it("computes visual length for mixed text", () => {
+    expect(visualLength("abc")).toBe(3);
+    expect(visualLength("你好")).toBe(4);
+    expect(visualLength("a你b")).toBe(4);
+  });
+});
+
+describe("isTableBlock", () => {
+  it("detects a valid table", () => {
+    const text = "| a | b |\n|----|----|\n| 1 | 2 |";
+    expect(isTableBlock(text)).toBe(true);
+  });
+
+  it("returns false for non-table text", () => {
+    expect(isTableBlock("hello world")).toBe(false);
+    expect(isTableBlock("| just | pipes |")).toBe(false);
+  });
+
+  it("returns false for single line", () => {
+    expect(isTableBlock("| a | b |")).toBe(false);
+  });
+});
+
+describe("parseTable", () => {
+  it("parses headers and rows", () => {
+    const text = "| Name | Value |\n|------|-------|\n| foo  | 42    |";
+    const result = parseTable(text);
+    expect(result).not.toBeNull();
+    expect(result!.headers).toEqual(["Name", "Value"]);
+    expect(result!.rows).toEqual([["foo", "42"]]);
+  });
+
+  it("detects alignment", () => {
+    const text = "| L | C | R |\n|:---|:---:|---:|\n| a | b | c |";
+    const result = parseTable(text);
+    expect(result!.alignments).toEqual(["left", "center", "right"]);
+  });
+
+  it("handles empty cells", () => {
+    const text = "| a | | c |\n|---|---|\n| 1 | | 3 |";
+    const result = parseTable(text);
+    expect(result!.rows[0]).toEqual(["1", "", "3"]);
+  });
+
+  it("returns null for non-table input", () => {
+    expect(parseTable("not a table")).toBeNull();
+  });
+
+  it("handles tables without trailing pipes on all lines", () => {
+    const text = "| a | b |\n|---|---|\n| 1 | 2 |";
+    const result = parseTable(text);
+    expect(result).not.toBeNull();
+    expect(result!.headers).toEqual(["a", "b"]);
+  });
+});
+
+describe("wrapCell", () => {
+  it("returns single element for text that fits", () => {
+    expect(wrapCell("hello", 10)).toEqual(["hello"]);
+  });
+
+  it("wraps at space when past threshold", () => {
+    const result = wrapCell("hello world foo bar", 12);
+    expect(visualLength(result[0])).toBeLessThanOrEqual(12);
+  });
+
+  it("force-breaks when no space available", () => {
+    const result = wrapCell("abcdefghijklmnop", 5);
+    expect(result.every((l) => visualLength(l) <= 5)).toBe(true);
+  });
+
+  it("returns empty string array for empty input", () => {
+    expect(wrapCell("", 10)).toEqual([""]);
+  });
+});
+
+describe("renderTable (simple ASCII)", () => {
+  it("renders a simple table with box-drawing borders", () => {
+    const text = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |";
+    const result = renderTable(text, 80);
+    expect(result).not.toBeNull();
+    expect(result).toContain("Alice");
+    expect(result).toContain("Bob");
+    expect(result).toContain("Name");
+    expect(result).toContain("Age");
+    expect(result).toContain("\u250c");
+    expect(result).toContain("\u2510");
+    expect(result).toContain("\u2514");
+    expect(result).toContain("\u2518");
+    expect(result).toContain("\u2502");
+    expect(result).toContain("\u2500");
+  });
+
+  it("renders table with consistent column widths", () => {
+    const text = "| A | B |\n|---|---|\n| x | yy |\n| zzz | w |";
+    const result = renderTable(text, 80);
+    const lines = result!.split("\n");
+    const dataLine = lines[1];
+    expect(dataLine).toContain("A");
+    expect(dataLine).toContain("B");
+  });
+});
+
+describe("renderTable (CJK + ASCII mix)", () => {
+  it("aligns columns with mixed CJK and ASCII text", () => {
+    const text = "| 名称 | Value |\n|------|-------|\n| 苹果 | 100 |\n| 橘子 | 50 |";
+    const result = renderTable(text, 80);
+    expect(result).not.toBeNull();
+    expect(result).toContain("名称");
+    expect(result).toContain("Value");
+    expect(result).toContain("苹果");
+    expect(result).toContain("100");
+    expect(result).toContain("橘子");
+    expect(result).toContain("50");
+
+    const lines = result!.split("\n");
+    for (const line of lines) {
+      if (line.includes("│")) {
+        const parts = line.split("│");
+        for (const part of parts) {
+          const trimmed = part.trim();
+          for (let i = 1; i < lines.length; i++) {
+            if (lines[i].includes("│")) {
+              const otherParts = lines[i].split("│");
+              for (let j = 0; j < Math.min(parts.length, otherParts.length); j++) {
+                if (parts[j].trim() && otherParts[j].trim()) {
+                  expect(visualLength(parts[j])).toBe(visualLength(otherParts[j]));
+                }
+              }
+            }
+          }
+          break;
+        }
+        break;
+      }
+    }
+  });
+
+  it("handles CJK headers and ASCII data", () => {
+    const text = "| 序号 | 姓名 |\n|------|------|\n| 1 | Alice |\n| 2 | Bob |";
+    const result = renderTable(text, 80);
+    expect(result).not.toBeNull();
+
+    const lines = result!.split("\n");
+    const headerLine = lines[1];
+    const dataLine = lines[3];
+
+    expect(headerLine).toContain("序号");
+    expect(headerLine).toContain("姓名");
+    expect(dataLine).toContain("1");
+    expect(dataLine).toContain("Alice");
+  });
+});
+
+describe("renderTable (compression)", () => {
+  it("compresses tables wider than terminal", () => {
+    const text =
+      "| FirstColumnName | SecondColumnName | ThirdColumnName | FourthColumnName |\n" +
+      "|-----------------|------------------|-----------------|------------------|\n" +
+      "| data1 | data2 | data3 | data4 |\n" +
+      "| moreAAAAAAAAAAAA | moreBBBBBBBBBBBB | moreCCCCCCCCCCCC | moreDDDDDDDDDDDD |";
+    const wideResult = renderTable(text, 80);
+    const narrowResult = renderTable(text, 50);
+    expect(wideResult).not.toBeNull();
+    expect(narrowResult).not.toBeNull();
+    const wideLen = wideResult!.split("\n")[0].length;
+    const narrowLen = narrowResult!.split("\n")[0].length;
+    expect(narrowLen).toBeLessThan(wideLen);
+  });
+
+  it("never exceeds the specified width", () => {
+    const text =
+      "| Col1 | Col2 | Col3 | Col4 | Col5 |\n" +
+      "|------|------|------|------|------|\n" +
+      "| data1 | data2 | data3 | data4 | data5 |";
+    const result = renderTable(text, 50);
+    expect(result).not.toBeNull();
+    for (const line of result!.split("\n")) {
+      expect(visualLength(line)).toBeLessThanOrEqual(50);
+    }
+  });
+});
+
+describe("renderTable (label column heuristic)", () => {
+  it("preserves narrow label columns", () => {
+    const text = "| ID | Description |\n|---|---|\n| 1 | Short |\n| 2 | Also short |";
+    const result = renderTable(text, 80);
+    expect(result).not.toBeNull();
+    const lines = result!.split("\n");
+    const headerLine = lines[1];
+    const parts = headerLine.split("│");
+    const idPart = parts[1];
+    expect(visualLength(idPart)).toBeLessThanOrEqual(2 + 2 + 2);
+  });
+});
+
+describe("renderTable (empty cells)", () => {
+  it("handles empty cells gracefully", () => {
+    const text = "| A | B | C |\n|---|---|---|\n| | x | |\n| y | | z |";
+    const result = renderTable(text, 80);
+    expect(result).not.toBeNull();
+    expect(result).toContain("x");
+    expect(result).toContain("y");
+    expect(result).toContain("z");
+  });
+});

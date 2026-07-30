@@ -13,6 +13,7 @@
 import React, { useMemo, memo } from "react";
 import { Box, Text, Static } from "ink";
 import MarkdownText from "./MarkdownText.js";
+import { isTableBlock } from "./MarkdownTable.js";
 import { useTheme } from "./contexts.js";
 import type { TabDefinition } from "./types.js";
 
@@ -85,6 +86,32 @@ const OutputLine = memo(function OutputLine({
 
 // ── Main OutputArea ──
 
+function mergeTableLines(lines: string[]): Array<{ text: string; key: number }> {
+  const merged: Array<{ text: string; key: number }> = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].trimStart().startsWith("|")) {
+      const groupLines: string[] = [lines[i]];
+      let j = i + 1;
+      while (j < lines.length && lines[j].trimStart().startsWith("|")) {
+        groupLines.push(lines[j]);
+        j++;
+      }
+      const groupText = groupLines.join("\n");
+      if (groupLines.length >= 2 && isTableBlock(groupText)) {
+        merged.push({ text: groupText, key: i });
+      } else {
+        groupLines.forEach((l, k) => merged.push({ text: l, key: i + k }));
+      }
+      i = j;
+    } else {
+      merged.push({ text: lines[i], key: i });
+      i++;
+    }
+  }
+  return merged;
+}
+
 function OutputArea({
   lines,
   activeLine,
@@ -98,6 +125,8 @@ function OutputArea({
     }
     return lines;
   }, [lines, maxLines]);
+
+  const mergedLines = useMemo(() => mergeTableLines(displayLines), [displayLines]);
 
   // Track if we have lines to show the "more lines above" indicator
   const hasMore = maxLines > 0 && lines.length > maxLines;
@@ -114,8 +143,8 @@ function OutputArea({
       )}
 
       {/* Committed lines (never re-render once committed via <Static>) */}
-      <Static items={displayLines}>
-        {(line, i) => <OutputLine key={i} line={line} />}
+      <Static items={mergedLines}>
+        {(item) => <OutputLine key={item.key} line={item.text} />}
       </Static>
 
       {/* Active streaming line */}

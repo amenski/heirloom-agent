@@ -356,6 +356,18 @@ async function main() {
       },
       getModelEntries: () => listKnownModels(),
       runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls, planMode),
+      resumeSession: async (id: string) => {
+        try {
+          const loaded = await sessionStore.loadEffective(id);
+          shared.conversationHistory = loaded.messages;
+          sessionId = id;
+          setSessionId(id);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      showResumeOnStart: resumeSessionId === true,
       theme: resolvedTheme,
       keybindings: resolvedKeybindings,
       keybindingConfig: resolvedKeybindingConfig,

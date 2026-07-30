@@ -35,6 +35,7 @@ import WelcomeScreen from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
+import SessionList from "./views/SessionList.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
@@ -83,6 +84,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     planText: string;
     followUpPrompt: string;
   } | null>(null);
+  const [showSessionList, setShowSessionList] = useState(false);
 
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -94,6 +96,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   } | null>(null);
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+
+  useEffect(() => {
+    if (ctx.showResumeOnStart) {
+      setShowSessionList(true);
+      ctx.showResumeOnStart = false;
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -464,6 +473,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowModelDropdown(true);
       return;
     }
+    if (trimmed === "/resume" || trimmed === "/continue") {
+      setShowSessionList(true);
+      return;
+    }
     ctx.handleSlash(trimmed).then((lines) => {
       for (const line of lines) pushOutput(line);
       setStatusLine(ctx.buildStatusBar());
@@ -597,6 +610,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (showModelDropdown) return;
 
     if (planPrompt) {
+      return;
+    }
+
+    if (showSessionList) {
       return;
     }
 
@@ -771,6 +788,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showSessionList && (
+        <SessionList
+          sessionStore={ctx.sessionStore}
+          onResume={async (sessionId) => {
+            if (ctx.resumeSession) {
+              const ok = await ctx.resumeSession(sessionId);
+              if (ok) {
+                setShowSessionList(false);
+                setOutputLines([]);
+              }
+            }
+          }}
+          onClose={() => setShowSessionList(false)}
+          width={term.columns}
+          height={term.rows}
+        />
+      )}
+
       {showModelDropdown && (
         <ModelsDropdown
           open={showModelDropdown}
@@ -788,7 +823,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showModelDropdown && !showHelp && !showCommandPalette && (
+      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showModelDropdown && !showHelp && !showCommandPalette && (
         <>
           {planMode && (
             <Box>

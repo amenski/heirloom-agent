@@ -63,7 +63,19 @@ Completed:
 
 ---
 
-## 3. SessionList view (`/resume`, `/continue`, `--resume` picker)
+## 3. SessionList view (`/resume`, `/continue`, `--resume` picker) [DONE]
+
+Completed:
+- `src/sessions/store.ts`: added `deleteSession(id)` and `getSummary(id)` methods.
+- `src/ui/views/SessionList.tsx`: new view — live-filterable by typing, scrollable with arrow keys,
+  Enter to select/resume, Ctrl+R inline rename (persists via `appendState`), Delete/Backspace
+  (when search empty) confirm-delete, Esc clears search then closes.
+- `src/ui/App.tsx`: `showSessionList` state, intercepts `/resume`/`/continue` in `handleSlashCommand`,
+  renders `SessionList` component gated on state, `showResumeOnStart` effect for bare `--resume` flag.
+- `src/cli.tsx`: `resumeSession` callback in appCtx (loads session via `loadEffective`, sets
+  `conversationHistory` and `sessionId`), `showResumeOnStart: true` when `--resume` bare flag.
+- `src/ui/types.ts`: added `resumeSession` and `showResumeOnStart` to `AppContext`.
+- `npx tsc --noEmit` and `npm test` pass (121 tests).
 
 Reference: `src_ui_views_SessionList.tsx` (report §6). Wire to `src/sessions/store.ts`
 (`SessionStore` — check its current API for listing/renaming/deleting sessions before assuming
