@@ -17,7 +17,7 @@ import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
 import { authWizard, authList, authLogout } from "./auth/wizard.js";
-import { SessionStore } from "./sessions/store.js";
+import { SessionStore, type CompactionSummary } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import { loadConfig } from "./config/loader.js";
@@ -191,6 +191,14 @@ async function main() {
     modelUsage: {} as Record<string, { input: number; output: number }>,
     posture: "normal" as "normal" | "autoApprove" | "plan",
   };
+
+  // A session resumed at startup (--resume/--last) must seed the live history so
+  // the model actually sees the prior turns on the very first message. Without
+  // this, runAgentTurnBridge gets `history: undefined` and the resume is
+  // context-blind (the interactive /resume path does this via resumeSession()).
+  if (sessionLoaded) {
+    shared.conversationHistory = sessionMessages;
+  }
 
   async function logSessionEnd() {
     try {
@@ -382,6 +390,41 @@ async function main() {
       },
       showResumeOnStart: resumeSessionId === true,
       initialNotice,
+      initialMessages: sessionLoaded ? sessionMessages : undefined,
+      compactResumed: async (): Promise<Message[] | null> => {
+        // Explicit user request from the resume chooser — bypass the auto
+        // threshold and compact whatever was loaded. Mirrors the persist path in
+        // agent.ts: summarize old turns, write a non-destructive compaction
+        // overlay (raw log stays on disk), and update the live history.
+        const msgs = shared.conversationHistory;
+        if (msgs.length === 0) return null;
+        const compactor = getCompactor();
+        const persistedCount = await sessionStore.getMessageCount(sessionId);
+        // Drop the leading system prompt (if any) from the summarized span; it is
+        // rebuilt per turn and shouldn't be baked into the summary.
+        const withoutSystem = msgs[0]?.role === "system" ? msgs.slice(1) : msgs;
+        const keepCount = Math.min(4, withoutSystem.length);
+        const old = withoutSystem.slice(0, withoutSystem.length - keepCount);
+        const recent = withoutSystem.slice(withoutSystem.length - keepCount);
+        if (old.length === 0) return null;
+        const summaryText = await compactor.summarizeForResume(old);
+        const summaryMsg: Message = {
+          role: "user",
+          content: `[Previous conversation summary]\n${summaryText}`,
+        };
+        const compacted = [summaryMsg, ...recent];
+        shared.conversationHistory = compacted;
+        if (persistedCount > 0) {
+          const summary: CompactionSummary = {
+            task: summaryText,
+            decisions: [],
+            files: [],
+            errors_resolved: [],
+          };
+          await sessionStore.appendCompaction(sessionId, persistedCount - 1, summary);
+        }
+        return compacted;
+      },
       theme: resolvedTheme,
       keybindings: resolvedKeybindings,
       keybindingConfig: resolvedKeybindingConfig,
