@@ -136,12 +136,15 @@ Settings live in JSON, merged global → project (project wins):
 
 ```jsonc
 {
-  "model": "claude-sonnet-4",
-  "provider": "anthropic",
+  "model": "deepseek-v4-pro",
+  "provider": "deepseek",
   "permissions": {
     "defaultMode": "askAll",
-    "allow": ["scan", "read-out-cwd", "write-in-cwd"],
-    "deny": []
+    "rules": [
+      { "tool": "read_file",     "pattern": "./**", "action": "allow" },
+      { "tool": "write_to_file", "pattern": "./**", "action": "allow" },
+      { "tool": "run_bash",      "pattern": "*",    "action": "ask"   }
+    ]
   },
   "mcpServers": {
     "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
@@ -149,8 +152,13 @@ Settings live in JSON, merged global → project (project wins):
 }
 ```
 
-- **API keys never go in config** — use env vars or the `auth`-managed
-  credentials file (`~/.heirloom/credentials.yaml`).
+- **Keep API keys out of config where you can.** The canonical store is the
+  `auth`-managed credentials file (`~/.heirloom/credentials.yaml`, `chmod 600`),
+  or a provider env var. A key set at `env.API_KEY` in `settings.json` does work,
+  but is discouraged — settings.json is meant to be shareable/committable.
+- **Use the `rules` permission shape** shown above. The old
+  `allow`/`deny` scope-array form still loads, but triggers a migration warning
+  on every launch until you rewrite it.
 - **Per-repo instructions** for the agent: `.heirloom/instructions.md` (or
   `AGENTS.md`).
 - **Custom personas**: drop a YAML into `~/.heirloom/modes/`.

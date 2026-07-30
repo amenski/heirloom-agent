@@ -1,192 +1,195 @@
 # Config Specification
 
-Heirloom config lives at `~/.heirloom/config.yaml`. Project-level overrides
-at `.heirloom/config.yaml`.
+Heirloom config is **JSON**, loaded and merged by `src/config/loader.ts`. Two
+files are read and deep-merged (project wins over global):
+
+- **Global:** `~/.deepcode/settings.json` (or `$DEEPCODE_HOME/settings.json`)
+- **Project:** `./.deepcode/settings.json` (in the current working directory)
+
+There is no YAML config file. `config.yaml`, `~/.heirloom/config.yaml`, and a
+`providers:` registry map are **not** read by the loader; the only YAML file
+heirloom reads is the credentials store (see §Credentials).
 
 ## Schema
 
-```yaml
-# Required: none (all fields optional)
+Every field is optional. Keys the loader recognizes (`KNOWN_KEYS` in
+`src/config/loader.ts`); anything else emits a `config: unknown field "<key>"`
+warning and is ignored.
 
-# Default provider/model (used when mode doesn't specify one)
-provider: deepseek             # Key into the providers map below
-model: deepseek-chat           # Model ID for that provider
+```jsonc
+{
+  // Default model. Top-level "model" wins over env.MODEL.
+  "model": "deepseek-v4-pro",
 
-# Provider registry. Built-ins (deepseek, openai, anthropic) ship with the
-# defaults shown; entries here add providers or override built-ins.
-# Adding any OpenAI-compatible service is config-only — zero code.
-providers:
-  deepseek:                    # built-in, shown for reference
-    api: openai-compatible     # which adapter implements the wire format
-    baseUrl: https://api.deepseek.com
-    apiKeyEnv: DEEPSEEK_API_KEY
-    models:
-      deepseek-chat: { contextWindow: 128000 }
-      deepseek-reasoner: { contextWindow: 128000 }
-  ollama:                      # example: local models, no key, zero code
-    api: openai-compatible
-    baseUrl: http://localhost:11434/v1
-    apiKeyEnv: null
-    models:
-      qwen2.5-coder: { contextWindow: 32768 }
+  // Provider name (heirloom extension). Selects a built-in preset:
+  // deepseek | openai | openrouter | groq | ollama. When absent, the
+  // provider is inferred from env.BASE_URL / present env keys, defaulting
+  // to "deepseek" (src/cli.tsx detectProvider).
+  "provider": "deepseek",
 
-# Permission rules (evaluated in order, last match wins)
-permissions:
-  read_file: allow
-  list_files: allow
-  search: allow
-  glob: allow
-  write_file: ask
-  edit: ask
-  apply_diff: ask
-  apply_patch: ask
-  search_replace: ask
-  edit_file: ask
-  write_to_file: ask
-  run_bash:
-    "git *": allow
-    "npm test": allow
-    "npm run *": allow
-    "ls *": allow
-    "cat *": allow
-    "rm *": deny
-    "*": ask
+  // Model/API env block. These map onto the provider at launch.
+  "env": {
+    "MODEL": "deepseek-v4-pro",          // used only if top-level "model" unset
+    "API_KEY": "sk-...",                  // works, but discouraged — see Credentials
+    "BASE_URL": "https://api.deepseek.com",// see note under Providers below
+    "TEMPERATURE": "0.2",                 // string "0".."2"
+    "THINKING_ENABLED": "true",
+    "REASONING_EFFORT": "high",           // "high" | "max"
+    "DEBUG_LOG_ENABLED": "false",
+    "TELEMETRY_ENABLED": "false"
+    // arbitrary extra string keys are preserved
+  },
 
-# Compaction settings
-compaction:
-  auto: true                    # Auto-compact when context exceeds threshold
-  threshold: 0.7                # Fraction of context window (0.0-1.0)
+  // Thinking / reasoning (top-level; higher priority than the env.* strings)
+  "thinkingEnabled": true,
+  "reasoningEffort": "high",              // "high" | "max"
+  "temperature": 0.2,                      // number, 0..2
 
-# Fallback context window, used only when the active model has no
-# contextWindow in its provider entry (a warning is printed)
-contextWindow: 128000
+  // Permission rules — the CURRENT (rule-based) shape. Evaluated in order,
+  // last match wins. See permission-spec.md and §Permissions below.
+  "permissions": {
+    "defaultMode": "askAll",              // "askAll" | "allowAll"
+    "rules": [
+      { "tool": "read_file",     "pattern": "./**",     "action": "allow" },
+      { "tool": "write_to_file", "pattern": "./**",     "action": "allow" },
+      { "tool": "run_bash",      "pattern": "git *",    "action": "allow" },
+      { "tool": "run_bash",      "pattern": "rm *",     "action": "deny"  },
+      { "tool": "run_bash",      "pattern": "*",        "action": "ask"   }
+    ]
+  },
 
-# Keybindings (cli-spec.md). Actions: abort, cycle-approval, cycle-mode.
-# Reserved keys rejected at validation: ctrl+c, ctrl+d, enter, ctrl+m.
-keybindings:
-  abort: esc               # Ctrl+C always works as fallback
-  cycle-approval: shift+tab
-  cycle-mode: none         # unbound by default
+  // MCP servers for external tool discovery
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": { "SOME_VAR": "value" }
+    }
+  },
 
-# MCP servers for external tool discovery
-mcp:
-  playwright:
-    type: local
-    command: ["npx", "-y", "@playwright/mcp"]
-    enabled: false
+  // When true, only allowlisted MCP server commands may be spawned (default false)
+  "strictMcpConfig": false,
 
-# When true, only allowlisted MCP server commands may be spawned (default false)
-strictMcpConfig: false
+  // Theme (heirloom extension)
+  "theme": {
+    "mode": "dark",                        // "dark" | "light" | "auto"
+    "name": "some-preset",                 // optional named preset
+    "overrides": {}                        // optional token overrides
+  },
+
+  // Per-skill enable/disable
+  "enabledSkills": { "some-skill": true },
+
+  // Misc extensions
+  "keybindings": {},                       // object, passed through as-is
+  "compaction": { "auto": true, "threshold": 0.7 },
+  "contextWindow": 128000,                 // fallback context window
+  "workflow": { "gitStatus": true, "gitCommands": true },
+  "notify": "/path/to/notify-script",
+  "debugLogEnabled": false,
+  "telemetryEnabled": false
+}
 ```
+
+## Permissions
+
+The **current** shape is `permissions.rules` (an array of
+`{ tool, pattern, action }`) plus an optional `defaultMode`
+(`"askAll"` | `"allowAll"`). The `pattern` string is interpreted by the loader:
+
+| Pattern form | Interpreted as |
+|--------------|----------------|
+| ends with `:*` | prefix match on the text before `:*` |
+| contains `*` or `?` | glob |
+| empty string `""` | matches any input |
+| otherwise | exact match |
+
+`action` must be one of `allow` / `ask` / `deny`.
+
+### Legacy shape (migrated with a warning)
+
+The **old** shape used top-level `allow` / `deny` / `ask` arrays of *scope*
+strings (`scan`, `read-out-cwd`, `write-in-cwd`, `mcp`, …). The loader still
+accepts it, but `migrateLegacyPermissions` (`src/config/loader.ts`) translates
+it to `rules` in memory and emits:
+
+```
+permissions: migrated N legacy scope(s) to rule-based permissions —
+review .deepcode/settings.json and re-approve as needed
+```
+
+That warning fires on **every launch** until the file is rewritten to the
+`rules` shape. New configs should use `rules` directly. (The scope `network`
+has no rule equivalent and is dropped with its own warning; unrecognized scopes
+are dropped with a warning.)
 
 ## `strictMcpConfig`
 
-Optional boolean, default `false`. When enabled, a local MCP server is only
-launched if the **basename** of its `command` (path stripped, compared
-case-sensitively) is on this allowlist:
+Optional boolean, default `false`. When enabled, a local MCP server is launched
+only if its `command` passes the launcher allowlist; otherwise it is marked
+failed (visible via `/mcp`) and never spawned. A hardening measure — MCP
+servers run as untrusted child processes.
 
-```
-npx, node, python3, python, uvx, uv, bun, deno, go, java
-```
+## Providers and base URL
 
-Any other command — e.g. `/usr/local/bin/malware` — is **not spawned**. The
-server is marked `failed` with an error that names the offending command, the
-allowlist, and how to disable the check (`strictMcpConfig: false`). The failure
-is visible through the `/mcp` status view; it never crashes the app.
+Provider selection is by **name** (`provider` field), resolving to a built-in
+preset in `src/providers/presets.ts` (`deepseek`, `openai`, `openrouter`,
+`groq`, `ollama`). Each preset carries its own `baseUrl` and `keyEnv`.
 
-This is a low-cost hardening measure: MCP servers run as untrusted child
-processes, so restricting the launcher to well-known interpreters/runners blocks
-config that would otherwise execute an arbitrary binary at startup.
+`setConfigProviders()` exists in `presets.ts` to register additional providers
+(with a custom `baseUrl`/`apiKeyEnv`), and `createProvider` honors an
+`options.baseUrl` override **only for such config-registered providers**.
 
-## Provider Entries
+> **Known limitation (verified):** `setConfigProviders` is imported but never
+> called anywhere in `src/`, and there is no config key that populates it — the
+> `providers` field is *not* recognized by the loader (it warns
+> `config: unknown field "providers"`). Consequently `env.BASE_URL` is read and
+> passed through (`src/cli.tsx:88,112`) but **ignored for the built-in
+> presets**, which use their hardcoded `baseUrl`
+> (`src/providers/presets.ts:132-153`). There is currently no supported way to
+> point a built-in provider at a custom base URL via config. `env.API_KEY`, by
+> contrast, *is* honored for built-in providers (`options.apiKey`,
+> `src/providers/presets.ts:139`).
 
-| Field | Meaning |
-|-------|---------|
-| `api` | Adapter implementing the wire format: `openai-compatible` \| `anthropic` (provider-spec.md). Unknown value → config error at startup. |
-| `baseUrl` | Endpoint root. Required for `openai-compatible`; native adapters have defaults. |
-| `apiKeyEnv` | **Name** of the env var holding the key. `null` for keyless endpoints (local models). Literal keys are never allowed in config — YAML gets committed by accident, env vars don't. Missing env var → clear error on first use, naming the variable. |
-| `models` | Known models with per-model settings. `contextWindow` here is what compaction budgets read (subsystems.md §2) — the global fallback exists only for models missing an entry. |
-
-Model references everywhere else (mode `model:` field, `--model` flag) use
-`provider/model-id`, split on the **first** slash only — model IDs may
-themselves contain slashes: `openrouter/anthropic/claude-sonnet-4.5` parses
-as provider `openrouter`, model `anthropic/claude-sonnet-4.5`.
+Model references (`--model`, the `model` field) use `provider/model-id`, split on
+the **first** slash only, so model IDs may themselves contain slashes
+(`openrouter/anthropic/claude-sonnet-4` → provider `openrouter`, model
+`anthropic/claude-sonnet-4`).
 
 ## Credentials
 
-API keys never live in `config.yaml` (it should be shareable/committable).
-Two sources, in precedence order:
+API keys are resolved by `createProvider` (`src/providers/presets.ts`) and the
+launch key-presence gate (`src/cli.tsx`). For a built-in provider, the key is
+taken from, in order:
 
-1. **Env var** named by the provider's `apiKeyEnv` — wins when set.
-2. **`~/.heirloom/credentials.yaml`** — a flat `provider: key` map, file
-   mode `0600`, written by `heirloom auth` (cli-spec.md). Never read from a
-   project directory.
+1. `options.apiKey` — sourced from `env.API_KEY` in `settings.json` when set.
+2. The provider's env var (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
+   `OPENROUTER_API_KEY`, `GROQ_API_KEY`).
+3. `~/.heirloom/credentials.yaml` via `getCredential(name)`.
+
+The **canonical, recommended** store is `~/.heirloom/credentials.yaml` — a flat
+`provider: key` YAML map at mode `0600`, written by `heirloom auth`
+(`src/config/credentials.ts`). A legacy `~/.deepcode/credentials.json` is read as
+a fallback with a one-time deprecation warning.
 
 ```yaml
 # ~/.heirloom/credentials.yaml  (managed by `heirloom auth`)
-openrouter: sk-or-...
 deepseek: sk-...
+openrouter: sk-or-...
 ```
 
-Resolution is checked in both the startup key-presence gate (`hasAnyKey`) and
-the provider's key resolution (`createProvider`) — both read this exact flat
-shape, and both fall back to it only when the env var is unset.
-
-### Future: OS keychain (not yet implemented)
-
-The plaintext `credentials.yaml` is the *fallback* store. The intended
-best-practice path, matching `gh`/Docker/Claude Code, is the OS secret store:
-
-- **macOS Keychain**, **Linux libsecret/`secret-tool`**, **Windows Credential
-  Manager** — via a helper like `keytar`, or shelling out to the platform tool.
-- `heirloom auth` would write the key to the keychain when available and record
-  only a *pointer* (e.g. `deepseek: keychain`) in `credentials.yaml`, never the
-  raw secret. The plaintext value stays supported for headless/container
-  environments where no keychain exists (the `gh` model).
-- Resolution order becomes: env var → keychain (if pointer) → plaintext value.
-
-This removes the raw key from disk on the common desktop path while keeping the
-zero-dependency fallback. Deferred — plaintext-with-`0600` is the v1 store.
-
-**The normal way — `heirloom auth`** (cli-spec.md): pick a preset
-(DeepSeek, OpenRouter, Groq, Together, Ollama, OpenAI, Anthropic, or
-custom), paste the key, done. Presets carry the `baseUrl` and default
-models, so nothing is typed but the key; "custom" additionally asks for a
-baseUrl and writes the provider entry into `~/.heirloom/config.yaml`.
-
-**The manual way** (escape hatch, and what `auth` does under the hood):
-edit `~/.heirloom/config.yaml` yourself —
-
-```yaml
-providers:
-  openrouter:
-    api: openai-compatible          # OpenRouter speaks the OpenAI format → zero code
-    baseUrl: https://openrouter.ai/api/v1
-    apiKeyEnv: OPENROUTER_API_KEY   # or run `heirloom auth` / add to credentials.yaml
-    models:
-      anthropic/claude-sonnet-4.5: { contextWindow: 200000 }
-```
-
-Then set it as default (`provider: openrouter` at the top of the file) or
-use it ad hoc: `--model openrouter/anthropic/claude-sonnet-4.5`. A provider
-speaking a wire format heirloom lacks is the only case requiring code — one
-adapter file (provider-spec.md).
-
-## Precedence
-
-1. CLI flags (future: `--mode architect --model deepseek-chat`)
-2. Environment variables (`HEIRLOOM_PROVIDER`, `HEIRLOOM_MODEL`)
-3. Project config (`.heirloom/config.yaml`)
-4. Global config (`~/.heirloom/config.yaml`)
-5. Built-in defaults
+`env.API_KEY` inside `settings.json` **works** but is **discouraged**:
+settings.json is meant to be shareable/committable, and a key there can leak
+into version control. Prefer the credentials file or an env var. (Note the split
+homes: config lives under `~/.deepcode`, credentials and sessions under
+`~/.heirloom`.)
 
 ## Web Search
 
 Heirloom ships the built-in `docs_search` tool for developer-documentation
-sources (GitHub, Stack Overflow, package registries, Wikipedia — see
-web-search-spec.md tier 1). For **general** web search, add a search MCP
-server of your choosing under `mcpServers`; it is gated by the existing
-`mcp__*` permission rules. Heirloom ships and endorses none.
+sources. For **general** web search, add a search MCP server under `mcpServers`;
+it is gated by the existing `mcp__*` permission rules. Heirloom ships and
+endorses none.
 
 ```jsonc
 {
@@ -196,19 +199,22 @@ server of your choosing under `mcpServers`; it is gated by the existing
 }
 ```
 
-The old `webSearchTool` script-path key is deprecated (see below).
-
 ## Deprecated Keys
 
 | Key | Status | Replacement |
 |-----|--------|-------------|
-| `webSearchTool` (script path) | Deprecated, parsed but ignored (emits a warning) | Add a search MCP server under `mcpServers` instead (web-search-spec.md tier 2) |
+| `webSearchTool` (script path) | Parsed but ignored; emits a warning | Add a search MCP server under `mcpServers` |
 
 ## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
+| `DEEPCODE_HOME` | Override the config home (default `~/.deepcode`); the loader reads `settings.json` from here |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `HEIRLOOM_HOME` | Override `~/.heirloom` directory (default: `~/.heirloom`) |
+| `OPENROUTER_API_KEY` | OpenRouter API key |
+| `GROQ_API_KEY` | Groq API key |
+
+> Note: `HEIRLOOM_HOME` is **not** honored by the config loader or the
+> credentials/session stores (those use `~/.heirloom` unconditionally). It is
+> read only by the mode loader (`src/modes/loader.ts`) for locating mode files.
