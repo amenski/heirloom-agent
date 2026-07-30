@@ -7,6 +7,7 @@ import { registerBash } from "./bash.js";
 import { registerSearch } from "./search.js";
 import { registerEdits } from "./edit.js";
 import { registerAskUserQuestion } from "./ask_user_question.js";
+import { registerDocsSearch } from "./docs-search.js";
 
 const registry = new ToolRegistry();
 registerFiles(registry);
@@ -14,6 +15,7 @@ registerBash(registry);
 registerSearch(registry);
 registerEdits(registry);
 registerAskUserQuestion(registry);
+registerDocsSearch(registry);
 
 export { registry };
 export const TOOL_DEFS = registry.getAllDefs();

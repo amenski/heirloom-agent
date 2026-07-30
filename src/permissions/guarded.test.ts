@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { patternMatches } from "./rules.js";
 import { BUILTIN_GUARDED_RULES } from "./guarded.js";
+import { PermissionEngine } from "./engine.js";
 
 describe("BUILTIN_GUARDED_RULES", () => {
   it("every rule resolves to ask, not deny — reading your own secret file once is legitimate", () => {
@@ -85,5 +86,30 @@ describe("BUILTIN_GUARDED_RULES: network egress", () => {
     for (const rule of BUILTIN_GUARDED_RULES.filter((r) => r.tool === "run_bash")) {
       expect(patternMatches(rule, { tool: "run_bash", text: safe })).toBe(false);
     }
+  });
+});
+
+describe("BUILTIN_GUARDED_RULES: docs_search", () => {
+  it("matches any docs_search call regardless of query text", () => {
+    const rule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "docs_search")!;
+    expect(rule).toBeDefined();
+    expect(rule.kind).toBe("any");
+    expect(patternMatches(rule, { tool: "docs_search", text: "how to use fetch in node" })).toBe(true);
+    expect(patternMatches(rule, { tool: "docs_search", text: "" })).toBe(true);
+  });
+
+  it("engine resolves docs_search to ask with isGuarded=true, exempt from posture bypass", () => {
+    const engine = new PermissionEngine(undefined, "/tmp");
+    const result = engine.resolve("docs_search", { query: "react hooks" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+    expect(result.winningRule?.origin).toBe("builtin-guarded");
+  });
+
+  it("engine resolves docs_search to ask even under defaultMode: allowAll", () => {
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/tmp");
+    const result = engine.resolve("docs_search", { query: "npm workspaces" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
   });
 });

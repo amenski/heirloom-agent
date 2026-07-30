@@ -499,10 +499,13 @@ export function loadConfig(projectDir?: string): LoadResult {
     }
   }
 
-  // ── webSearchTool ──
+  // ── webSearchTool (deprecated) ──
   if ("webSearchTool" in merged) {
     if (typeof merged.webSearchTool === "string") {
       config.webSearchTool = merged.webSearchTool;
+      warnings.push(
+        "webSearchTool is deprecated and ignored — use an MCP search server (mcpServers) instead",
+      );
     } else {
       errors.push("config.webSearchTool: must be a string (script path)");
     }

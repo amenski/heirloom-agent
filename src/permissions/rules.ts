@@ -225,6 +225,9 @@ export function buildSubject(tool: string, args: Record<string, unknown>): Permi
   if (tool === "run_bash") {
     return { tool, text: String(args?.command ?? "") };
   }
+  if (tool === "docs_search") {
+    return { tool, text: String(args?.query ?? "") };
+  }
   const path = String(args?.path ?? args?.filePath ?? "");
   return { tool, text: path, resolvedPath: path || undefined };
 }

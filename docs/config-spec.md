@@ -158,6 +158,12 @@ adapter file (provider-spec.md).
 4. Global config (`~/.heirloom/config.yaml`)
 5. Built-in defaults
 
+## Deprecated Keys
+
+| Key | Status | Replacement |
+|-----|--------|-------------|
+| `webSearchTool` (script path) | Deprecated, parsed but ignored (emits a warning) | Add a search MCP server under `mcpServers` instead (web-search-spec.md tier 2) |
+
 ## Environment Variables
 
 | Variable | Purpose |
