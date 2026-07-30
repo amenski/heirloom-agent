@@ -59,6 +59,27 @@ import {
 import { announceToScreenReader } from "./Accessibility.js";
 import { buildExitSummaryText, buildResumeHintText } from "./exit-summary.js";
 
+// Display label for a queued item in the above-input stack. A large paste is
+// collapsed to a bracket summary ("[Pasted N lines]") rather than dumping the
+// whole block into the stack; short messages are shown inline (newlines
+// flattened). The stored queue text is unchanged — this is display only.
+function queuedLabel(text: string): string {
+  const lineCount = text.split("\n").length;
+  if (lineCount >= 4 || text.length > 240) {
+    return `[Pasted ${lineCount} line${lineCount === 1 ? "" : "s"}]`;
+  }
+  return text.replace(/\n/g, " ");
+}
+
+// The "time capsule" shown in front of a queued line: the local wall-clock time
+// (HH:MM) the item was queued, e.g. "[19:24]".
+function formatQueueTime(at: number): string {
+  const d = new Date(at);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `[${hh}:${mm}]`;
+}
+
 function InnerApp({ ctx }: { ctx: AppContext }) {
   const { exit } = useApp();
   const theme = useTheme();
@@ -130,11 +151,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   // Queue of user submissions (messages or slash commands) entered while a turn
   // is in flight. Drained FIFO, one turn at a time, when the active turn ends.
+  // `at` is the wall-clock time the item was queued (ms epoch), shown as a
+  // "time capsule" in front of each stacked line.
   type QueuedItem =
-    | { kind: "message"; text: string; imageUrls?: string[] }
-    | { kind: "slash"; text: string };
+    | { kind: "message"; text: string; at: number; imageUrls?: string[] }
+    | { kind: "slash"; text: string; at: number };
   const messageQueueRef = useRef<QueuedItem[]>([]);
-  const [queuedCount, setQueuedCount] = useState(0);
+  // Text + queue time of each item in arrival order, shown stacked above the input.
+  const [queuedItems, setQueuedItems] = useState<Array<{ text: string; at: number }>>([]);
+  // Mirror the queue's current contents into render state; called from every
+  // enqueue/drain site so the stack stays in sync.
+  const syncQueueState = () => {
+    setQueuedItems(messageQueueRef.current.map((q) => ({ text: q.text, at: q.at })));
+  };
   // Mirrors "any modal footer view is open" for the queue drain, which runs
   // outside React's render cycle and can't read the latest state directly.
   const modalOpenRef = useRef(false);
@@ -653,7 +682,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     // and the remaining queue drains when the turn/modal flow next completes.
     while (!turnActiveRef.current) {
       const next = messageQueueRef.current.shift();
-      setQueuedCount(messageQueueRef.current.length);
+      syncQueueState();
       if (!next) return;
       if (next.kind === "slash") {
         handleSlashCommand(next.text);
@@ -671,8 +700,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (command) {
       if (command === "exit") { handleExit(); return; }
       if (turnActiveRef.current) {
-        messageQueueRef.current.push({ kind: "slash", text: `/${command}` });
-        setQueuedCount(messageQueueRef.current.length);
+        messageQueueRef.current.push({ kind: "slash", text: `/${command}`, at: Date.now() });
+        syncQueueState();
         return;
       }
       handleSlashCommand(`/${command}`);
@@ -680,8 +709,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
     const isSlash = text.startsWith("/");
     if (turnActiveRef.current) {
-      messageQueueRef.current.push(isSlash ? { kind: "slash", text } : { kind: "message", text, imageUrls });
-      setQueuedCount(messageQueueRef.current.length);
+      messageQueueRef.current.push(isSlash ? { kind: "slash", text, at: Date.now() } : { kind: "message", text, at: Date.now(), imageUrls });
+      syncQueueState();
       return;
     }
     if (isSlash) {
@@ -1164,12 +1193,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
+      {/* Queued follow-ups entered mid-turn, stacked one per line in arrival
+          order just above the input, so the user sees what's lined up to run
+          when the current turn finishes. */}
+      {queuedItems.length > 0 && (
+        <Box flexDirection="column">
+          {queuedItems.map((item, i) => (
+            <Text key={i} color="magenta" dimColor>
+              {`${formatQueueTime(item.at)} ${queuedLabel(item.text)}`}
+            </Text>
+          ))}
+        </Box>
+      )}
+
       {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}
           busy={busy}
-          queuedCount={queuedCount}
           placeholder="Type your message..."
           promptDraft={promptDraft}
           onSubmit={submitFromInput}
@@ -1186,7 +1227,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         showTimer
         sessionStart={sessionStart}
         tokenCounts={tokenCounts}
-        busy={busy}
       />
     </Box>
   );
