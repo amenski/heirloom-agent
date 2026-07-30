@@ -235,7 +235,7 @@ export async function runAgent(
       options.onToolStart?.(tc.name, tc.arguments);
 
       if (permissions) {
-        const action = permissions.check(tc.name, tc.arguments);
+        const { action } = permissions.resolve(tc.name, tc.arguments);
         if (action === "deny") {
           const msg = `Permission denied for ${tc.name}`;
           options.onDiagnostic?.("denied");

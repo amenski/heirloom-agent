@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { PermissionConfig, PermissionRule, PatternKind, PermissionAction } from "../permissions/index.js";
 
 // ── Deep Code settings.json schema ──
 
@@ -25,28 +26,7 @@ export interface DeepCodeEnv {
   [key: string]: string | undefined;
 }
 
-export type PermissionScope =
-  | "read-in-cwd"
-  | "read-out-cwd"
-  | "write-in-cwd"
-  | "write-out-cwd"
-  | "delete-in-cwd"
-  | "delete-out-cwd"
-  | "query-git-log"
-  | "mutate-git-log"
-  | "network"
-  | "mcp";
-
-export interface PermissionConfig {
-  /** Scopes to always allow */
-  allow?: PermissionScope[];
-  /** Scopes to always deny */
-  deny?: PermissionScope[];
-  /** Scopes to always ask */
-  ask?: PermissionScope[];
-  /** Default mode for unlisted scopes: "allowAll" or "askAll" (default "askAll") */
-  defaultMode?: "allowAll" | "askAll";
-}
+export type { PermissionConfig };
 
 export interface McpServerConfig {
   /** Executable path or command (e.g. "npx", "node", "python") */
@@ -198,18 +178,20 @@ const KNOWN_KEYS = new Set([
   "contextWindow",
 ]);
 
-const VALID_PERMISSION_SCOPES: Set<string> = new Set([
-  "read-in-cwd",
-  "read-out-cwd",
-  "write-in-cwd",
-  "write-out-cwd",
-  "delete-in-cwd",
-  "delete-out-cwd",
-  "query-git-log",
-  "mutate-git-log",
-  "network",
-  "mcp",
-]);
+const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
+
+function parsePatternKindAndPattern(rawPattern: string): { kind: PatternKind; pattern: string } {
+  if (rawPattern.endsWith(":*")) {
+    return { kind: "prefix", pattern: rawPattern.slice(0, -2) };
+  }
+  if (rawPattern.includes("*") || rawPattern.includes("?")) {
+    return { kind: "glob", pattern: rawPattern };
+  }
+  if (rawPattern === "") {
+    return { kind: "any", pattern: "" };
+  }
+  return { kind: "exact", pattern: rawPattern };
+}
 
 // ── Validation ──
 
@@ -225,26 +207,33 @@ function validatePermissions(
   const p = perms as Record<string, unknown>;
   const result: PermissionConfig = {};
 
-  for (const arrKey of ["allow", "deny", "ask"] as const) {
-    if (arrKey in p) {
-      if (Array.isArray(p[arrKey])) {
-        const arr = p[arrKey] as unknown[];
-        const scopes: PermissionScope[] = [];
-        for (const item of arr) {
-          if (typeof item === "string" && VALID_PERMISSION_SCOPES.has(item)) {
-            scopes.push(item as PermissionScope);
-          } else {
-            errors.push(
-              `${source}: permissions.${arrKey} contains invalid scope "${item}"`,
-            );
-          }
+  if ("rules" in p) {
+    if (Array.isArray(p.rules)) {
+      const rules: PermissionRule[] = [];
+      for (const item of p.rules as unknown[]) {
+        if (!isObject(item)) {
+          errors.push(`${source}: permissions.rules contains a non-object entry`);
+          continue;
         }
-        result[arrKey] = scopes;
-      } else {
-        errors.push(
-          `${source}: permissions.${arrKey} must be an array of strings`,
-        );
+        const r = item as Record<string, unknown>;
+        if (typeof r.tool !== "string") {
+          errors.push(`${source}: permissions.rules entry missing string "tool"`);
+          continue;
+        }
+        if (typeof r.pattern !== "string") {
+          errors.push(`${source}: permissions.rules entry for tool "${r.tool}" missing string "pattern"`);
+          continue;
+        }
+        if (typeof r.action !== "string" || !VALID_ACTIONS.has(r.action)) {
+          errors.push(`${source}: permissions.rules entry for tool "${r.tool}" has invalid action "${r.action}"`);
+          continue;
+        }
+        const { kind, pattern } = parsePatternKindAndPattern(r.pattern);
+        rules.push({ tool: r.tool, kind, pattern, action: r.action as PermissionAction, origin: "config" });
       }
+      result.rules = rules;
+    } else {
+      errors.push(`${source}: permissions.rules must be an array`);
     }
   }
 
@@ -262,6 +251,100 @@ function validatePermissions(
   }
 
   return result;
+}
+
+// ── Legacy scope migration ──
+
+interface LegacyPermissionConfig {
+  allow?: string[];
+  deny?: string[];
+  ask?: string[];
+  defaultMode?: "allowAll" | "askAll";
+}
+
+const LEGACY_SCOPE_RULES: Record<string, PermissionRule[]> = {
+  "read-in-cwd": [{ tool: "read_file", kind: "glob", pattern: "./**", action: "allow", origin: "config" }],
+  "read-out-cwd": [{ tool: "read_file", kind: "any", pattern: "", action: "allow", origin: "config" }],
+  "write-in-cwd": [{ tool: "write_to_file", kind: "glob", pattern: "./**", action: "allow", origin: "config" }],
+  "write-out-cwd": [{ tool: "write_to_file", kind: "any", pattern: "", action: "allow", origin: "config" }],
+  "delete-in-cwd": [{ tool: "run_bash", kind: "prefix", pattern: "rm", action: "allow", origin: "config" }],
+  "delete-out-cwd": [{ tool: "run_bash", kind: "prefix", pattern: "rm", action: "allow", origin: "config" }],
+  "query-git-log": [
+    { tool: "run_bash", kind: "prefix", pattern: "git log", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git show", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git diff", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git blame", action: "allow", origin: "config" },
+  ],
+  "mutate-git-log": [
+    { tool: "run_bash", kind: "prefix", pattern: "git commit", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git push", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git rebase", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git merge", action: "allow", origin: "config" },
+    { tool: "run_bash", kind: "prefix", pattern: "git reset", action: "allow", origin: "config" },
+  ],
+  scan: [
+    { tool: "glob", kind: "any", pattern: "", action: "allow", origin: "config" },
+    { tool: "search", kind: "any", pattern: "", action: "allow", origin: "config" },
+  ],
+  mcp: [{ tool: "mcp__*", kind: "any", pattern: "", action: "allow", origin: "config" }],
+};
+
+export interface MigrationResult {
+  rules: PermissionRule[];
+  warnings: string[];
+}
+
+/**
+ * Pure, in-memory translation of the old scope-bucket permission shape into
+ * the new rule shape. Never writes to disk — the caller (loadConfig) applies
+ * this to the parsed config before returning it; nothing on disk changes
+ * until the next real approveAlways() call persists the new shape via an
+ * atomic write. Idempotent: a config that already has a `rules` array is
+ * returned unchanged (translation is skipped entirely).
+ */
+export function migrateLegacyPermissions(raw: unknown): MigrationResult {
+  if (!isObject(raw)) return { rules: [], warnings: [] };
+  const p = raw as Record<string, unknown>;
+
+  if ("rules" in p) return { rules: [], warnings: [] };
+
+  const legacy = p as LegacyPermissionConfig;
+  const rules: PermissionRule[] = [];
+  const warnings: string[] = [];
+  const seenScopes = new Set<string>();
+
+  for (const [scopeList, action] of [
+    [legacy.allow, "allow"],
+    [legacy.deny, "deny"],
+    [legacy.ask, "ask"],
+  ] as const) {
+    if (!Array.isArray(scopeList)) continue;
+    for (const scope of scopeList) {
+      seenScopes.add(scope);
+      if (scope === "network") {
+        warnings.push(
+          `permissions: legacy scope "network" has no clean rule-based equivalent (it was triggered by multiple unrelated command types) and was dropped during migration — review and re-add explicit rules if needed`,
+        );
+        continue;
+      }
+      const templates = LEGACY_SCOPE_RULES[scope];
+      if (!templates) {
+        warnings.push(`permissions: unrecognized legacy scope "${scope}" dropped during migration`);
+        continue;
+      }
+      for (const template of templates) {
+        rules.push({ ...template, action });
+      }
+    }
+  }
+
+  if (seenScopes.size > 0) {
+    warnings.push(
+      `permissions: migrated ${seenScopes.size} legacy scope(s) to rule-based permissions — review .deepcode/settings.json and re-approve as needed`,
+    );
+  }
+
+  return { rules, warnings };
 }
 
 function validateMcpServers(
@@ -387,7 +470,17 @@ export function loadConfig(projectDir?: string): LoadResult {
 
   // ── permissions ──
   if ("permissions" in merged) {
-    const perms = validatePermissions(merged.permissions, "config", errors);
+    const permsRaw = isObject(merged.permissions) ? merged.permissions : {};
+    const alreadyNewShape = "rules" in permsRaw;
+
+    let permsForValidation: Record<string, unknown> = merged.permissions as Record<string, unknown>;
+    if (!alreadyNewShape) {
+      const migration = migrateLegacyPermissions(merged.permissions);
+      warnings.push(...migration.warnings);
+      permsForValidation = { ...permsRaw, rules: migration.rules };
+    }
+
+    const perms = validatePermissions(permsForValidation, "config", errors);
     if (perms) config.permissions = perms;
   }
 

@@ -1,250 +1,413 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { PermissionEngine, type PermissionScope } from "./engine.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { PermissionEngine, type PermissionRule } from "./engine.js";
 
-describe("PermissionEngine", () => {
+function rule(partial: Partial<PermissionRule>): PermissionRule {
+  return { tool: "run_bash", kind: "any", pattern: "", action: "allow", origin: "config", ...partial };
+}
+
+describe("PermissionEngine.resolve", () => {
   let engine: PermissionEngine;
 
   beforeEach(() => {
     engine = new PermissionEngine(undefined, "/workspace");
   });
 
-  describe("classifyScopes", () => {
-    it("classifies read_file in-cwd", () => {
-      const scopes = engine.classifyScopes("read_file", { path: "/workspace/src/main.ts" });
-      expect(scopes).toEqual(["read-in-cwd"]);
-    });
-
-    it("classifies read_file out-cwd", () => {
-      const scopes = engine.classifyScopes("read_file", { path: "/etc/passwd" });
-      expect(scopes).toEqual(["read-out-cwd"]);
-    });
-
-    it("classifies write_to_file in-cwd", () => {
-      const scopes = engine.classifyScopes("write_to_file", { path: "/workspace/src/main.ts" });
-      expect(scopes).toEqual(["write-in-cwd"]);
-    });
-
-    it("classifies edit out-cwd", () => {
-      const scopes = engine.classifyScopes("edit", { path: "/etc/config" });
-      expect(scopes).toEqual(["write-out-cwd"]);
-    });
-
-    it("classifies glob as scan", () => {
-      const scopes = engine.classifyScopes("glob", { pattern: "**/*.ts" });
-      expect(scopes).toEqual(["scan"]);
-    });
-
-    it("classifies search as scan", () => {
-      const scopes = engine.classifyScopes("search", { pattern: "foo", dir: "/workspace" });
-      expect(scopes).toEqual(["scan"]);
-    });
-
-    it("classifies mcp__* as mcp", () => {
-      const scopes = engine.classifyScopes("mcp__filesystem", {});
-      expect(scopes).toEqual(["mcp"]);
-    });
-
-    it("classifies bash with curl as network", () => {
-      const scopes = engine.classifyScopes("run_bash", { command: "curl https://example.com" });
-      expect(scopes).toContain("network");
-    });
-
-    it("classifies bash with npm install", () => {
-      const scopes = engine.classifyScopes("run_bash", { command: "npm install react" });
-      expect(scopes).toContain("write-in-cwd");
-      expect(scopes).toContain("network");
-    });
-
-    it("classifies bash with git log", () => {
-      const scopes = engine.classifyScopes("run_bash", { command: "git log --oneline" });
-      expect(scopes).toContain("query-git-log");
-    });
-
-    it("classifies bash with git push", () => {
-      const scopes = engine.classifyScopes("run_bash", { command: "git push origin main" });
-      expect(scopes).toContain("mutate-git-log");
-    });
-
-    it("classifies bash with rm as delete-in-cwd", () => {
-      const scopes = engine.classifyScopes("run_bash", { command: "rm -rf node_modules" });
-      expect(scopes).toContain("delete-in-cwd");
-    });
-
-    it("returns empty for unknown tool", () => {
-      const scopes = engine.classifyScopes("unknown_tool", {});
-      expect(scopes).toEqual([]);
-    });
-  });
-
-  describe("check", () => {
-    it("allows when scope is in allow set", () => {
-      engine = new PermissionEngine({ allow: ["read-in-cwd"] }, "/workspace");
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("allow");
-    });
-
-    it("denies when scope is in deny set", () => {
-      engine = new PermissionEngine({ deny: ["network"] }, "/workspace");
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("deny");
-    });
-
-    it("asks when scope is in ask set", () => {
-      engine = new PermissionEngine({ ask: ["write-in-cwd"] }, "/workspace");
-      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("ask");
-    });
-
-    it("asks when scopes empty", () => {
-      expect(engine.check("unknown_tool", {})).toBe("ask");
-    });
-
-    it("allows unlisted scopes with defaultMode allowAll", () => {
-      engine = new PermissionEngine({ defaultMode: "allowAll" }, "/workspace");
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("allow");
-    });
-
-    it("asks unlisted scopes with defaultMode askAll (out-of-cwd read)", () => {
-      engine = new PermissionEngine({ defaultMode: "askAll" }, "/workspace");
-      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("ask");
-    });
-
-    it("deny takes priority over allow", () => {
-      engine = new PermissionEngine({ allow: ["network"], deny: ["network"] }, "/workspace");
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("deny");
-    });
-
-    it("ask takes priority over default allow", () => {
-      engine = new PermissionEngine({ ask: ["network"], defaultMode: "allowAll" }, "/workspace");
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("ask");
-    });
-
-    it("asks for glob/search by default (scan scope)", () => {
-      engine = new PermissionEngine({ defaultMode: "allowAll" }, "/workspace");
-      expect(engine.check("glob", { pattern: "**/*.ts" })).toBe("ask");
-      expect(engine.check("search", { pattern: "foo" })).toBe("ask");
-    });
-
-    it("allows glob/search when scan is in allow set", () => {
-      engine = new PermissionEngine({ allow: ["scan"], defaultMode: "allowAll" }, "/workspace");
-      expect(engine.check("glob", { pattern: "**/*.ts" })).toBe("allow");
-      expect(engine.check("search", { pattern: "foo" })).toBe("allow");
-    });
-  });
-
   describe("default posture with no config on disk", () => {
-    it("allows read_file in cwd by default", () => {
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("allow");
+    it("asks for an unrecognized tool with no matching rules, even though defaultMode is askAll", () => {
+      expect(engine.resolve("unknown_tool", {}).action).toBe("ask");
     });
 
-    it("allows list_files (read-in-cwd) by default", () => {
-      expect(engine.check("list_files", { path: "/workspace" })).toBe("allow");
+    it("asks for a plain read_file call by default (no rules configured)", () => {
+      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("ask");
     });
 
-    it("allows load_skill (read-in-cwd) by default", () => {
-      expect(engine.check("load_skill", {})).toBe("allow");
-    });
-
-    it("asks for read_file out of cwd by default", () => {
-      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("ask");
-    });
-
-    it("asks for write_to_file in cwd by default", () => {
-      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("ask");
-    });
-
-    it("asks for edit out of cwd by default", () => {
-      expect(engine.check("edit", { path: "/etc/config" })).toBe("ask");
-    });
-
-    it("asks for rm in cwd (delete-in-cwd) by default", () => {
-      expect(engine.check("run_bash", { command: "rm -rf node_modules" })).toBe("ask");
-    });
-
-    it("asks for glob/search (scan) by default", () => {
-      expect(engine.check("glob", { pattern: "**/*.ts" })).toBe("ask");
-      expect(engine.check("search", { pattern: "foo" })).toBe("ask");
-    });
-
-    it("asks for network commands by default", () => {
-      expect(engine.check("run_bash", { command: "curl https://example.com" })).toBe("ask");
-    });
-
-    it("asks for mcp tools by default", () => {
-      expect(engine.check("mcp__filesystem", {})).toBe("ask");
-    });
-
-    it("asks for git log (query-git-log) by default", () => {
-      expect(engine.check("run_bash", { command: "git log --oneline" })).toBe("ask");
-    });
-
-    it("asks for git commit (mutate-git-log) by default", () => {
-      expect(engine.check("run_bash", { command: "git commit -m test" })).toBe("ask");
-    });
-
-    it("asks for unknown/empty-scope tools by default", () => {
-      expect(engine.check("unknown_tool", {})).toBe("ask");
+    it("asks for run_bash by default", () => {
+      expect(engine.resolve("run_bash", { command: "git status" }).action).toBe("ask");
     });
   });
 
   describe("explicit config precedence", () => {
-    it("honors an explicit empty allow array verbatim (no read-in-cwd auto-injection)", () => {
-      engine = new PermissionEngine({ allow: [] }, "/workspace");
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("ask");
+    it("honors an explicit empty rules array verbatim (asks for everything)", () => {
+      engine = new PermissionEngine({ rules: [] }, "/workspace");
+      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("ask");
     });
 
-    it("honors an explicit non-empty allow array verbatim (does not add read-in-cwd)", () => {
-      engine = new PermissionEngine({ allow: ["network"] }, "/workspace");
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("ask");
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
+    it("an allow rule for a specific tool makes that call resolve to allow", () => {
+      engine = new PermissionEngine({ rules: [rule({ tool: "run_bash", kind: "any", action: "allow" })] }, "/workspace");
+      expect(engine.resolve("run_bash", { command: "git status" }).action).toBe("allow");
     });
 
-    it("honors an explicit defaultMode allowAll even with no allow list given", () => {
-      engine = new PermissionEngine({ defaultMode: "allowAll" }, "/workspace");
-      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("allow");
+    it("an ask rule resolves to ask even with defaultMode allowAll", () => {
+      engine = new PermissionEngine(
+        { rules: [rule({ tool: "run_bash", kind: "any", action: "ask" })], defaultMode: "allowAll" },
+        "/workspace",
+      );
+      expect(engine.resolve("run_bash", { command: "git status" }).action).toBe("ask");
     });
 
-    it("deny still wins over the default read-in-cwd allow", () => {
-      engine = new PermissionEngine({ deny: ["read-in-cwd"] }, "/workspace");
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("deny");
+    it("defaultMode allowAll allows a tool that has at least one rule configured, when no rule matches this specific call", () => {
+      engine = new PermissionEngine(
+        { rules: [rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" })], defaultMode: "allowAll" },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "git status" });
+      expect(result.action).toBe("allow");
     });
 
-    it("autoApprove still overrides the default ask-everything posture", () => {
-      engine.setAutoApprove(true);
-      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("allow");
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
-    });
-  });
-
-  describe("autoApprove", () => {
-    it("turns a would-be ask into allow", () => {
-      engine = new PermissionEngine({ ask: ["network"], defaultMode: "askAll" }, "/workspace");
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("ask");
-      engine.setAutoApprove(true);
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
-    });
-
-    it("still honors explicit deny", () => {
-      engine = new PermissionEngine({ deny: ["network"] }, "/workspace");
-      engine.setAutoApprove(true);
-      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("deny");
-    });
-
-    it("can be toggled back off", () => {
-      engine = new PermissionEngine({ defaultMode: "askAll" }, "/workspace");
-      engine.setAutoApprove(true);
-      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("allow");
-      engine.setAutoApprove(false);
-      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("ask");
-      expect(engine.isAutoApprove()).toBe(false);
+    it("defaultMode allowAll still asks for a tool with zero configured rules anywhere (unrecognized-tool safety net)", () => {
+      engine = new PermissionEngine({ rules: [rule({ tool: "read_file" })], defaultMode: "allowAll" }, "/workspace");
+      expect(engine.resolve("run_bash", { command: "git status" }).action).toBe("ask");
     });
   });
 
-  describe("getDefaultMode", () => {
-    it("returns askAll by default", () => {
-      expect(engine.getDefaultMode()).toBe("askAll");
+  describe("deny wins by default across kinds (not by raw specificity)", () => {
+    it("a narrow prefix deny beats a blanket glob allow (first-draft inversion regression)", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "read_file", kind: "glob", pattern: "**", action: "allow" }),
+            rule({ tool: "read_file", kind: "prefix", pattern: "/etc", action: "deny" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("read_file", { path: "/etc/passwd" });
+      expect(result.action).toBe("deny");
     });
 
-    it("returns askAll when configured", () => {
-      engine = new PermissionEngine({ defaultMode: "askAll" }, "/workspace");
-      expect(engine.getDefaultMode()).toBe("askAll");
+    it("a global any-kind deny kill-switch wins over any allow rule (second-draft inversion regression)", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "*", kind: "any", action: "deny" }),
+            rule({ tool: "run_bash", kind: "exact", pattern: "git status", action: "allow" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "git status" });
+      expect(result.action).toBe("deny");
+    });
+
+    it("a strictly-more-specific allow can override a deny", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "run_bash", kind: "prefix", pattern: "curl", action: "deny" }),
+            rule({ tool: "run_bash", kind: "prefix", pattern: "curl https://api.internal.corp", action: "allow" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "curl https://api.internal.corp/health" });
+      expect(result.action).toBe("allow");
+    });
+
+    it("an equally-broad allow does NOT override a deny (tie goes to deny)", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "run_bash", kind: "prefix", pattern: "curl", action: "deny" }),
+            rule({ tool: "run_bash", kind: "prefix", pattern: "curl", action: "allow" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "curl https://example.com" });
+      expect(result.action).toBe("deny");
+    });
+
+    it("ask likewise wins by default over an equally-broad allow", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "run_bash", kind: "prefix", pattern: "npm", action: "ask" }),
+            rule({ tool: "run_bash", kind: "prefix", pattern: "npm", action: "allow" }),
+          ],
+        },
+        "/workspace",
+      );
+      expect(engine.resolve("run_bash", { command: "npm test" }).action).toBe("ask");
+    });
+  });
+
+  describe("run_bash: per-segment resolution and normalization", () => {
+    it("resolves a compound command as deny if any segment denies", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "run_bash", kind: "prefix", pattern: "git status", action: "allow" }),
+            rule({ tool: "run_bash", kind: "prefix", pattern: "rm -rf", action: "deny" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "git status && rm -rf /tmp/x" });
+      expect(result.action).toBe("deny");
+    });
+
+    it("resolves a compound command as ask if any segment asks and none deny", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "run_bash", kind: "prefix", pattern: "git status", action: "allow" }),
+            rule({ tool: "run_bash", kind: "prefix", pattern: "npm", action: "ask" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "git status && npm test" });
+      expect(result.action).toBe("ask");
+    });
+
+    it("resolves a compound command as allow only when every segment allows", () => {
+      engine = new PermissionEngine(
+        {
+          rules: [
+            rule({ tool: "run_bash", kind: "prefix", pattern: "git status", action: "allow" }),
+            rule({ tool: "run_bash", kind: "prefix", pattern: "npm test", action: "allow" }),
+          ],
+        },
+        "/workspace",
+      );
+      const result = engine.resolve("run_bash", { command: "git status && npm test" });
+      expect(result.action).toBe("allow");
+    });
+
+    it("strips a leading sudo before matching", () => {
+      engine = new PermissionEngine(
+        { rules: [rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" })] },
+        "/workspace",
+      );
+      expect(engine.resolve("run_bash", { command: "sudo npm test" }).action).toBe("allow");
+    });
+  });
+
+  describe("run_bash: unresolved-ask fail-closed", () => {
+    it("env-wrapped destructive commands resolve to ask (not silently denied nor allowed)", () => {
+      engine = new PermissionEngine({ rules: [], defaultMode: "allowAll" }, "/workspace");
+      const result = engine.resolve("run_bash", { command: "env rm -rf ~/projects" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(true);
+    });
+
+    it("inline command substitution resolves to ask", () => {
+      const result = engine.resolve("run_bash", { command: "echo $(rm -rf ~)" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(true);
+    });
+
+    it("find -exec resolves to ask", () => {
+      const result = engine.resolve("run_bash", { command: "find . -exec rm -rf {} \\;" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(true);
+    });
+
+    it("xargs resolves to ask", () => {
+      const result = engine.resolve("run_bash", { command: "echo file | xargs rm" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(true);
+    });
+
+    it("an ordinary resolvable ask (no unresolved construct) is NOT flagged wasUnresolved", () => {
+      const result = engine.resolve("run_bash", { command: "git status" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(false);
+    });
+
+    it("a failed bash -c unwrap resolves to ask with wasUnresolved true", () => {
+      const result = engine.resolve("run_bash", { command: "bash -c 'echo $(whoami)'" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(true);
+    });
+  });
+
+  describe("destructive tier", () => {
+    it("denies rm -rf / by default with no config at all", () => {
+      expect(engine.resolve("run_bash", { command: "rm -rf / --no-preserve-root" }).action).toBe("deny");
+    });
+
+    it("denies git push --force by default", () => {
+      expect(engine.resolve("run_bash", { command: "git push --force origin main" }).action).toBe("deny");
+    });
+
+    it("a strictly-more-specific user allow overrides a destructive deny", () => {
+      engine = new PermissionEngine(
+        { rules: [rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard HEAD~1", action: "allow" })] },
+        "/workspace",
+      );
+      expect(engine.resolve("run_bash", { command: "git reset --hard HEAD~1" }).action).toBe("allow");
+    });
+
+    it("an equally-broad user allow does NOT override a destructive deny", () => {
+      engine = new PermissionEngine(
+        { rules: [rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard", action: "allow" })] },
+        "/workspace",
+      );
+      expect(engine.resolve("run_bash", { command: "git reset --hard HEAD~1" }).action).toBe("deny");
+    });
+
+    it("approveAlways forces kind exact when narrowing a destructive-origin match", () => {
+      const dir = mkdtempSync(join(tmpdir(), "heirloom-engine-destructive-always-"));
+      try {
+        const scopedEngine = new PermissionEngine(undefined, dir);
+        const destructiveMatch = rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard", origin: "builtin-destructive", action: "deny" });
+        scopedEngine.approveAlways(
+          rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard HEAD~1", action: "allow" }),
+          destructiveMatch,
+        );
+        const result = scopedEngine.resolve("run_bash", { command: "git reset --hard HEAD~1" });
+        expect(result.action).toBe("allow");
+        expect(result.winningRule?.kind).toBe("exact");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("approveForSession forces kind exact when narrowing a destructive-origin match", () => {
+      const destructiveMatch = rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard", origin: "builtin-destructive", action: "deny" });
+      engine.approveForSession(
+        rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard HEAD~1", action: "allow" }),
+        destructiveMatch,
+      );
+      const result = engine.resolve("run_bash", { command: "git reset --hard HEAD~1" });
+      expect(result.action).toBe("allow");
+      expect(result.winningRule?.kind).toBe("exact");
+    });
+  });
+
+  describe("session tier: not persisted to disk", () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "heirloom-engine-session-"));
+      engine = new PermissionEngine(undefined, dir);
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("approveForSession takes effect immediately in-memory", () => {
+      engine.approveForSession(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      expect(engine.resolve("run_bash", { command: "npm test" }).action).toBe("allow");
+    });
+
+    it("approveForSession never writes settings.json", () => {
+      engine.approveForSession(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      expect(existsSync(join(dir, ".deepcode", "settings.json"))).toBe(false);
+    });
+
+    it("a fresh engine instance does not see a session-approved rule", () => {
+      engine.approveForSession(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      const fresh = new PermissionEngine(undefined, dir);
+      expect(fresh.resolve("run_bash", { command: "npm test" }).action).toBe("ask");
+    });
+  });
+
+  describe("always tier: atomic persistence", () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "heirloom-engine-always-"));
+      engine = new PermissionEngine(undefined, dir);
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("approveAlways takes effect immediately in-memory, no reload needed", () => {
+      engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      expect(engine.resolve("run_bash", { command: "npm test" }).action).toBe("allow");
+    });
+
+    it("approveAlways writes settings.json with the new rules shape", () => {
+      engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      const settingsPath = join(dir, ".deepcode", "settings.json");
+      expect(existsSync(settingsPath)).toBe(true);
+      const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(written.permissions.rules).toEqual([{ tool: "run_bash", pattern: "npm test", action: "allow" }]);
+    });
+
+    it("a fresh engine instance loaded from the persisted rules resolves the same way", () => {
+      engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      const settingsPath = join(dir, ".deepcode", "settings.json");
+      const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      const reloaded = new PermissionEngine(
+        { rules: written.permissions.rules.map((r: { tool: string; pattern: string; action: string }) => ({ ...r, kind: "exact", origin: "config" })) },
+        dir,
+      );
+      expect(reloaded.resolve("run_bash", { command: "npm test" }).action).toBe("allow");
+    });
+
+    it("preserves unrelated top-level JSON keys already on disk", () => {
+      engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      const settingsPath = join(dir, ".deepcode", "settings.json");
+      const first = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      first.someOtherKey = "preserved";
+      writeFileSync(settingsPath, JSON.stringify(first, null, 2), "utf-8");
+
+      engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "git status", action: "allow" }));
+      const second = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(second.someOtherKey).toBe("preserved");
+      expect(second.permissions.rules.length).toBe(2);
+    });
+  });
+
+  describe("buildDefaultRule", () => {
+    it("builds an exact-kind rule from the literal bash command", () => {
+      const built = engine.buildDefaultRule("run_bash", { command: "npm test" });
+      expect(built).toEqual({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow", origin: "config" });
+    });
+
+    it("builds an exact-kind rule from a file path for non-bash tools", () => {
+      const built = engine.buildDefaultRule("read_file", { path: "/workspace/secret.txt" });
+      expect(built).toEqual({ tool: "read_file", kind: "exact", pattern: "/workspace/secret.txt", action: "allow", origin: "config" });
+    });
+
+    it("approving the built default rule for session makes the exact same call resolve to allow", () => {
+      const built = engine.buildDefaultRule("run_bash", { command: "npm test" });
+      engine.approveForSession(built);
+      expect(engine.resolve("run_bash", { command: "npm test" }).action).toBe("allow");
+    });
+
+    it("the built default rule does not broaden to a similar-but-different call", () => {
+      const built = engine.buildDefaultRule("run_bash", { command: "npm test" });
+      engine.approveForSession(built);
+      expect(engine.resolve("run_bash", { command: "npm test -- --watch" }).action).toBe("ask");
+    });
+  });
+
+  describe("glob rules against absolute paths (relativize-to-workingDir)", () => {
+    it("a './**' glob rule matches a real absolute in-cwd path (this is what migrateLegacyPermissions emits for read-in-cwd)", () => {
+      engine = new PermissionEngine(
+        { rules: [{ tool: "read_file", kind: "glob", pattern: "./**", action: "allow", origin: "config" }] },
+        "/workspace",
+      );
+      const result = engine.resolve("read_file", { path: "/workspace/src/main.ts" });
+      expect(result.action).toBe("allow");
+    });
+
+    it("a './**' glob rule does not match a path outside workingDir", () => {
+      engine = new PermissionEngine(
+        { rules: [{ tool: "read_file", kind: "glob", pattern: "./**", action: "allow", origin: "config" }] },
+        "/workspace",
+      );
+      const result = engine.resolve("read_file", { path: "/etc/passwd" });
+      expect(result.action).toBe("ask");
+    });
+
+    it("a narrower './src/**' glob rule matches only paths under that subdirectory", () => {
+      engine = new PermissionEngine(
+        { rules: [{ tool: "read_file", kind: "glob", pattern: "./src/**", action: "allow", origin: "config" }] },
+        "/workspace",
+      );
+      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("allow");
+      expect(engine.resolve("read_file", { path: "/workspace/docs/readme.md" }).action).toBe("ask");
     });
   });
 });

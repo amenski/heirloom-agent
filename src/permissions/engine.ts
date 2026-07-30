@@ -1,188 +1,209 @@
-import { resolve, relative } from "node:path";
-import { realpathSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, relative, isAbsolute } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import type { PermissionAction, PermissionRule, PermissionSubject } from "./rules.js";
+import { buildSubject, patternMatches, specificity, serializeRulePattern } from "./rules.js";
+import { buildBashSubject } from "./bash-normalize.js";
+import { BUILTIN_DESTRUCTIVE_RULES } from "./destructive.js";
 
-export type PermissionAction = "allow" | "ask" | "deny";
-
-export type PermissionScope =
-  | "read-in-cwd"
-  | "read-out-cwd"
-  | "write-in-cwd"
-  | "write-out-cwd"
-  | "delete-in-cwd"
-  | "delete-out-cwd"
-  | "query-git-log"
-  | "mutate-git-log"
-  | "network"
-  | "mcp"
-  | "scan";
+export type { PermissionAction, PermissionRule, PatternKind, RuleOrigin } from "./rules.js";
 
 export interface PermissionConfig {
-  allow?: PermissionScope[];
-  deny?: PermissionScope[];
-  ask?: PermissionScope[];
+  rules?: PermissionRule[];
   defaultMode?: "allowAll" | "askAll";
 }
 
+export interface ResolveResult {
+  action: PermissionAction;
+  winningRule?: PermissionRule;
+  /** True when any bash segment couldn't be safely classified — see bash-normalize.ts. Never bypassable by an auto-approve posture. */
+  wasUnresolved: boolean;
+}
+
+interface OnDiskRule {
+  tool: string;
+  pattern: string;
+  action: PermissionAction;
+}
+
 export class PermissionEngine {
-  private allow: Set<PermissionScope>;
-  private deny: Set<PermissionScope>;
-  private ask: Set<PermissionScope>;
+  private configRules: PermissionRule[];
+  private sessionRules: PermissionRule[] = [];
   private defaultMode: "allowAll" | "askAll";
   private workingDir: string;
   private projectConfigDir: string;
-  /** Session-only override: when true, any scope that would "ask" is auto-allowed. Explicit deny still wins. */
-  private autoApprove = false;
 
   constructor(config?: PermissionConfig, workingDir?: string) {
-    // No config at all, or a config that omits `allow`, means the user never
-    // stated an allow list: seed a safe default (read-in-cwd only) rather than
-    // leaving everything to ask. If the user explicitly provided `allow`
-    // (even `[]`), honor it verbatim — don't inject anything.
-    this.allow = new Set(config?.allow ?? ["read-in-cwd"]);
-    this.deny = new Set(config?.deny ?? []);
-    this.ask = new Set(config?.ask ?? []);
-    // Same precedence for defaultMode: only fall back to "askAll" when the
-    // user didn't set one. An explicit defaultMode is always honored.
+    this.configRules = (config?.rules ?? []).map((r) => ({ ...r, origin: "config" as const }));
     this.defaultMode = config?.defaultMode ?? "askAll";
     this.workingDir = workingDir ?? process.cwd();
     this.projectConfigDir = join(this.workingDir, ".deepcode");
   }
 
-  getDefaultMode(): "allowAll" | "askAll" {
-    return this.defaultMode;
+  /**
+   * Resolves a tool call to an action. For run_bash, splits the command into
+   * independent segments and resolves each against the same rule set,
+   * combining via most-restrictive-wins: any deny -> deny; else any
+   * unresolved-ask or ordinary ask -> ask; else allow.
+   */
+  resolve(toolName: string, args?: Record<string, unknown>): ResolveResult {
+    const a = args ?? {};
+
+    if (toolName === "run_bash") {
+      return this.resolveBash(String(a.command ?? ""));
+    }
+
+    const subject = this.relativizeSubject(buildSubject(toolName, a));
+    return this.resolveSubject(toolName, subject);
   }
 
-  setAutoApprove(on: boolean): void {
-    this.autoApprove = on;
+  /**
+   * Rewrites a path subject's resolvedPath to be relative to workingDir
+   * (e.g. "./src/main.ts") when the path is inside it, so glob rules like
+   * "./**" (what migrateLegacyPermissions emits for the old read-in-cwd
+   * scope) can actually match — tools always pass absolute paths, and a
+   * relative glob pattern can never match one directly. Paths outside
+   * workingDir are left as absolute, so they don't spuriously match a
+   * "./**"-rooted rule; an absolute glob can still be authored to cover them.
+   */
+  private relativizeSubject(subject: PermissionSubject): PermissionSubject {
+    if (!subject.resolvedPath || !isAbsolute(subject.resolvedPath)) return subject;
+
+    const rel = relative(this.workingDir, subject.resolvedPath);
+    if (rel.startsWith("..") || rel === "") return subject;
+
+    return { ...subject, resolvedPath: `./${rel}` };
   }
 
-  isAutoApprove(): boolean {
-    return this.autoApprove;
+  private resolveBash(command: string): ResolveResult {
+    const { segments, wasUnresolved } = buildBashSubject(command);
+
+    if (segments.length === 0) {
+      return { action: "ask", wasUnresolved: true };
+    }
+
+    let combined: ResolveResult = this.resolveSubject("run_bash", { tool: "run_bash", text: segments[0] });
+    for (const segment of segments.slice(1)) {
+      const result = this.resolveSubject("run_bash", { tool: "run_bash", text: segment });
+      combined = this.combineMostRestrictive(combined, result);
+    }
+
+    // wasUnresolved is fail-closed: it can only push the result toward ask,
+    // never let it resolve weaker than ask (an actual deny still wins outright).
+    const finalAction = wasUnresolved && combined.action === "allow" ? "ask" : combined.action;
+    return { action: finalAction, winningRule: combined.winningRule, wasUnresolved: combined.wasUnresolved || wasUnresolved };
   }
 
-  classifyScopes(toolName: string, args: Record<string, unknown>): PermissionScope[] {
-    const pathArg = String(args?.path ?? args?.filePath ?? "");
-    const cmd = String(args?.command ?? "");
+  private combineMostRestrictive(a: ResolveResult, b: ResolveResult): ResolveResult {
+    const rank: Record<PermissionAction, number> = { deny: 2, ask: 1, allow: 0 };
+    if (rank[b.action] > rank[a.action]) return b;
+    return a;
+  }
 
-    switch (toolName) {
-      case "read_file":
-      case "read": {
-        if (!pathArg) return ["read-in-cwd"];
-        return this.isInsideCwd(pathArg) ? ["read-in-cwd"] : ["read-out-cwd"];
+  private resolveSubject(toolName: string, subject: PermissionSubject): ResolveResult {
+    const allRules = [...BUILTIN_DESTRUCTIVE_RULES, ...this.configRules, ...this.sessionRules];
+    const matches = allRules.filter((r) => patternMatches(r, subject));
+
+    if (matches.length === 0) {
+      // Only user-configured rules count toward "this tool is recognized" —
+      // builtin destructive rules exist for every install regardless of user
+      // intent, so they can't be what makes an unconfigured tool "known."
+      const userRules = [...this.configRules, ...this.sessionRules];
+      const hasAnyRuleForTool = userRules.some((r) => r.tool === toolName || r.tool === "*" || (r.tool === "mcp__*" && toolName.startsWith("mcp__")));
+      if (this.defaultMode === "allowAll" && hasAnyRuleForTool) {
+        return { action: "allow", wasUnresolved: false };
       }
-
-      case "write_to_file":
-      case "write":
-      case "edit":
-      case "edit_file":
-      case "search_replace":
-      case "apply_diff":
-      case "apply_patch": {
-        if (!pathArg) return ["write-in-cwd"];
-        return this.isInsideCwd(pathArg) ? ["write-in-cwd"] : ["write-out-cwd"];
-      }
-
-      case "list_files":
-        return ["read-in-cwd"];
-
-      case "glob":
-      case "search":
-        return ["scan"];
-
-      case "run_bash":
-        return this.classifyBashScopes(cmd);
-
-      case "load_skill":
-        return ["read-in-cwd"];
-
-      default:
-        if (toolName.startsWith("mcp__")) return ["mcp"];
-        return [];
+      return { action: "ask", wasUnresolved: false };
     }
+
+    const denyMatches = matches.filter((r) => r.action === "deny");
+    const askMatches = matches.filter((r) => r.action === "ask");
+    const allowMatches = matches.filter((r) => r.action === "allow");
+
+    if (denyMatches.length > 0) {
+      return this.resolveTier(denyMatches, allowMatches, "deny");
+    }
+    if (askMatches.length > 0) {
+      return this.resolveTier(askMatches, allowMatches, "ask");
+    }
+    return { action: "allow", winningRule: this.highestSpecificity(allowMatches), wasUnresolved: false };
   }
 
-  private classifyBashScopes(command: string): PermissionScope[] {
-    if (!command) return [];
-
-    const scopes: PermissionScope[] = [];
-    const tokens = command.trim().split(/\s+/).filter(Boolean);
-    const baseTokens = tokens.map(t => basename(t).toLowerCase());
-
-    if (tokens.some(t => t.includes("..") || t.startsWith("/") || t.startsWith("~"))) {
-      const pathTokens = tokens.filter(t => t.includes("/") || t === ".." || t.startsWith("~"));
-      for (const pt of pathTokens) {
-        if (this.isInsideCwd(pt)) {
-          if (!scopes.includes("read-in-cwd")) scopes.push("read-in-cwd");
-        } else {
-          if (!scopes.includes("read-out-cwd")) scopes.push("read-out-cwd");
-        }
-      }
+  /**
+   * Highest-specificity rule of `tier` wins unless an allow rule is strictly
+   * more specific than every rule in `tier`. An `any`-kind rule in `tier` is
+   * an absolute kill-switch and can never be overridden this way — it scores
+   * the floor (0) by construction, so "strictly more specific" would be
+   * satisfied by literally any real allow rule, defeating the point of a
+   * deliberately unqualified catch-all block.
+   */
+  private resolveTier(tierMatches: PermissionRule[], allowMatches: PermissionRule[], tier: PermissionAction): ResolveResult {
+    const bestTierRule = this.highestSpecificity(tierMatches)!;
+    if (tierMatches.some((r) => r.kind === "any")) {
+      return { action: tier, winningRule: bestTierRule, wasUnresolved: false };
     }
 
-    if (baseTokens.some(t => ["cat", "head", "tail", "less", "more", "nl", "od", "xxd", "strings"].includes(t))) {
-      scopes.push(this.isInsideCwdArg(command) ? "read-in-cwd" : "read-out-cwd");
-    }
+    const maxTierSpecificity = Math.max(...tierMatches.map(specificity));
+    const bestAllow = this.highestSpecificity(allowMatches);
+    const bestAllowSpecificity = bestAllow ? specificity(bestAllow) : -Infinity;
 
-    if (baseTokens.some(t => ["rm", "rmdir", "unlink"].includes(t))) {
-      scopes.push(this.isInsideCwdArg(command) ? "delete-in-cwd" : "delete-out-cwd");
+    if (bestAllow && bestAllowSpecificity > maxTierSpecificity) {
+      return { action: "allow", winningRule: bestAllow, wasUnresolved: false };
     }
-
-    const redirectMatch = command.match(/[>]{1,2}\s*(\S+)/);
-    if (redirectMatch) {
-      const target = redirectMatch[1];
-      scopes.push(this.isInsideCwd(target) ? "write-in-cwd" : "write-out-cwd");
-    }
-
-    if (baseTokens.some(t => ["curl", "wget", "nc", "ssh", "scp", "sftp", "ftp", "telnet", "rsync", "nmap"].includes(t))) {
-      scopes.push("network");
-    }
-
-    if (baseTokens.some(t => t.startsWith("git"))) {
-      const hasLog = /\bgit\s+(log|show|diff|blame|reflog)\b/.test(command);
-      const hasMutate = /\bgit\s+(commit|push|rebase|merge|reset|revert|fetch|pull|checkout\s+-b|branch\s+-[dD])\b/.test(command);
-      if (hasLog) scopes.push("query-git-log");
-      if (hasMutate) scopes.push("mutate-git-log");
-    }
-
-    if (baseTokens.some(t => ["npm", "npx", "yarn", "pnpm", "pip", "pip3", "cargo", "go"].includes(t))) {
-      scopes.push("network");
-    }
-
-    const hasInstall = /\b(npm\s+(install|add|i)\b|yarn\s+add|pip\s+install|pip3\s+install|cargo\s+install|go\s+get)\b/.test(command);
-    if (hasInstall) {
-      if (!scopes.includes("write-in-cwd")) scopes.push("write-in-cwd");
-      if (!scopes.includes("network")) scopes.push("network");
-    }
-
-    return scopes;
+    return { action: tier, winningRule: bestTierRule, wasUnresolved: false };
   }
 
-  check(toolName: string, args?: Record<string, unknown>): PermissionAction {
-    const scopes = this.classifyScopes(toolName, args ?? {});
-    // Explicit deny always wins, even in auto-approve mode.
-    for (const s of scopes) {
-      if (this.deny.has(s)) return "deny";
-    }
-    // Auto-approve turns every non-denied call into an allow.
-    if (this.autoApprove) return "allow";
-
-    // scan (glob/search) always asks unless explicitly allowed
-    if (scopes.includes("scan") && !this.allow.has("scan")) return "ask";
-
-    if (scopes.length === 0) return "ask";
-    for (const s of scopes) {
-      if (this.ask.has(s)) return "ask";
-    }
-    for (const s of scopes) {
-      if (!this.allow.has(s)) {
-        return this.defaultMode === "allowAll" ? "allow" : "ask";
-      }
-    }
-    return "allow";
+  private highestSpecificity(rules: PermissionRule[]): PermissionRule | undefined {
+    if (rules.length === 0) return undefined;
+    return rules.reduce((best, r) => (specificity(r) > specificity(best) ? r : best));
   }
 
-  persistAllow(scopes: PermissionScope[]): void {
+  /**
+   * Builds the narrowest possible allow rule for a specific call — an exact
+   * match on its literal subject text. Used by the UI layer when the user
+   * approves a call for session/always and no winningRule already exists to
+   * approve (e.g. the call fell through to defaultMode with zero matching
+   * rules), so approval never defaults to something broader than what was
+   * actually asked.
+   */
+  buildDefaultRule(toolName: string, args?: Record<string, unknown>): PermissionRule {
+    const a = args ?? {};
+    if (toolName === "run_bash") {
+      return { tool: "run_bash", kind: "exact", pattern: String(a.command ?? ""), action: "allow", origin: "config" };
+    }
+    const subject = buildSubject(toolName, a);
+    return { tool: toolName, kind: "exact", pattern: subject.text, action: "allow", origin: "config" };
+  }
+
+  /**
+   * Approves `rule` for this process only. Never written to disk, cleared on
+   * restart. A destructive-origin match is forced to kind "exact" on the
+   * literal subject text — approving one instance never broadens to the
+   * whole category.
+   */
+  approveForSession(rule: PermissionRule, matchedDestructive?: PermissionRule): void {
+    const narrowed = matchedDestructive ? this.narrowToExact(rule, matchedDestructive) : rule;
+    this.sessionRules.push({ ...narrowed, origin: "session" });
+  }
+
+  /**
+   * Approves `rule` for this process and persists it to .deepcode/settings.json
+   * via an atomic write (temp file + rename). A destructive-origin match is
+   * forced to kind "exact" on the literal subject text.
+   */
+  approveAlways(rule: PermissionRule, matchedDestructive?: PermissionRule): void {
+    const narrowed = matchedDestructive ? this.narrowToExact(rule, matchedDestructive) : rule;
+    const configRule: PermissionRule = { ...narrowed, origin: "config" };
+    this.configRules.push(configRule);
+    this.persist();
+  }
+
+  private narrowToExact(rule: PermissionRule, matchedDestructive: PermissionRule): PermissionRule {
+    if (matchedDestructive.origin !== "builtin-destructive") return rule;
+    return { ...rule, kind: "exact" };
+  }
+
+  private persist(): void {
     const settingsPath = join(this.projectConfigDir, "settings.json");
     let config: Record<string, unknown> = {};
     if (existsSync(settingsPath)) {
@@ -190,48 +211,21 @@ export class PermissionEngine {
         config = JSON.parse(readFileSync(settingsPath, "utf-8"));
       } catch {}
     }
-    const perms = (config.permissions as Record<string, unknown>) ?? {};
-    const allow: string[] = [...(perms.allow as string[] ?? [])];
-    const deny: string[] = [...(perms.deny as string[] ?? [])];
-    const ask: string[] = [...(perms.ask as string[] ?? [])];
 
-    for (const scope of scopes) {
-      if (!allow.includes(scope)) allow.push(scope);
-      const denyIdx = deny.indexOf(scope);
-      if (denyIdx >= 0) deny.splice(denyIdx, 1);
-      const askIdx = ask.indexOf(scope);
-      if (askIdx >= 0) ask.splice(askIdx, 1);
-      this.allow.add(scope);
-      this.deny.delete(scope);
-      this.ask.delete(scope);
-    }
+    const onDiskRules: OnDiskRule[] = this.configRules.map((r) => ({
+      tool: r.tool,
+      pattern: serializeRulePattern(r.kind, r.pattern),
+      action: r.action,
+    }));
 
-    config.permissions = { allow, deny, ask, defaultMode: this.defaultMode };
+    config.permissions = { rules: onDiskRules, defaultMode: this.defaultMode };
 
     if (!existsSync(this.projectConfigDir)) {
       mkdirSync(this.projectConfigDir, { recursive: true });
     }
-    writeFileSync(settingsPath, JSON.stringify(config, null, 2), "utf-8");
-  }
 
-  private isInsideCwd(path: string): boolean {
-    try {
-      const abs = resolve(this.workingDir, path);
-      const real = existsSync(abs) ? realpathSync(abs) : abs;
-      const rel = relative(this.workingDir, real);
-      return !rel.startsWith("..") && rel !== "";
-    } catch {
-      return false;
-    }
-  }
-
-  private isInsideCwdArg(command: string): boolean {
-    const tokens = command.trim().split(/\s+/).filter(Boolean);
-    for (const t of tokens) {
-      if (t.startsWith("-")) continue;
-      if (t.startsWith("/") || t.startsWith("~")) return false;
-      if (t.includes("..")) return false;
-    }
-    return true;
+    const tmpPath = join(this.projectConfigDir, `.settings.json.${randomBytes(6).toString("hex")}.tmp`);
+    writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
+    renameSync(tmpPath, settingsPath);
   }
 }
