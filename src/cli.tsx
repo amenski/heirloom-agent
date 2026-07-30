@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
+import { checkForNpmUpdate, promptForPendingUpdate } from "./common/update-check.js";
 import { parseArguments } from "./cli-args.js";
 import { runExecMode } from "./exec-runner.js";
 import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, type ProviderOptions } from "./providers/presets.js";
@@ -32,6 +33,7 @@ import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingC
 import type { WorkflowIntegrationConfig } from "./ui/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 
 void main();
 
@@ -416,7 +418,15 @@ async function main() {
     };
   }
 
+  const packageInfo = { name: pkg.name, version: pkg.version };
+
+  if (!parsed.exec && !parsed.resume) {
+    await promptForPendingUpdate(packageInfo);
+  }
+
   startApp();
+
+  checkForNpmUpdate(packageInfo).catch(() => {});
 }
 
 function detectProvider(configEnv: Record<string, string | undefined> | undefined): string | null {

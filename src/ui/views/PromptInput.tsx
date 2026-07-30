@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 import { PROMPT_PREFIX_WIDTH } from "../constants.js";
 import {
   EMPTY_BUFFER,
@@ -15,6 +15,7 @@ import {
 import { getSlashCommands, filterSlashCommands, findExactSlashCommand, type SlashCommandItem } from "../core/slash-commands.js";
 import { useHistoryNavigation } from "../hooks/useHistoryNavigation.js";
 import { readClipboardImageAsync } from "../core/clipboard.js";
+import { useTerminalInput, type InputKey } from "../hooks/useTerminalInput.js";
 import SlashCommandMenu from "./SlashCommandMenu.js";
 import type { StatusSegment } from "../types.js";
 
@@ -140,17 +141,23 @@ const PromptInput = React.memo(function PromptInput({
     setAttachedImages([]);
   }
 
-  useInput((value, key) => {
+  useTerminalInput((key: InputKey) => {
     const curText = bufferRef.current;
 
+    if (key.paste) {
+      const sanitized = key.paste.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      updateBuffer((s) => insertText(s, sanitized));
+      return;
+    }
+
     if (busy) {
-      if (key.escape || (key.ctrl && (value === "c" || value === "C"))) { onInterrupt?.(); setStatusMessage("Interrupting…"); }
+      if (key.escape || (key.ctrl && key.value === "c")) { onInterrupt?.(); setStatusMessage("Interrupting…"); }
       return;
     }
 
     if (key.escape) { onInterrupt?.(); return; }
 
-    if (key.ctrl && (value === "d" || value === "D")) {
+    if (key.ctrl && key.value === "d") {
       if (isEmpty(curText)) {
         const now = Date.now();
         if (pendingExit && now - lastCtrlDAt.current < 2000) { onExitShortcut?.(); return; }
@@ -161,7 +168,7 @@ const PromptInput = React.memo(function PromptInput({
 
     if (pendingExit) setPendingExit(false);
 
-    if (key.ctrl && (value === "c" || value === "C")) {
+    if (key.ctrl && key.value === "c") {
       if (!isEmpty(curText)) { resetInput(); } else { setStatusMessage("press ctrl+d to exit"); }
       return;
     }
@@ -206,19 +213,19 @@ const PromptInput = React.memo(function PromptInput({
       return;
     }
 
-    if (key.ctrl && (value === "p" || value === "P")) { navigateHistory(-1); return; }
-    if (key.ctrl && (value === "n" || value === "N")) { navigateHistory(1); return; }
-    if (key.ctrl && (value === "a" || value === "A")) { updateBuffer((s) => moveLineStart(s)); return; }
-    if (key.ctrl && (value === "e" || value === "E")) { updateBuffer((s) => moveLineEnd(s)); return; }
-    if (key.ctrl && (value === "b" || value === "B")) { updateBuffer((s) => moveLeft(s)); return; }
-    if (key.ctrl && (value === "f" || value === "F")) { updateBuffer((s) => moveRight(s)); return; }
-    if (key.ctrl && (value === "k" || value === "K")) { updateBuffer((s) => killLine(s)); return; }
-    if (key.ctrl && (value === "u" || value === "U")) { updateBuffer(() => EMPTY_BUFFER); return; }
-    if (key.ctrl && (value === "w" || value === "W")) { updateBuffer((s) => deleteWordBefore(s)); return; }
-    if (key.ctrl && (value === "j" || value === "J")) { updateBuffer((s) => insertText(s, "\n")); return; }
-    if (key.ctrl && (value === "m" || value === "M")) { onModelPickerOpen?.(); return; }
+    if (key.ctrl && key.value === "p") { navigateHistory(-1); return; }
+    if (key.ctrl && key.value === "n") { navigateHistory(1); return; }
+    if (key.ctrl && key.value === "a") { updateBuffer((s) => moveLineStart(s)); return; }
+    if (key.ctrl && key.value === "e") { updateBuffer((s) => moveLineEnd(s)); return; }
+    if (key.ctrl && key.value === "b") { updateBuffer((s) => moveLeft(s)); return; }
+    if (key.ctrl && key.value === "f") { updateBuffer((s) => moveRight(s)); return; }
+    if (key.ctrl && key.value === "k") { updateBuffer((s) => killLine(s)); return; }
+    if (key.ctrl && key.value === "u") { updateBuffer(() => EMPTY_BUFFER); return; }
+    if (key.ctrl && key.value === "w") { updateBuffer((s) => deleteWordBefore(s)); return; }
+    if (key.ctrl && key.value === "j") { updateBuffer((s) => insertText(s, "\n")); return; }
+    if (key.ctrl && key.value === "m") { onModelPickerOpen?.(); return; }
 
-    if (key.ctrl && (value === "v" || value === "V")) {
+    if (key.ctrl && key.value === "v") {
       setStatusMessage("Reading clipboard image…");
       readClipboardImageAsync()
         .then((image) => {
@@ -229,16 +236,16 @@ const PromptInput = React.memo(function PromptInput({
         .catch(() => setStatusMessage("Failed to read clipboard image"));
       return;
     }
-    if (key.ctrl && (value === "x" || value === "X")) {
+    if (key.ctrl && key.value === "x") {
       if (attachedImagesRef.current.length > 0) { setAttachedImages([]); setStatusMessage("Cleared attached images"); }
       return;
     }
 
-    if (value) {
-      const sanitized = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (key.value) {
+      const sanitized = key.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       updateBuffer((s) => insertText(s, sanitized));
     }
-  });
+  }, { isActive: true });
 
   return (
     <Box flexDirection="column" width={screenWidth}>

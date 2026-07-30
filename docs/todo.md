@@ -243,7 +243,7 @@ feature.
 
 ---
 
-## 9. Self-update checker (update-check.ts + UpdatePrompt)
+## 9. Self-update checker (update-check.ts + UpdatePrompt) [DONE]
 
 Reference: `src_common_update-check.ts`, `src_ui_views_UpdatePrompt.tsx` (report §3). Skip the
 Tencent Cloud npm mirror logic (China-market-specific, not relevant) — use the public npm registry
@@ -280,7 +280,17 @@ directly.
 
 ---
 
-## 10. Hand-rolled terminal input parser (useTerminalInput, cursor.ts)
+## 10. Hand-rolled terminal input parser (useTerminalInput, cursor.ts) [DONE]
+
+Completed:
+- `src/ui/hooks/useTerminalInput.ts`: parser for ANSI/VT escape sequences, ctrl chars,
+  arrow/home/end/pgup/pgdn/backspace/delete/tab/enter/escape, Shift+Tab, modifiers,
+  bracketed paste detection with `ESC[200~ ... ESC[201~` reassembly into single paste event.
+- `src/ui/hooks/cursor.ts`: visual width (CJK/emoji support), cursor show/hide ANSI toggles,
+  bracketed paste mode toggles, `getPromptCursorPlacement()` for cursor positioning.
+- `src/ui/views/PromptInput.tsx`: migrated from Ink's `useInput` to `useTerminalInput`;
+  all existing keybindings preserved, bracketed paste support added.
+- `npx tsc --noEmit` and `npm test` pass.
 
 Reference: `src_ui_hooks_useTerminalInput.ts`, `src_ui_hooks_cursor.ts` (report §4.3-4.4). This is
 the largest and riskiest task — it replaces/augments Ink's `useInput` in `PromptInput.tsx` with a
@@ -377,4 +387,4 @@ full rewrite — only port what's genuinely missing.
 
 ## Suggested execution order
 
-1 (finish in-progress) → 2 → 3 → 4 → 5 → 6 → 7 → 9 → 11 → 12 → 8 (needs bash.ts prerequisite) → 10 (last, highest blast-radius).
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 ✅ → 7 ✅ → 9 ✅ → 11 ✅ → 12 ✅ → 8 (blocked — needs bash.ts prerequisite) → 10 ✅
