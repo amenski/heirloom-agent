@@ -1,6 +1,10 @@
 import type { Provider } from "../providers/types.js";
 import type { Message } from "../types.js";
 import type { ModelEntry } from "./ModelSelector.js";
+import type { ThemeContextValue, ThemeDefinition } from "./theme.js";
+import type { KeybindingMap, KeybindingConfig, KeybindingAction } from "./keybindings.js";
+
+// ── State ──
 
 export interface MutableState {
   conversationHistory: Message[];
@@ -10,13 +14,74 @@ export interface MutableState {
   sessionUserInputs: string[];
 }
 
+// ── Status Bar ──
+
 /** A single segment of the status bar, rendered as an Ink <Text> with these props. */
 export interface StatusSegment {
   text: string;
   bold?: boolean;
   dimColor?: boolean;
   color?: string;
+  backgroundColor?: string;
 }
+
+// ── Tab / Multiplex ──
+
+export interface TabDefinition {
+  id: string;
+  title: string;
+  type: "chat" | "output" | "terminal" | "log" | "custom";
+  icon?: string;
+  /** Whether this tab can be closed by the user */
+  closable: boolean;
+  /** Custom metadata */
+  meta?: Record<string, unknown>;
+}
+
+export interface PaneDefinition {
+  id: string;
+  direction: "horizontal" | "vertical";
+  splitPosition: number; // 0-1 ratio
+  tabs: TabDefinition[];
+  activeTabId: string;
+}
+
+// ── Theme ──
+
+export interface ThemeConfig {
+  mode: "dark" | "light" | "auto";
+  name?: string;
+  overrides?: Partial<ThemeDefinition>;
+}
+
+// ── Workflow Integration ──
+
+export interface GitStatus {
+  branch: string;
+  ahead: number;
+  behind: number;
+  modified: number;
+  added: number;
+  deleted: number;
+  staged: number;
+  conflicts: number;
+  dirty: boolean;
+}
+
+export interface WorkflowIntegrationConfig {
+  /** Show git status in the status bar */
+  gitStatus: boolean;
+  /** Check git status interval in ms (0 = on demand only) */
+  gitPollInterval: number;
+  /** Show current branch first in status bar */
+  gitBranchFirst?: boolean;
+  /** Enable git workflow commands (/git) */
+  gitCommands: boolean;
+  /** Detect build tools from cwd */
+  detectBuildTools: boolean;
+}
+
+// ── App Context ──
 
 export interface AppContext {
   mutable: MutableState;
@@ -45,7 +110,6 @@ export interface AppContext {
   completer: (line: string) => [string[], string];
 
   buildStatusBar: () => StatusSegment[];
-  cycleApprovalMode: () => void;
   getPromptStr: () => string;
   getColorEnabled: () => boolean;
 
@@ -55,7 +119,28 @@ export interface AppContext {
   handleSlash: (input: string) => Promise<string[]>;
   getModelEntries: () => ModelEntry[];
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks) => Promise<any>;
+
+  // ── New: Theme & Keybinding support ──
+  theme?: ThemeContextValue;
+  keybindings?: KeybindingMap;
+  keybindingConfig?: KeybindingConfig;
+
+  // ── New: Multiplex support ──
+  tabState?: {
+    tabs: TabDefinition[];
+    activeTabId: string;
+    setActiveTab: (id: string) => void;
+    addTab: (tab: TabDefinition) => void;
+    closeTab: (id: string) => void;
+  };
+
+  // ── New: Workflow integration ──
+  workflowConfig?: WorkflowIntegrationConfig;
+  gitStatus?: GitStatus | null;
+  refreshGitStatus?: () => Promise<void>;
 }
+
+// ── Agent Bridge Callbacks ──
 
 export interface AgentBridgeCallbacks {
   onText: (c: string) => void;
