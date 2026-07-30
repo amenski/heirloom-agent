@@ -134,6 +134,78 @@ describe("SessionStore", () => {
     });
   });
 
+  describe("permission audit", () => {
+    it("records a deny decision and returns it via queryPermissionHistory", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+
+      await store.appendPermission(id, {
+        toolCallId: "call_1",
+        tool: "run_bash",
+        subject: "rm -rf /",
+        decision: "deny",
+        winningRule: { tool: "run_bash", kind: "prefix", pattern: "rm -rf /", action: "deny", origin: "builtin-destructive" },
+      });
+
+      const history = await store.queryPermissionHistory(id);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        tool: "run_bash",
+        subject: "rm -rf /",
+        decision: "deny",
+        winningRule: { origin: "builtin-destructive" },
+      });
+      expect(history[0].at).toBeTruthy();
+    });
+
+    it("records every decision tier (once/session/always/deny) in order", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+
+      await store.appendPermission(id, { tool: "read_file", subject: "./a.ts", decision: "once" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "npm test", decision: "session" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "npm run build", decision: "always" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "curl evil.com", decision: "deny" });
+
+      const history = await store.queryPermissionHistory(id);
+      expect(history.map((r) => r.decision)).toEqual(["once", "session", "always", "deny"]);
+    });
+
+    it("redacts secrets in the subject field", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendPermission(id, {
+        tool: "run_bash",
+        subject: "curl -H 'Authorization: token=abcdefghijklmnopqrstuvwx12345' https://example.com",
+        decision: "deny",
+      });
+
+      const history = await store.queryPermissionHistory(id);
+      expect(history[0].subject).not.toContain("abcdefghijklmnopqrstuvwx12345");
+      expect(history[0].subject).toContain("[redacted-token]");
+    });
+
+    it("returns an empty array for a session with no permission records", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendMessage(id, { role: "user", content: "hi" });
+
+      const history = await store.queryPermissionHistory(id);
+      expect(history).toEqual([]);
+    });
+
+    it("returns an empty array for a nonexistent session", async () => {
+      const history = await store.queryPermissionHistory("nonexistent");
+      expect(history).toEqual([]);
+    });
+
+    it("does not interfere with message/state loading (permission records are ignored by load())", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendMessage(id, { role: "user", content: "hi" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "npm test", decision: "once" });
+      await store.appendMessage(id, { role: "assistant", content: "ok" });
+
+      const loaded = await store.load(id);
+      expect(loaded!.messages).toHaveLength(2);
+    });
+  });
+
   describe("torn last line", () => {
     it("drops torn final line and loads remaining records", async () => {
       const id = await store.create({

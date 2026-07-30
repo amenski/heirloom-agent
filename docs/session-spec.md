@@ -84,6 +84,31 @@ on load, later records override earlier ones. Keeps `meta` immutable.
 **History is never rewritten** — compaction appends a marker; the full
 transcript stays on disk for rewind and audit.
 
+### `permission` — audit trail entry
+
+```json
+{"type":"permission","at":"...","toolCallId":"call_1","tool":"run_bash",
+ "subject":"rm -rf /","decision":"deny",
+ "winningRule":{"tool":"run_bash","kind":"prefix","pattern":"rm -rf /","action":"deny","origin":"builtin-destructive"}}
+```
+
+One row per permission decision — `decision` is `"deny" | "once" | "session" |
+"always"`. `subject` (the literal command/path the decision was made
+against) is redacted through the same secret-pattern redactor as message
+content. `winningRule` is the rule that produced the outcome, absent when
+the decision came from a `defaultMode` fallthrough with no matching rule.
+Written from two call sites (`SessionStore.appendPermission`): `agent.ts`
+for auto-resolved outcomes (deny, or allow with no prompt needed), and
+`App.tsx`'s `handlePermissionDecision` for a real prompted decision — never
+both for the same call, since `agent.ts` only calls `askUser` when a prompt
+is actually needed and stays silent on that path. Queried via
+`SessionStore.queryPermissionHistory(sessionId)`; surfaced in the TUI via
+`/permissions` (permission-spec.md).
+
+Permission records are ignored by `load()`/`loadEffective()` — they don't
+appear in the conversation and don't affect message indexing or compaction's
+`replacesThrough` offsets.
+
 ---
 
 ## What Is Persisted vs. Rebuilt

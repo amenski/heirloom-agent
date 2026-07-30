@@ -14,6 +14,11 @@ import { buildStablePreamble, buildVolatileContext, type PromptContext } from ".
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
+function permissionSubjectText(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === "run_bash") return String(args?.command ?? "");
+  return String(args?.path ?? args?.filePath ?? "");
+}
+
 // Rebuilding the stable preamble is pure string concatenation, but it's still
 // wasted work every turn when nothing it depends on has changed — and more
 // importantly, recomputing it is how a would-be-stable prefix accidentally
@@ -235,15 +240,27 @@ export async function runAgent(
       options.onToolStart?.(tc.name, tc.arguments);
 
       if (permissions) {
-        const { action } = permissions.resolve(tc.name, tc.arguments);
+        const { action, winningRule } = permissions.resolve(tc.name, tc.arguments);
+        const subject = permissionSubjectText(tc.name, tc.arguments);
+
         if (action === "deny") {
           const msg = `Permission denied for ${tc.name}`;
           options.onDiagnostic?.("denied");
+          if (options.sessionStore && options.sessionId) {
+            await options.sessionStore.appendPermission(options.sessionId, {
+              toolCallId: tc.id, tool: tc.name, subject, decision: "deny", winningRule,
+            });
+          }
           messages.push({ role: "tool", toolCallId: tc.id, content: msg });
           continue;
         }
         if (action === "ask") {
           if (options.askUser) {
+            // askUser's boolean doesn't distinguish once/session/always — the
+            // UI layer (App.tsx) logs that finer-grained outcome itself, since
+            // only it knows which of the 4 options the user picked. Nothing
+            // to log here on the allow path; a denial from the prompt is
+            // still recorded below since it's equivalent to a deny outcome.
             const allowed = await options.askUser(tc.name, tc.arguments);
             if (!allowed) {
               const msg = "PERMISSION_DENIED: denied by user";
@@ -254,9 +271,20 @@ export async function runAgent(
           } else {
             const msg = "PERMISSION_DENIED: headless — rule resolved to ask";
             options.onDiagnostic?.("denied");
+            if (options.sessionStore && options.sessionId) {
+              await options.sessionStore.appendPermission(options.sessionId, {
+                toolCallId: tc.id, tool: tc.name, subject, decision: "deny", winningRule,
+              });
+            }
             messages.push({ role: "tool", toolCallId: tc.id, content: msg });
             continue;
           }
+        } else if (action === "allow" && options.sessionStore && options.sessionId) {
+          // Rule-derived allow with no prompt at all — still worth an audit
+          // row so "why did this run without asking me" is answerable.
+          await options.sessionStore.appendPermission(options.sessionId, {
+            toolCallId: tc.id, tool: tc.name, subject, decision: "once", winningRule,
+          });
         }
       }
 

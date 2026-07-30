@@ -146,4 +146,104 @@ describe("runAgent", () => {
       expect(result.newMessages.some((m) => m.role === "tool" && String(m.content).includes("headless"))).toBe(true);
     });
   });
+
+  describe("permission audit logging", () => {
+    function fakeSessionStore() {
+      return { appendPermission: vi.fn(async () => {}) };
+    }
+
+    it("logs a deny decision when a rule denies the call outright", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"command":"rm -rf /"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("ok"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("run", { provider, tools: [], executeTool, permissions, sessionStore: sessionStore as any, sessionId: "s1" });
+
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        tool: "run_bash",
+        subject: "rm -rf /",
+        decision: "deny",
+      }));
+    });
+
+    it("logs a once decision when a rule allows the call with no prompt needed", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"command":"npm test"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("ok"),
+      ]);
+      const permissions = new PermissionEngine(
+        { rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "allow", origin: "config" }] },
+        "/workspace",
+      );
+      const executeTool = vi.fn(async () => ({ content: "ran" }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("run", { provider, tools: [], executeTool, permissions, sessionStore: sessionStore as any, sessionId: "s1" });
+
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        tool: "run_bash",
+        subject: "npm test",
+        decision: "once",
+      }));
+    });
+
+    it("does not double-log when askUser is provided and prompts (App.tsx owns that log line)", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"command":"npm test"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("ok"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "ran" }));
+      const sessionStore = fakeSessionStore();
+      const askUser = vi.fn(async () => true);
+
+      await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1" });
+
+      expect(sessionStore.appendPermission).not.toHaveBeenCalled();
+    });
+
+    it("logs a deny decision for the headless-ask-becomes-deny path", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"command":"npm test"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("ok"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("run", { provider, tools: [], executeTool, permissions, sessionStore: sessionStore as any, sessionId: "s1" });
+
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "deny" }));
+    });
+
+    it("does not throw or log when permissions is absent entirely", async () => {
+      const { provider } = makeProvider([textTurn("no tools here")]);
+      const executeTool = vi.fn(async () => ({ content: "" }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("hi", { provider, tools: [], executeTool, sessionStore: sessionStore as any, sessionId: "s1" });
+
+      expect(sessionStore.appendPermission).not.toHaveBeenCalled();
+    });
+  });
 });
