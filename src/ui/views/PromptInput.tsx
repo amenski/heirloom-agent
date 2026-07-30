@@ -17,6 +17,8 @@ import { useHistoryNavigation } from "../hooks/useHistoryNavigation.js";
 import { readClipboardImageAsync } from "../core/clipboard.js";
 import { useTerminalInput, type InputKey } from "../hooks/useTerminalInput.js";
 import SlashCommandMenu from "./SlashCommandMenu.js";
+import { useTheme } from "../contexts.js";
+import { ansi256 } from "../theme.js";
 
 export type PromptSubmission = {
   text: string;
@@ -41,6 +43,7 @@ const PromptInput = React.memo(function PromptInput({
   screenWidth, promptHistory, busy, placeholder,
   promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture,
 }: Props): React.ReactElement {
+  const theme = useTheme();
   const undoRedoRef = useRef(createPromptUndoRedoState());
   const wasBusyRef = useRef(busy);
   const appliedDraftNonceRef = useRef<number | null>(null);
@@ -274,7 +277,7 @@ const PromptInput = React.memo(function PromptInput({
         borderDimColor
       >
         <Box width={PROMPT_PREFIX_WIDTH}>
-          <Text color="#229ac3">{"▌ "}</Text>
+          <Text color={theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined}>{"▌ "}</Text>
         </Box>
         <Box flexGrow={1} flexShrink={1} width={inputContentWidth}>
           <Text wrap="hard">

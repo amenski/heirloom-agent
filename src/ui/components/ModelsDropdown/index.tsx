@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { useInput } from "ink";
 import DropdownMenu from "../DropdownMenu/index.js";
 import { getPreset } from "../../../providers/presets.js";
+import { useTheme } from "../../contexts.js";
+import { ansi256 } from "../../theme.js";
 
 interface Props {
   open: boolean;
@@ -17,6 +19,8 @@ const ModelsDropdown: React.FC<Props> = ({
   open, providerName, currentModel,
   width, onClose, onSelect, onStatusMessage,
 }) => {
+  const theme = useTheme();
+  const accent = theme.colorEnabled ? ansi256(theme.theme.accent) : undefined;
   const [activeIndex, setActiveIndex] = useState(0);
 
   const availableModels = React.useMemo(() => {
@@ -70,7 +74,7 @@ const ModelsDropdown: React.FC<Props> = ({
       helpText="Space/Enter select · Esc cancel"
       items={items}
       activeIndex={activeIndex}
-      activeColor="#229ac3"
+      activeColor={accent}
       maxVisible={6}
     />
   );

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useInput } from "ink";
 import DropdownMenu from "../DropdownMenu/index.js";
+import { useTheme } from "../../contexts.js";
+import { ansi256 } from "../../theme.js";
 
 export interface SkillInfo {
   name: string;
@@ -19,6 +21,8 @@ interface Props {
 }
 
 const SkillsDropdown: React.FC<Props> = ({ open, width, skills, selectedSkills, onSelect, onClose }) => {
+  const theme = useTheme();
+  const accent = theme.colorEnabled ? ansi256(theme.theme.accent) : undefined;
   const [index, setIndex] = useState(0);
 
   useInput(
@@ -54,7 +58,7 @@ const SkillsDropdown: React.FC<Props> = ({ open, width, skills, selectedSkills, 
         statusIndicator: skill.isLoaded ? { symbol: "✓", color: "green" } : undefined,
       }))}
       activeIndex={index}
-      activeColor="#229ac3"
+      activeColor={accent}
       maxVisible={6}
     />
   );
