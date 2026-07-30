@@ -23,7 +23,35 @@ export interface CompactionSummary {
   errors_resolved: string[];
 }
 
-export type PermissionDecision = "deny" | "once" | "session" | "always";
+/**
+ * Canonical agent-emitted decision vocabulary (one per resolution path in
+ * src/agent.ts). Each value names exactly how a tool call was resolved:
+ *   allow-by-rule    — a user/config allow rule matched, no prompt shown
+ *   allow-by-posture — auto-approve posture let an ordinary ask through (UI-side; agent-side approximation, see note)
+ *   ask-approved     — an interactive prompt was answered yes
+ *   ask-denied       — an interactive prompt was answered no
+ *   deny-by-rule     — a deny rule matched (destructive/guarded/config)
+ *   headless-deny    — resolved to ask but no interactive prompter was available
+ *   unresolved-ask   — a bash segment couldn't be safely classified (fail-closed ask)
+ *
+ * The four legacy values ("once" | "session" | "always" | "deny") are still
+ * accepted for backward compatibility: the TUI (src/ui/App.tsx) writes those
+ * finer-grained values for interactively-answered prompts, and old sessions on
+ * disk carry them. Readers must tolerate both sets.
+ */
+export type PermissionDecision =
+  | "allow-by-rule"
+  | "allow-by-posture"
+  | "ask-approved"
+  | "ask-denied"
+  | "deny-by-rule"
+  | "headless-deny"
+  | "unresolved-ask"
+  // legacy / UI-side fine-grained values, still valid on read + write:
+  | "deny"
+  | "once"
+  | "session"
+  | "always";
 
 export interface PermissionAuditRecord {
   toolCallId?: string;
@@ -33,10 +61,21 @@ export interface PermissionAuditRecord {
   decision: PermissionDecision;
   /** The rule that produced this outcome, if any (absent for a fallthrough-to-defaultMode ask/allow). */
   winningRule?: { tool: string; kind: string; pattern: string; action: string; origin: string };
+  /** Human-readable note on why this decision was reached (e.g. "denied by user at prompt"). */
+  reason?: string;
+}
+
+export interface TokenUsageRecord {
+  /** Tokens attributable to this turn (input + output from the provider usage event). */
+  turnTokens: number;
+  /** Current context occupancy, matching what compaction measures (estimateTokens of live messages). */
+  totalUsed: number;
+  /** The context-window ceiling this session is budgeted against. */
+  budgetMax: number;
 }
 
 export interface SessionRecord {
-  type: "meta" | "message" | "state" | "compaction" | "permission";
+  type: "meta" | "message" | "state" | "compaction" | "permission" | "token";
   at: string;
   [key: string]: unknown;
 }
@@ -167,6 +206,7 @@ export class SessionStore {
       type: "permission",
       ...record,
       subject: redactSecrets(record.subject),
+      ...(record.reason !== undefined ? { reason: redactSecrets(record.reason) } : {}),
     });
   }
 
@@ -177,6 +217,27 @@ export class SessionStore {
     return records
       .filter((r) => r.type === "permission")
       .map((r) => r as unknown as PermissionAuditRecord & { at: string });
+  }
+
+  async appendToken(sessionId: string, record: TokenUsageRecord): Promise<void> {
+    await this.append(sessionId, { type: "token", ...record });
+  }
+
+  /**
+   * Returns every per-turn token-usage row for a session, in chronological
+   * order. `remaining` is computed here (budgetMax - totalUsed), never stored.
+   */
+  async queryTokenUsage(
+    sessionId: string,
+  ): Promise<(TokenUsageRecord & { at: string; remaining: number })[]> {
+    const records = await this.readRecords(sessionId);
+    if (!records) return [];
+    return records
+      .filter((r) => r.type === "token")
+      .map((r) => {
+        const rec = r as unknown as TokenUsageRecord & { at: string };
+        return { ...rec, remaining: rec.budgetMax - rec.totalUsed };
+      });
   }
 
   private async readRecords(sessionId: string): Promise<SessionRecord[] | null> {
