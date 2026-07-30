@@ -4,7 +4,7 @@
  * infrastructure into React components via context.
  */
 
-import React, { createContext, useContext, useMemo } from "react";
+import React, { createContext, useContext, useMemo, useState } from "react";
 import {
   ThemeContextValue,
   createDefaultTheme,
@@ -21,11 +21,45 @@ import {
 
 export interface ThemeProviderOptions {
   mode?: "dark" | "light" | "auto";
+  /** Named builtin preset (e.g. "dracula"). Takes precedence over `mode`. */
+  name?: string;
   overrides?: Partial<ThemeDefinition>;
   colorEnabled?: boolean;
 }
 
+/**
+ * Map a single picker selection (a builtin preset key, or "dark"/"light"/"auto")
+ * to the `{mode, name}` pair resolveTheme expects: a builtin preset goes in
+ * `name` (which the resolver prefers), the three mode words go in `mode`.
+ */
+export function splitThemeSelection(
+  selection: string,
+): { mode: "dark" | "light" | "auto"; name?: string } {
+  if (selection === "dark" || selection === "light" || selection === "auto") {
+    return { mode: selection };
+  }
+  return { mode: "dark", name: selection };
+}
+
 const ThemeContext = createContext<ThemeContextValue>(createDefaultTheme());
+
+/**
+ * Runtime control over the live theme, exposed so the `/theme` picker can apply
+ * a theme immediately (live preview) and revert. `name` is a builtin theme key
+ * (e.g. "dark", "light", "high-contrast") or "auto" for system detection —
+ * resolveTheme() maps any of these at runtime.
+ */
+export interface ThemeController {
+  /** The name currently applied to the live UI. */
+  current: string;
+  /** Apply a theme name to the live UI (used for preview and confirm). */
+  setThemeName: (name: string) => void;
+}
+
+const ThemeControllerContext = createContext<ThemeController>({
+  current: "dark",
+  setThemeName: () => {},
+});
 
 export function ThemeProvider({
   config,
@@ -34,20 +68,41 @@ export function ThemeProvider({
   config?: ThemeProviderOptions;
   children: React.ReactNode;
 }) {
+  // The live theme name is component state (seeded from config) so the /theme
+  // picker can retheme the running UI by calling setThemeName. It holds a single
+  // selection: "dark" | "light" | "auto" | any builtin preset key. A named
+  // preset in config seeds it (name wins over mode, matching resolveTheme).
+  const [themeName, setThemeName] = useState<string>(
+    config?.name ?? config?.mode ?? "dark",
+  );
+  const overrides = config?.overrides;
+
   const value = useMemo(() => {
-    const resolved = resolveTheme({
-      mode: config?.mode ?? "dark",
-      overrides: config?.overrides,
-    });
+    const { mode, name } = splitThemeSelection(themeName);
+    const resolved = resolveTheme({ mode, name, overrides });
     const colorEnabled =
       config?.colorEnabled ?? (!!process.stdout.isTTY && !process.env.NO_COLOR);
     return new ThemeContextValue(resolved, colorEnabled);
-  }, [config?.mode, JSON.stringify(config?.overrides), config?.colorEnabled]);
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  }, [themeName, JSON.stringify(overrides), config?.colorEnabled]);
+
+  const controller = useMemo<ThemeController>(
+    () => ({ current: themeName, setThemeName }),
+    [themeName],
+  );
+
+  return (
+    <ThemeControllerContext.Provider value={controller}>
+      <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+    </ThemeControllerContext.Provider>
+  );
 }
 
 export function useTheme(): ThemeContextValue {
   return useContext(ThemeContext);
+}
+
+export function useThemeController(): ThemeController {
+  return useContext(ThemeControllerContext);
 }
 
 // ── Keybinding Context ──
