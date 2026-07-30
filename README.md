@@ -38,7 +38,10 @@ project it was learned from (opencode, RooCode, Aider, SWE-agent).
 - **Checkpoints** — shadow-Git snapshots before edits; `/undo` rewinds files
   (or files + conversation).
 - **MCP support** — connect Model Context Protocol servers via config; their
-  tools appear alongside the built-ins (`/mcp` to inspect).
+  tools appear alongside the built-ins (`/mcp` to inspect). General web search
+  is a search MCP server of your choosing.
+- **`docs_search`** — built-in developer-docs search over free, keyless official
+  APIs (GitHub, Stack Overflow, npm/PyPI/crates, Wikipedia); no keys, no scraping.
 - **Skills** — reads the cross-tool [Agent Skills](https://agentskills.io)
   format, so skills installed for other agents work here too.
 - **Headless mode** (`-x`) for scripting and pipelines, with fail-closed

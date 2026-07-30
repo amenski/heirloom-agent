@@ -114,7 +114,7 @@ describe("docs_search", () => {
     expect(result.content).toContain("docs_search:");
   });
 
-  it("treats pypi 404 as no results, not an error", async () => {
+  it("treats pypi 404 as 'no such package', not an error", async () => {
     fetchMock.mockImplementation(() => Promise.resolve(new Response("Not Found", { status: 404 })));
 
     const result = await registry.execute(
@@ -122,7 +122,8 @@ describe("docs_search", () => {
       makeCtx(),
     );
     expect(result.error).toBeUndefined();
-    expect(result.content).toContain("No results found");
+    expect(result.content).toContain("no such package");
+    expect(result.content).toContain("nonexistent-pkg-xyz");
   });
 
   it("formats pypi exact match", async () => {
@@ -155,6 +156,34 @@ describe("docs_search", () => {
     expect(urlsHit.some((u) => u.includes("api.github.com/search/repositories"))).toBe(true);
     expect(urlsHit.some((u) => u.includes("api.github.com/search/issues"))).toBe(true);
     expect(urlsHit.some((u) => u.includes("npmjs.org") || u.includes("crates.io") || u.includes("pypi.org"))).toBe(false);
+  });
+
+  it("only ever fetches allowlisted hosts across all sources", async () => {
+    const ALLOWED = new Set([
+      "api.github.com",
+      "api.stackexchange.com",
+      "registry.npmjs.org",
+      "pypi.org",
+      "crates.io",
+      "en.wikipedia.org",
+    ]);
+    const hostsHit = new Set<string>();
+    fetchMock.mockImplementation((url: string) => {
+      hostsHit.add(new URL(url).host);
+      return Promise.resolve(jsonResponse({ items: [], objects: [], crates: [], info: { name: "x" } }));
+    });
+
+    for (const source of ["auto", "github", "stackoverflow", "npm", "pypi", "crates", "wikipedia"]) {
+      await registry.execute(
+        { id: "1", name: "docs_search", arguments: { query: "x", source } },
+        makeCtx(),
+      );
+    }
+
+    expect(hostsHit.size).toBeGreaterThan(0);
+    for (const host of hostsHit) {
+      expect(ALLOWED.has(host)).toBe(true);
+    }
   });
 
   it("caps total output at 8000 chars with a truncation marker", async () => {
