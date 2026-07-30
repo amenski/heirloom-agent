@@ -1,5 +1,5 @@
 import React from "react";
-import { Text } from "ink";
+import { Box, Text } from "ink";
 import { SPINNER_FRAMES } from "./ToolCallFormatter.js";
 
 interface SpinnerProps {
@@ -29,9 +29,14 @@ export default function Spinner({ active, frame, elapsed, theme }: SpinnerProps)
   const spinnerChar = SPINNER_FRAMES[frame] ?? SPINNER_FRAMES[0];
   const label = `${spinnerChar} Working… (${elapsed}s · esc to interrupt)`;
 
-  if (theme?.colorEnabled) {
-    return <Text dimColor>{theme.fg(theme.theme.spinner, label)}</Text>;
-  }
-
-  return <Text dimColor>{label}</Text>;
+  // marginY gives the indicator a blank line above and below so it doesn't sit
+  // cramped against the output and the input box. The margin only exists while
+  // the indicator renders (it returns null when inactive).
+  return (
+    <Box marginY={1}>
+      <Text dimColor>
+        {theme?.colorEnabled ? theme.fg(theme.theme.spinner, label) : label}
+      </Text>
+    </Box>
+  );
 }
