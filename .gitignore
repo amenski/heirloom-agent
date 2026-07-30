@@ -8,3 +8,4 @@ dist/
 .idea/
 .DS_Store
 todo.md.heirloom/
+.heirloom/
