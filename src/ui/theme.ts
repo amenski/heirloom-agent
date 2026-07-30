@@ -397,16 +397,288 @@ export const HIGH_CONTRAST_THEME: ThemeDefinition = {
   spinner: ANSI.brightCyan,
 };
 
+// ── Extra presets ──
+//
+// Faithful ANSI-256 approximations of popular editor themes, re-expressed in
+// Heirloom's rich ThemeDefinition shape (all ~20 semantic slots + 19-color
+// SyntaxColors + statusBar sub-palette). promptFg/accent follow the tuned
+// contrast convention: dark presets use bright accents readable on their dark
+// background; the light preset uses a deep blue (like LIGHT_THEME) legible on
+// white. accent stays distinct from promptFg so the two accents don't collide.
+
+export const DRACULA_THEME: ThemeDefinition = {
+  name: "dracula",
+  type: "dark",
+
+  primary: 141, // purple (#bd93f9)
+  secondary: 117, // cyan (#8be9fd)
+  // Bright pink accent, vivid on the dark surface.
+  accent: 212, // pink (#ff79c6)
+  error: 203, // red (#ff5555)
+  warning: 215, // orange (#ffb86c)
+  success: 84, // green (#50fa7b)
+  info: 117, // cyan (#8be9fd)
+
+  text: 253, // foreground (#f8f8f2)
+  textDim: 103, // comment (#6272a4)
+  textBright: 231, // near-white (#f8f8f2)
+  textInverse: 236, // background (#282a36)
+  link: 117,
+
+  background: 236, // #282a36
+  surface: 237, // current line (#44475a) approx
+  border: 239,
+  selection: 239, // #44475a
+
+  // Bright cyan gutter/prompt accent, readable on the dark purple-grey bg.
+  promptFg: 117,
+  promptBg: undefined,
+
+  statusBar: {
+    text: 253,
+    dim: 103,
+    background: 237,
+    separator: 239,
+    modeFg: 141,
+    modelFg: 231,
+    warningFg: 215,
+    errorFg: 203,
+  },
+
+  syntax: {
+    keyword: 212, // pink
+    string: 228, // yellow (#f1fa8c)
+    number: 141, // purple
+    comment: 103, // #6272a4
+    type: 117, // cyan
+    function: 84, // green
+    variable: 253, // foreground
+    constant: 141, // purple
+    operator: 212, // pink
+    punctuation: 253,
+    tag: 212, // pink
+    attribute: 84, // green
+    regexp: 203, // red
+    builtin: 117, // cyan
+    className: 117, // cyan
+    property: 84, // green
+    boolean: 141, // purple
+    nullish: 141,
+    decorator: 84, // green
+  },
+
+  spinner: 141,
+};
+
+export const MONOKAI_THEME: ThemeDefinition = {
+  name: "monokai",
+  type: "dark",
+
+  primary: 197, // pink/red (#f92672)
+  secondary: 81, // cyan (#66d9ef)
+  // Bright orange accent, vivid on the dark bg.
+  accent: 208, // orange (#fd971f)
+  error: 197, // #f92672
+  warning: 208, // #fd971f
+  success: 148, // green (#a6e22e)
+  info: 81, // cyan (#66d9ef)
+
+  text: 253, // foreground (#f8f8f2)
+  textDim: 102, // comment (#75715e)
+  textBright: 231,
+  textInverse: 235, // background (#272822)
+  link: 81,
+
+  background: 235, // #272822
+  surface: 236,
+  border: 238,
+  selection: 238, // #49483e
+
+  // Bright cyan gutter/prompt accent, readable on the dark olive-grey bg.
+  promptFg: 81,
+  promptBg: undefined,
+
+  statusBar: {
+    text: 253,
+    dim: 102,
+    background: 236,
+    separator: 238,
+    modeFg: 197,
+    modelFg: 231,
+    warningFg: 208,
+    errorFg: 197,
+  },
+
+  syntax: {
+    keyword: 197, // pink
+    string: 186, // yellow (#e6db74)
+    number: 141, // purple (#ae81ff)
+    comment: 102, // #75715e
+    type: 81, // cyan
+    function: 148, // green
+    variable: 253,
+    constant: 141, // purple
+    operator: 197, // pink
+    punctuation: 253,
+    tag: 197, // pink
+    attribute: 148, // green
+    regexp: 186,
+    builtin: 81, // cyan
+    className: 81, // cyan
+    property: 148, // green
+    boolean: 141, // purple
+    nullish: 141,
+    decorator: 148, // green
+  },
+
+  spinner: 197,
+};
+
+export const GITHUB_DARK_THEME: ThemeDefinition = {
+  name: "github-dark",
+  type: "dark",
+
+  primary: 75, // blue (#79c0ff)
+  secondary: 79, // teal/green (#39c5cf approx)
+  // Bright blue accent, readable on the dark navy bg.
+  accent: 75, // #79c0ff
+  error: 210, // red (#ff7b72)
+  warning: 215, // orange/yellow (#e3b341 approx)
+  success: 114, // green (#7ee787 approx)
+  info: 75, // blue
+
+  text: 253, // foreground (#c9d1d9)
+  textDim: 245, // muted (#8b949e)
+  textBright: 231,
+  textInverse: 234, // background (#0d1117)
+  link: 75,
+
+  background: 234, // #0d1117
+  surface: 235, // #161b22
+  border: 238, // #30363d
+  selection: 238,
+
+  // Bright blue gutter/prompt accent, legible on the near-black navy bg.
+  promptFg: 75,
+  promptBg: undefined,
+
+  statusBar: {
+    text: 253,
+    dim: 245,
+    background: 235,
+    separator: 238,
+    modeFg: 75,
+    modelFg: 231,
+    warningFg: 215,
+    errorFg: 210,
+  },
+
+  syntax: {
+    keyword: 210, // red (#ff7b72)
+    string: 111, // light blue (#a5d6ff)
+    number: 75, // blue (#79c0ff)
+    comment: 245, // #8b949e
+    type: 215, // orange (#ffa657)
+    function: 141, // purple (#d2a8ff)
+    variable: 253,
+    constant: 75, // blue
+    operator: 210,
+    punctuation: 253,
+    tag: 114, // green (#7ee787)
+    attribute: 75, // blue
+    regexp: 111,
+    builtin: 210, // red
+    className: 215, // orange
+    property: 75, // blue
+    boolean: 75,
+    nullish: 75,
+    decorator: 141, // purple
+  },
+
+  spinner: 75,
+};
+
+export const GITHUB_LIGHT_THEME: ThemeDefinition = {
+  name: "github-light",
+  type: "light",
+
+  primary: 25, // blue (#0969da)
+  secondary: 30, // teal (#1b7c83 approx)
+  // Deep blue accent — high contrast on white (matching LIGHT_THEME's deep
+  // blue convention).
+  accent: 25, // #0969da
+  error: 124, // red (#cf222e)
+  warning: 130, // orange (#9a6700 approx)
+  success: 28, // green (#1a7f37)
+  info: 25, // blue
+
+  text: 235, // foreground (#24292f)
+  textDim: 243, // muted (#57606a)
+  textBright: 233,
+  textInverse: 231, // background (#ffffff)
+  link: 25,
+
+  background: 231, // #ffffff
+  surface: 254, // #f6f8fa
+  border: 250, // #d0d7de
+  selection: 153, // light blue selection
+
+  // Deep blue gutter/prompt accent — legible on white.
+  promptFg: 25,
+  promptBg: undefined,
+
+  statusBar: {
+    text: 235,
+    dim: 243,
+    background: 254,
+    separator: 250,
+    modeFg: 25,
+    modelFg: 233,
+    warningFg: 130,
+    errorFg: 124,
+  },
+
+  syntax: {
+    keyword: 124, // red (#cf222e)
+    string: 25, // dark blue (#0a3069)
+    number: 25, // blue (#0550ae)
+    comment: 243, // #6e7781
+    type: 130, // orange/brown (#953800)
+    function: 92, // purple (#8250df)
+    variable: 235,
+    constant: 25, // blue
+    operator: 124,
+    punctuation: 235,
+    tag: 28, // green (#116329)
+    attribute: 25, // blue
+    regexp: 30, // teal (#0a3069 approx)
+    builtin: 124, // red
+    className: 130, // orange
+    property: 25, // blue
+    boolean: 25,
+    nullish: 25,
+    decorator: 92, // purple
+  },
+
+  spinner: 25,
+};
+
 export const BUILTIN_THEMES: Record<string, ThemeDefinition> = {
   dark: DARK_THEME,
   light: LIGHT_THEME,
   "high-contrast": HIGH_CONTRAST_THEME,
+  dracula: DRACULA_THEME,
+  monokai: MONOKAI_THEME,
+  "github-dark": GITHUB_DARK_THEME,
+  "github-light": GITHUB_LIGHT_THEME,
 };
 
 // ── Theme Manager ──
 
 export interface ThemeConfig {
   mode: "dark" | "light" | "auto";
+  /** Named builtin preset (e.g. "dracula"). Takes precedence over `mode`. */
+  name?: string;
   overrides?: Partial<ThemeDefinition>;
   /** Override automatic color detection. Used by ThemeProvider. */
   colorEnabled?: boolean;
@@ -414,6 +686,7 @@ export interface ThemeConfig {
 
 /**
  * Resolve a theme from config.
+ * - `name` (a builtin preset) takes precedence when it resolves to a builtin
  * - 'auto' follows system preference via `prefers-color-scheme`
  * - Named themes resolve from builtins
  * - Overrides are shallow-merged into the base theme
@@ -422,7 +695,10 @@ export function resolveTheme(config?: ThemeConfig): ThemeDefinition {
   const mode = config?.mode ?? "dark";
 
   let themeName: string;
-  if (mode === "auto") {
+  if (config?.name && BUILTIN_THEMES[config.name]) {
+    // Explicit named preset wins over mode.
+    themeName = config.name;
+  } else if (mode === "auto") {
     // Best-effort system preference detection (no deps, no remote)
     themeName = detectSystemTheme();
   } else {
