@@ -41,6 +41,7 @@ export interface AgentOptions {
   effort?: string;
   history?: Message[];
   imageUrls?: string[];
+  planMode?: boolean;
   onText?: (chunk: string) => void;
   onReasoning?: (chunk: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
@@ -67,6 +68,7 @@ export async function runAgent(
     repomap: options.repomap,
     memory: options.memory,
     conversation: userMessage,
+    planMode: options.planMode,
   });
 
   let messages: Message[] = options.history ? [...options.history] : [];

@@ -34,6 +34,7 @@ import PermissionPrompt from "./PermissionPrompt.js";
 import WelcomeScreen from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
+import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
@@ -75,6 +76,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [askQuestionPrompt, setAskQuestionPrompt] = useState<{
     questions: AskQuestionItem[];
     resolve: (answers: Record<string, string> | null) => void;
+  } | null>(null);
+
+  const [planMode, setPlanMode] = useState(false);
+  const [planPrompt, setPlanPrompt] = useState<{
+    planText: string;
+    followUpPrompt: string;
   } | null>(null);
 
   const [showHelp, setShowHelp] = useState(false);
@@ -390,7 +397,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       });
 
       try {
-        const result = await ctx.runAgentTurnCore(input, callbacks, imageUrls);
+        const result = await ctx.runAgentTurnCore(input, callbacks, imageUrls, planMode);
 
         flushOutputQueue();
 
@@ -408,6 +415,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         if (result.stopReason === "done") {
           ctx.mutable.conversationHistory = result.messages;
           await callbacks.onNewMessages(input, result.newMessages);
+        }
+
+        if (planMode) {
+          const lastAssistant = result.newMessages
+            ? [...result.newMessages].reverse().find((m: any) => m.role === "assistant")
+            : undefined;
+          const replyText: string = lastAssistant?.content ?? "";
+          const planMatch = replyText.match(/<proposed_plan>([\s\S]+?)<\/proposed_plan>/);
+          if (planMatch && planMatch[1].trim()) {
+            setPlanPrompt({ planText: planMatch[1].trim(), followUpPrompt: "" });
+          }
         }
 
         announceToScreenReader("Heirloom has finished processing", "polite");
@@ -431,6 +449,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     },
     [ctx, theme],
   );
+
+  function togglePlanMode() {
+    setPlanMode((prev) => !prev);
+    setPlanPrompt(null);
+  }
 
   function handleSlashCommand(trimmed: string) {
     if (trimmed === "/exit") {
@@ -572,6 +595,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (showHelp) return;
     if (showCommandPalette) return;
     if (showModelDropdown) return;
+
+    if (planPrompt) {
+      return;
+    }
 
     if (askQuestionPrompt) {
       return;
@@ -726,6 +753,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {planPrompt && (
+        <PlanImplementationPrompt
+          planText={planPrompt.planText}
+          onImplement={(followUpPrompt) => {
+            setPlanPrompt(null);
+            setPlanMode(false);
+            runAgentTurn(followUpPrompt);
+          }}
+          onStayInPlan={() => {
+            setPlanPrompt(null);
+          }}
+          onSwitchToDefault={() => {
+            setPlanPrompt(null);
+            setPlanMode(false);
+          }}
+        />
+      )}
+
       {showModelDropdown && (
         <ModelsDropdown
           open={showModelDropdown}
@@ -743,30 +788,40 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {!busy && !askPrompt && !askQuestionPrompt && !showModelDropdown && !showHelp && !showCommandPalette && (
-        <PromptInput
-          screenWidth={term.columns}
-          promptHistory={[]}
-          busy={busy}
-          placeholder="Type your message..."
-          onSubmit={({ text, command, imageUrls }) => {
-            if (command) {
-              if (command === "exit") { ctx.logSessionEnd().finally(() => exit()); return; }
-              handleSlashCommand(`/${command}`);
-              return;
-            }
-            if (text.startsWith("/")) {
-              handleSlashCommand(text);
-            } else {
-              runAgentTurn(text, imageUrls);
-            }
-          }}
-          onInterrupt={() => ctx.provideAbortController().abort()}
-          onExitShortcut={() => ctx.logSessionEnd().finally(() => exit())}
-          onModelPickerOpen={() => setShowModelDropdown(true)}
-          statusLineSegments={statusLine}
-          statusLineSeparator=" · "
-        />
+      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showModelDropdown && !showHelp && !showCommandPalette && (
+        <>
+          {planMode && (
+            <Box>
+              <Text color="yellow" dimColor>{colorEnabled ? "\x1b[2m\x1b[33m\uD83D\uDCA1 Plan mode (Shift+Tab to toggle)\x1b[0m" : "\uD83D\uDCA1 Plan mode (Shift+Tab to toggle)"}</Text>
+            </Box>
+          )}
+          <PromptInput
+            screenWidth={term.columns}
+            promptHistory={[]}
+            busy={busy}
+            placeholder="Type your message..."
+            onSubmit={({ text, command, imageUrls }) => {
+              if (command) {
+                if (command === "exit") { ctx.logSessionEnd().finally(() => exit()); return; }
+                handleSlashCommand(`/${command}`);
+                return;
+              }
+              if (text.startsWith("/")) {
+                handleSlashCommand(text);
+              } else if (planMode) {
+                runAgentTurn(text, imageUrls);
+              } else {
+                runAgentTurn(text, imageUrls);
+              }
+            }}
+            onInterrupt={() => ctx.provideAbortController().abort()}
+            onExitShortcut={() => ctx.logSessionEnd().finally(() => exit())}
+            onModelPickerOpen={() => setShowModelDropdown(true)}
+            onTogglePlanMode={() => togglePlanMode()}
+            statusLineSegments={statusLine}
+            statusLineSeparator=" · "
+          />
+        </>
       )}
     </Box>
   );

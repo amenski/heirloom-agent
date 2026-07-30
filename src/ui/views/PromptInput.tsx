@@ -36,11 +36,12 @@ interface Props {
   onInterrupt?: () => void;
   onExitShortcut?: () => void;
   onModelPickerOpen?: () => void;
+  onTogglePlanMode?: () => void;
 }
 
 const PromptInput = React.memo(function PromptInput({
   screenWidth, promptHistory, busy, placeholder, statusLineSegments, statusLineSeparator,
-  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen,
+  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onTogglePlanMode,
 }: Props): React.ReactElement {
   const undoRedoRef = useRef(createPromptUndoRedoState());
   const wasBusyRef = useRef(busy);
@@ -116,6 +117,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "help") { const text = "/help"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "skills") { const text = "/skills"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
+    if (item.kind === "plan") { onTogglePlanMode?.(); return; }
   }
 
   function submitCurrent(): void {
@@ -175,6 +177,11 @@ const PromptInput = React.memo(function PromptInput({
     }
 
     const noMod = !key.shift && !key.ctrl && !key.meta;
+
+    if (key.shift && key.tab) {
+      onTogglePlanMode?.();
+      return;
+    }
 
     if (key.shift && key.return) { updateBuffer((s) => insertText(s, "\n")); return; }
     if (key.return) { submitCurrent(); return; }

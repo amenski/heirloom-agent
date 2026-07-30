@@ -48,39 +48,17 @@ Completed this session:
 
 ---
 
-## 2. Plan mode (Shift+Tab toggle + PlanImplementationPrompt)
+## 2. Plan mode (Shift+Tab toggle + PlanImplementationPrompt) [DONE]
 
-Reference: `src_ui_views_PlanImplementationPrompt.tsx`, plan-mode wiring described in the
-`AskUserQuestion`/App.tsx sections of the research report (§9 in the original report).
-
-- [ ] Add `/plan` to `src/ui/core/slash-commands.ts` `BUILTIN_SLASH_COMMANDS`.
-- [ ] Add `planMode: boolean` state to `App.tsx`. Shift+Tab (in `PromptInput.tsx`'s `useInput`,
-      only when buffer empty or at all times — match deepcode-cli: toggles for the *next*
-      submitted prompt) flips it; `/plan` slash command also toggles it.
-- [ ] Render a banner above `PromptInput` when `planMode` is true: `"💡 Plan mode (shift+tab to
-      cycle)"` (dim/yellow, matches footer style).
-- [ ] When a prompt is submitted with `planMode: true`, tag it so the system prompt instructs the
-      model to end its reply with a `<proposed_plan>...</proposed_plan>` block instead of
-      executing edits directly. (Check `src/prompt.ts` / `src/modes/loader.ts` for where to inject
-      this instruction — likely a mode-like addition, not a full new `ModeConfig`.)
-- [ ] After the turn completes, scan the assistant's final reply for
-      `/<proposed_plan>([\s\S]+?)<\/proposed_plan>/` (non-whitespace content required, matching
-      deepcode-cli's guard against partial/stray tags).
-- [ ] New view `src/ui/views/PlanImplementationPrompt.tsx`: 3 choices —
-      "Implement this plan" / "Stay in Plan mode" / "Switch to Default mode".
-      - Implement: submit a synthetic follow-up prompt. Detect language via CJK punctuation
-        heuristic (deepcode-cli: `实现此方案。` if the plan text contains >5 full-width CJK
-        punctuation marks, else `"Implement the plan."`) — replicate the heuristic function
-        rather than hardcoding English.
-      - Stay in Plan mode: dismiss the prompt, keep `planMode = true`.
-      - Switch to Default: dismiss the prompt, set `planMode = false`.
-
-**Acceptance criteria:**
-- Typing `/plan` or pressing Shift+Tab toggles a visible banner; toggling again removes it.
-- Submitting a prompt while the banner is shown produces a reply containing a
-  `<proposed_plan>` block (verify via a mocked provider in a test, not a live API call).
-- The `PlanImplementationPrompt` appears only when a `<proposed_plan>` block is found, offers all
-  3 choices, and each choice does what's described above.
+Completed:
+- `src/ui/core/slash-commands.ts`: added `plan` to `SlashCommandKind` and `/plan` to `BUILTIN_SLASH_COMMANDS`.
+- `src/ui/views/PromptInput.tsx`: Shift+Tab calls `onTogglePlanMode()`; `/plan` slash selection also triggers toggle.
+- `src/ui/App.tsx`: `planMode` boolean state; toggle function; yellow/dim banner above PromptInput when active.
+- `src/prompt.ts`: `PromptContext.planMode` flag → when true, injects "You are in planning mode. Do NOT execute any tool calls... Your reply must end with <proposed_plan>...</proposed_plan>".
+- `src/agent.ts`: `AgentOptions.planMode` piped to `buildSystemPrompt`.
+- `src/cli.tsx` & `src/ui/types.ts`: `planMode` threaded through `runAgentTurnCore` → `runAgentTurnBridge` → `runAgent`.
+- `src/ui/App.tsx`: after turn completes, scans `result.newMessages` for `<proposed_plan>...</proposed_plan>`, renders `PlanImplementationPrompt` if found.
+- `src/ui/views/PlanImplementationPrompt.tsx`: new view, 3 choices with arrow-key navigation, CJK heuristic for follow-up prompt language.
 - `npx tsc --noEmit` and `npm test` pass.
 
 ---
