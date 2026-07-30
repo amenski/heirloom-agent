@@ -13,6 +13,7 @@ export interface MutableState {
   lastContextTokens: number;
   sessionUserInputs: string[];
   modelUsage?: Record<string, { input: number; output: number }>;
+  posture?: "normal" | "autoApprove" | "plan";
 }
 
 // ── Status Bar ──
@@ -124,6 +125,8 @@ export interface AppContext {
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
   resumeSession?: (sessionId: string) => Promise<boolean>;
   showResumeOnStart?: boolean;
+  /** One-time notice (e.g. "Resumed <id>") shown in the scrollback on mount. */
+  initialNotice?: string;
   restoreCheckpoint?: (hash: string, restoreCode: boolean) => Promise<{ restored: boolean; promptDraft: string }>;
 
   // ── New: Theme & Keybinding support ──

@@ -138,7 +138,8 @@ function StatusBar({
     return text;
   });
 
-  const statusLine = segmentTexts.join("");
+  const sep = dim(" · ");
+  const statusLine = segmentTexts.join(sep);
 
   // Git status (if available)
   let gitStr = "";
@@ -183,48 +184,43 @@ function StatusBar({
       : "* ";
   }
 
-  // Smart truncation based on terminal width
-  const fullText = `${busyStr}${statusLine}${gitStr}${timerStr}${tokenStr}`;
-  const visibleLen = fullText.replace(/\x1b\[[0-9;]*m/g, "").length;
+  // A single status line (no extra horizontal rule \u2014 the input box above already
+  // provides the visual divider). Fixed trailing info (git/timer/tokens) is
+  // always kept; the model/mode/ctx/cost/effort segments fill the remaining
+  // width, and any that don't fit are dropped behind an ellipsis.
+  const cleanLen = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").length;
+  const sepLen = cleanLen(sep);
+  const maxWidth = Math.max(term.columns - 1, 10);
+  const fixedLen = cleanLen(busyStr) + cleanLen(gitStr) + cleanLen(timerStr) + cleanLen(tokenStr);
 
-  // If the status line exceeds terminal width, truncate from the left (remove segments)
-  const maxWidth = Math.max(term.columns - 4, 10);
+  const segBudget = maxWidth - fixedLen;
+  const fullSegLen = cleanLen(statusLine);
 
-  const rule = dim("\u2500".repeat(Math.max(0, Math.min(term.columns, 200))));
-
-  if (visibleLen > maxWidth) {
-    // Truncate the status line by removing middle segments.
-    // Keep the first segments that fit; drop the rest behind an ellipsis.
-    const firstParts: string[] = [];
-    let firstLen = 0;
-    const halfMax = Math.floor((maxWidth - timerStr.length - gitStr.length - tokenStr.length - busyStr.length - 4) / 2);
-
+  let segmentBody: string;
+  if (fullSegLen <= segBudget) {
+    segmentBody = statusLine;
+  } else {
+    const kept: string[] = [];
+    let used = 0;
+    const ellipsisLen = 2; // "\u2026"
     for (const segText of segmentTexts) {
-      const cleanLen = segText.replace(/\x1b\[[0-9;]*m/g, "").length;
-      if (firstLen + cleanLen < halfMax) {
-        firstParts.push(segText);
-        firstLen += cleanLen;
+      const len = cleanLen(segText);
+      const addLen = (kept.length > 0 ? sepLen : 0) + len;
+      if (used + addLen + sepLen + ellipsisLen <= segBudget) {
+        kept.push(segText);
+        used += addLen;
       } else {
         break;
       }
     }
-
-    // Show truncated version with just key info
-    const truncated = `${busyStr}${firstParts.join("")}${dim(" \u2026 ")}${timerStr}${gitStr}${tokenStr}`;
-    return (
-      <Box flexDirection="column">
-        <Text>{rule}</Text>
-        <Text>{truncated}</Text>
-      </Box>
-    );
+    segmentBody = kept.length > 0 ? `${kept.join(sep)}${dim(" \u2026")}` : dim("\u2026");
   }
 
   return (
-    <Box flexDirection="column">
-      <Text>{rule}</Text>
+    <Box>
       <Text>
         {busyStr}
-        {statusLine}
+        {segmentBody}
         {gitStr}
         {timerStr}
         {tokenStr}

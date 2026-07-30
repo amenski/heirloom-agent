@@ -11,10 +11,11 @@
  */
 
 import React, { useMemo, memo } from "react";
-import { Box, Text, Static } from "ink";
+import { Box, Text } from "ink";
 import MarkdownText from "./MarkdownText.js";
 import { isTableBlock } from "./MarkdownTable.js";
 import { useTheme } from "./contexts.js";
+import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
 import type { TabDefinition } from "./types.js";
 
 interface OutputAreaProps {
@@ -69,13 +70,39 @@ const OutputLine = memo(function OutputLine({
 }: {
   line: string;
 }) {
+  const theme = useTheme();
+
+  // A user-echo line (tagged with USER_ECHO_TAG) renders with a blue gutter bar
+  // on the left and plain text — the gutter is what marks input, so assistant
+  // replies can stay plain flush-left text. (A full-width background fill was
+  // tried and read as heavier/noisier, so this uses a subtle left rule instead.)
+  if (line.startsWith(USER_ECHO_TAG)) {
+    const msg = line.slice(USER_ECHO_TAG.length).replace(/\n/g, " ");
+    return (
+      <Box>
+        <Text color={theme.colorEnabled ? "#229ac3" : undefined}>{"▌ "}</Text>
+        <Text>{msg}</Text>
+      </Box>
+    );
+  }
+
+  // A slash-command echo (tagged with COMMAND_ECHO_TAG) renders as a plain dim
+  // "›" line — a lightweight record of what was typed. Unlike the user-echo bar
+  // it gets no background fill, marking it as out-of-band (it makes no model
+  // call and is not counted toward context usage).
+  if (line.startsWith(COMMAND_ECHO_TAG)) {
+    const msg = line.slice(COMMAND_ECHO_TAG.length).replace(/\n/g, " ");
+    return (
+      <Text dimColor>{`› ${msg}`}</Text>
+    );
+  }
+
   const summary = useMemo(() => needsSummary(line), [line]);
 
   if (summary) {
-    const collapsed = summarizeText(line);
     return (
       <Box flexDirection="column">
-        <MarkdownText>{collapsed}</MarkdownText>
+        <MarkdownText>{summarizeText(line)}</MarkdownText>
         <Text dimColor>{summary}</Text>
       </Box>
     );
@@ -142,13 +169,16 @@ function OutputArea({
         </Box>
       )}
 
-      {/* Committed lines (never re-render once committed via <Static>) */}
-      <Static items={mergedLines}>
-        {(item) => <OutputLine key={item.key} line={item.text} />}
-      </Static>
+      {/* Committed lines. Rendered as normal live elements (not Ink's <Static>)
+          so the pinned WelcomeScreen banner can stay above the conversation —
+          <Static> flushes to scrollback above the live frame and would fight the
+          banner for the top rows, eating the first message. */}
+      {mergedLines.map((item) => (
+        <OutputLine key={item.key} line={item.text} />
+      ))}
 
-      {/* Active streaming line */}
-      {activeLine !== "" && !busy && <MarkdownText>{activeLine}</MarkdownText>}
+      {/* Active streaming line (carries the same gutter tag as committed output) */}
+      {activeLine !== "" && !busy && <OutputLine line={activeLine} />}
     </>
   );
 }

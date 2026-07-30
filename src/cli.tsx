@@ -189,6 +189,7 @@ async function main() {
     abort: new AbortController(),
     toolUsage: {} as Record<string, number>,
     modelUsage: {} as Record<string, { input: number; output: number }>,
+    posture: "normal" as "normal" | "autoApprove" | "plan",
   };
 
   async function logSessionEnd() {
@@ -217,9 +218,11 @@ async function main() {
     if (mode) { activeMode = mode; await sessionStore.appendState(sessionId, { mode: parsed.mode }); }
   }
 
-  if (sessionLoaded) {
-    console.log(`Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${activeMode?.slug || "code"}`);
-  }
+  // Shown inside the app's scrollback after mount — printing to stdout here
+  // would get garbled by Ink's first render.
+  const initialNotice = sessionLoaded
+    ? `Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${activeMode?.slug || "code"}`
+    : undefined;
 
   let knownModeSlugs: string[] = [];
   try { knownModeSlugs = (await modeLoader.listAll()).map(m => m.slug); } catch {}
@@ -231,20 +234,17 @@ async function main() {
     let idCounter = 0;
     const nextId = () => `s${++idCounter}`;
 
-    segments.push(dim(nextId(), activeMode?.name ?? "chat"));
-
-    if (permissions.getDefaultMode() === "askAll") {
-      segments.push(T(nextId(), "🔒askAll", { color: "yellow", bold: true }));
+    // Posture indicator (cycled by Shift+Tab), leading the bar.
+    if (shared.posture === "autoApprove") {
+      segments.push(T(nextId(), "⏵⏵ auto-approve (shift+tab)", { color: "yellow", bold: true }));
+    } else if (shared.posture === "plan") {
+      segments.push(T(nextId(), "⏸ plan mode (shift+tab)", { color: "cyan", bold: true }));
+    } else {
+      segments.push(dim(nextId(), "▶ normal (shift+tab)"));
     }
 
     const modelId = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
     segments.push(T(nextId(), `${getProviderLabel(providerName)}/${modelId}`, { bold: true }));
-
-    let cwd = process.cwd();
-    const home = process.env.HOME || process.env.USERPROFILE || "";
-    if (home && cwd.startsWith(home)) cwd = "~" + cwd.slice(home.length);
-    if (cwd.length > 30) { const parts = cwd.split("/"); cwd = "…/" + parts.slice(-2).join("/"); }
-    segments.push(dim(nextId(), cwd));
 
     const ctxPercent = getContextPercent();
     if (ctxPercent !== null) {
@@ -253,16 +253,6 @@ async function main() {
       const ctxText = `${bar} ${Math.round(ctxPercent)}%`;
       const color = ctxPercent >= 95 ? "red" : ctxPercent >= 80 ? "yellow" : undefined;
       segments.push(T(nextId(), `ctx ${ctxText}`, color ? { color } : { dimColor: true }));
-    }
-
-    const costStr = getCostStr();
-    if (costStr) segments.push(dim(nextId(), `$${costStr}`));
-    if (activeEffort) segments.push(T(nextId(), activeEffort, { bold: true }));
-
-    const toolNames = Object.keys(shared.toolUsage);
-    if (toolNames.length > 0) {
-      const top = toolNames.sort((a, b) => (shared.toolUsage[b] ?? 0) - (shared.toolUsage[a] ?? 0)).slice(0, 4);
-      segments.push(dim(nextId(), top.map(t => `${t}×${shared.toolUsage[t]}`).join(" ")));
     }
 
     return segments;
@@ -391,6 +381,7 @@ async function main() {
         return { restored: true, promptDraft: msgMatch ? msgMatch[1] : "" };
       },
       showResumeOnStart: resumeSessionId === true,
+      initialNotice,
       theme: resolvedTheme,
       keybindings: resolvedKeybindings,
       keybindingConfig: resolvedKeybindingConfig,

@@ -30,6 +30,8 @@ export class PermissionEngine {
   private defaultMode: "allowAll" | "askAll";
   private workingDir: string;
   private projectConfigDir: string;
+  /** Session-only override: when true, any scope that would "ask" is auto-allowed. Explicit deny still wins. */
+  private autoApprove = false;
 
   constructor(config?: PermissionConfig, workingDir?: string) {
     this.allow = new Set(config?.allow ?? []);
@@ -42,6 +44,14 @@ export class PermissionEngine {
 
   getDefaultMode(): "allowAll" | "askAll" {
     return this.defaultMode;
+  }
+
+  setAutoApprove(on: boolean): void {
+    this.autoApprove = on;
+  }
+
+  isAutoApprove(): boolean {
+    return this.autoApprove;
   }
 
   classifyScopes(toolName: string, args: Record<string, unknown>): PermissionScope[] {
@@ -141,10 +151,13 @@ export class PermissionEngine {
 
   check(toolName: string, args?: Record<string, unknown>): PermissionAction {
     const scopes = this.classifyScopes(toolName, args ?? {});
-    if (scopes.length === 0) return "ask";
+    // Explicit deny always wins, even in auto-approve mode.
     for (const s of scopes) {
       if (this.deny.has(s)) return "deny";
     }
+    // Auto-approve turns every non-denied call into an allow.
+    if (this.autoApprove) return "allow";
+    if (scopes.length === 0) return "ask";
     for (const s of scopes) {
       if (this.ask.has(s)) return "ask";
     }

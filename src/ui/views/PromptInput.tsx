@@ -17,7 +17,6 @@ import { useHistoryNavigation } from "../hooks/useHistoryNavigation.js";
 import { readClipboardImageAsync } from "../core/clipboard.js";
 import { useTerminalInput, type InputKey } from "../hooks/useTerminalInput.js";
 import SlashCommandMenu from "./SlashCommandMenu.js";
-import type { StatusSegment } from "../types.js";
 
 export type PromptSubmission = {
   text: string;
@@ -29,20 +28,19 @@ interface Props {
   screenWidth: number;
   promptHistory: string[];
   busy: boolean;
+  queuedCount?: number;
   placeholder?: string;
-  statusLineSegments?: StatusSegment[];
   promptDraft?: { nonce: number; text: string } | null;
-  statusLineSeparator?: string;
   onSubmit: (submission: PromptSubmission) => void;
   onInterrupt?: () => void;
   onExitShortcut?: () => void;
   onModelPickerOpen?: () => void;
-  onTogglePlanMode?: () => void;
+  onCyclePosture?: () => void;
 }
 
 const PromptInput = React.memo(function PromptInput({
-  screenWidth, promptHistory, busy, placeholder, statusLineSegments, statusLineSeparator,
-  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onTogglePlanMode,
+  screenWidth, promptHistory, busy, queuedCount = 0, placeholder,
+  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture,
 }: Props): React.ReactElement {
   const undoRedoRef = useRef(createPromptUndoRedoState());
   const wasBusyRef = useRef(busy);
@@ -67,7 +65,10 @@ const PromptInput = React.memo(function PromptInput({
 
   const lastCtrlDAt = useRef<number>(0);
   const inputContentWidth = Math.max(1, screenWidth - PROMPT_PREFIX_WIDTH);
-  const footerText = statusMessage || (busy ? "esc to interrupt · ctrl+c cancel" : "enter send · shift+enter newline · @ files · ctrl+v image · / commands · ctrl+d exit");
+  // Footer shows transient messages (e.g. "press ctrl+d again to exit") or a
+  // busy hint. When idle with nothing transient to say, it stays hidden so the
+  // status bar below is the only line under the input — no permanent hint line.
+  const footerText = statusMessage || (busy ? "working… · type to queue a follow-up · esc to interrupt" : "");
 
   useEffect(() => {
     if (!statusMessage) return;
@@ -99,11 +100,15 @@ const PromptInput = React.memo(function PromptInput({
 
   function updateBuffer(updater: (state: PromptBufferState) => PromptBufferState): void {
     exitHistoryBrowsing();
-    setBuffer((current) => {
-      const next = updater(current);
-      recordPromptEdit(undoRedoRef.current, current, next);
-      return next;
-    });
+    // bufferRef is the synchronous source of truth: a single stdin chunk can
+    // carry many keys (e.g. paste + Enter), all handled before React re-renders.
+    // setState updaters are deferred by React, so applying the edit against the
+    // ref (not inside the updater) keeps same-tick reads coherent.
+    const current = bufferRef.current;
+    const next = updater(current);
+    recordPromptEdit(undoRedoRef.current, current, next);
+    bufferRef.current = next;
+    setBuffer(next);
   }
 
   function handleSlashSelection(item: SlashCommandItem): void {
@@ -118,15 +123,18 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "help") { const text = "/help"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "skills") { const text = "/skills"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
-    if (item.kind === "plan") { onTogglePlanMode?.(); return; }
+    if (item.kind === "plan") { onCyclePosture?.(); return; }
     if (item.kind === "raw") { const text = "/raw"; setBuffer({ text, cursor: text.length }); return; }
   }
 
   function submitCurrent(): void {
-    if (busy) { setStatusMessage("wait for response or press esc"); return; }
-    const trimmed = buffer.text.trim();
+    const trimmed = bufferRef.current.text.trim();
     if (!trimmed) return;
-    if (trimmed.startsWith("/")) {
+    // While busy we still submit — App enqueues it to run after the current
+    // turn. Slash commands that open a modal view (model picker, etc.) are the
+    // exception: those don't make sense to fire mid-turn, so route them through
+    // onSubmit as text and let App decide (it queues them).
+    if (!busy && trimmed.startsWith("/")) {
       const exactMatch = findExactSlashCommand(slashItems, trimmed.split(/\s+/, 1)[0]);
       if (exactMatch) { handleSlashSelection(exactMatch); return; }
     }
@@ -136,9 +144,11 @@ const PromptInput = React.memo(function PromptInput({
   }
 
   function resetInput(): void {
+    bufferRef.current = EMPTY_BUFFER;
     setBuffer(EMPTY_BUFFER);
     clearPromptUndoRedoState(undoRedoRef.current);
     setAttachedImages([]);
+    attachedImagesRef.current = [];
   }
 
   useTerminalInput((key: InputKey) => {
@@ -150,12 +160,17 @@ const PromptInput = React.memo(function PromptInput({
       return;
     }
 
-    if (busy) {
-      if (key.escape || (key.ctrl && key.value === "c")) { onInterrupt?.(); setStatusMessage("Interrupting…"); }
+    // While busy, Esc (or Ctrl+C on an empty buffer) interrupts the running
+    // turn. Everything else falls through so the user can keep typing and queue
+    // follow-up messages. When idle, Esc also interrupts (no-op if nothing runs).
+    if (key.escape) {
+      if (busy) { onInterrupt?.(); setStatusMessage("Interrupting…"); return; }
+      onInterrupt?.();
       return;
     }
-
-    if (key.escape) { onInterrupt?.(); return; }
+    if (busy && key.ctrl && key.value === "c" && isEmpty(curText)) {
+      onInterrupt?.(); setStatusMessage("Interrupting…"); return;
+    }
 
     if (key.ctrl && key.value === "d") {
       if (isEmpty(curText)) {
@@ -187,7 +202,7 @@ const PromptInput = React.memo(function PromptInput({
     const noMod = !key.shift && !key.ctrl && !key.meta;
 
     if (key.shift && key.tab) {
-      onTogglePlanMode?.();
+      onCyclePosture?.();
       return;
     }
 
@@ -241,7 +256,7 @@ const PromptInput = React.memo(function PromptInput({
       return;
     }
 
-    if (key.value) {
+    if (key.value && !key.ctrl && !key.meta) {
       const sanitized = key.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       updateBuffer((s) => insertText(s, sanitized));
     }
@@ -259,7 +274,7 @@ const PromptInput = React.memo(function PromptInput({
         borderDimColor
       >
         <Box width={PROMPT_PREFIX_WIDTH}>
-          <Text color="#229ac3">{"> "}</Text>
+          <Text color="#229ac3">{"▌ "}</Text>
         </Box>
         <Box flexGrow={1} flexShrink={1} width={inputContentWidth}>
           <Text wrap="hard">
@@ -271,31 +286,11 @@ const PromptInput = React.memo(function PromptInput({
       {attachedImages.length > 0 && (
         <Box><Text color="yellow">📎 {attachedImages.length} image{attachedImages.length === 1 ? "" : "s"} attached (ctrl+x to clear)</Text></Box>
       )}
-      {!showMenu && !(statusLineSegments && statusLineSegments.length > 0) && (
-        <Box><Text dimColor>{footerText}</Text></Box>
+      {queuedCount > 0 && (
+        <Box><Text color="magenta" dimColor>⏳ {queuedCount} message{queuedCount === 1 ? "" : "s"} queued</Text></Box>
       )}
-      {statusLineSegments && statusLineSegments.length > 0 && (
-        <Box flexDirection="column">
-          {(() => {
-            const lines: StatusSegment[][] = [];
-            let currentLine: StatusSegment[] = [];
-            for (const segment of statusLineSegments) {
-              if (segment.newLine && currentLine.length > 0) { lines.push(currentLine); currentLine = []; }
-              currentLine.push(segment);
-            }
-            if (currentLine.length > 0) lines.push(currentLine);
-            return lines.map((line, lineIndex) => (
-              <Box key={lineIndex}>
-                {line.map((seg, i) => (
-                  <React.Fragment key={seg.id ?? i}>
-                    {i > 0 && <Text dimColor>{statusLineSeparator ?? " · "}</Text>}
-                    <Text color={seg.color as any} dimColor={!seg.color}>{seg.text}</Text>
-                  </React.Fragment>
-                ))}
-              </Box>
-            ));
-          })()}
-        </Box>
+      {!showMenu && footerText !== "" && (
+        <Box><Text dimColor>{footerText}</Text></Box>
       )}
     </Box>
   );

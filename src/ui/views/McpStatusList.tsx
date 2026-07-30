@@ -57,7 +57,7 @@ export default function McpStatusList({ onClose, width }: Props) {
       return;
     }
 
-    if (value === "r" && !key.ctrl && !key.meta) {
+    if ((value === "r" || value === "R") && !key.ctrl && !key.meta) {
       const s = servers[selectedIdx];
       if (s && s.status === "failed") {
         const configs = getServerConfigs();

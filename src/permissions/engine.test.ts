@@ -112,6 +112,30 @@ describe("PermissionEngine", () => {
     });
   });
 
+  describe("autoApprove", () => {
+    it("turns a would-be ask into allow", () => {
+      engine = new PermissionEngine({ ask: ["network"], defaultMode: "askAll" }, "/workspace");
+      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("ask");
+      engine.setAutoApprove(true);
+      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
+    });
+
+    it("still honors explicit deny", () => {
+      engine = new PermissionEngine({ deny: ["network"] }, "/workspace");
+      engine.setAutoApprove(true);
+      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("deny");
+    });
+
+    it("can be toggled back off", () => {
+      engine = new PermissionEngine({ defaultMode: "askAll" }, "/workspace");
+      engine.setAutoApprove(true);
+      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("allow");
+      engine.setAutoApprove(false);
+      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("ask");
+      expect(engine.isAutoApprove()).toBe(false);
+    });
+  });
+
   describe("getDefaultMode", () => {
     it("returns allowAll by default", () => {
       expect(engine.getDefaultMode()).toBe("allowAll");
