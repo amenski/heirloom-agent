@@ -85,7 +85,7 @@ class RateLimitError extends Error {
   }
 }
 
-async function runSource(source: Exclude<Source, "auto">, query: string, limit: number, ctx: ToolContext): Promise<DocsResult[] | { rateLimited: true }> {
+async function runSource(source: Exclude<Source, "auto">, query: string, limit: number, ctx: ToolContext): Promise<DocsResult[] | { rateLimited: true } | { noSuchPackage: string }> {
   try {
     switch (source) {
       case "github":
@@ -103,6 +103,7 @@ async function runSource(source: Exclude<Source, "auto">, query: string, limit: 
     }
   } catch (err) {
     if (err instanceof RateLimitError) return { rateLimited: true };
+    if (err instanceof NoSuchPackageError) return { noSuchPackage: query };
     throw err;
   }
 }
@@ -178,12 +179,18 @@ async function searchNpm(query: string, limit: number, ctx: ToolContext): Promis
   });
 }
 
+class NoSuchPackageError extends Error {
+  constructor(pkg: string) {
+    super(`no such package "${pkg}"`);
+  }
+}
+
 async function searchPypi(query: string, ctx: ToolContext): Promise<DocsResult[]> {
   const name = encodeURIComponent(query.trim());
   try {
     const data = await fetchJson(`https://pypi.org/pypi/${name}/json`, ctx);
     const info = (data as { info?: { name?: string; version?: string; summary?: string; package_url?: string } })?.info;
-    if (!info) return [];
+    if (!info) throw new NoSuchPackageError(query);
     return [
       {
         source: "pypi",
@@ -195,7 +202,7 @@ async function searchPypi(query: string, ctx: ToolContext): Promise<DocsResult[]
     ];
   } catch (err) {
     if (err instanceof Error && /status 404/.test(err.message)) {
-      return [];
+      throw new NoSuchPackageError(query);
     }
     throw err;
   }
@@ -232,7 +239,7 @@ async function searchWikipedia(query: string, ctx: ToolContext): Promise<DocsRes
   }));
 }
 
-function formatResults(results: DocsResult[], rateLimitedSources: string[]): string {
+function formatResults(results: DocsResult[], rateLimitedSources: string[], notices: string[] = []): string {
   const lines: string[] = [];
   for (const r of results) {
     const metaPart = r.meta ? ` (${r.meta})` : "";
@@ -241,6 +248,9 @@ function formatResults(results: DocsResult[], rateLimitedSources: string[]): str
   }
   for (const src of rateLimitedSources) {
     lines.push(`docs_search: ${src} rate-limited, try later or a different source.`);
+  }
+  for (const notice of notices) {
+    lines.push(notice);
   }
   if (lines.length === 0) return "No results found.";
 
@@ -269,17 +279,20 @@ const docsSearchHandler: ToolHandler = async (args, ctx) => {
 
     const results: DocsResult[] = [];
     const rateLimited: string[] = [];
+    const notices: string[] = [];
     for (let i = 0; i < outcomes.length; i++) {
       const outcome = outcomes[i];
       if (outcome && typeof outcome === "object" && "rateLimited" in outcome) {
         rateLimited.push(sourcesToRun[i]);
+      } else if (outcome && typeof outcome === "object" && "noSuchPackage" in outcome) {
+        notices.push(`docs_search: no such package "${outcome.noSuchPackage}".`);
       } else {
         results.push(...(outcome as DocsResult[]));
       }
     }
 
     const capped = results.slice(0, limit);
-    return { content: formatResults(capped, rateLimited) };
+    return { content: formatResults(capped, rateLimited, notices) };
   } catch (err) {
     if (err instanceof RateLimitError) {
       return { content: `docs_search: ${source} rate-limited, try later or a different source.` };

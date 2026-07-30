@@ -158,6 +158,24 @@ adapter file (provider-spec.md).
 4. Global config (`~/.heirloom/config.yaml`)
 5. Built-in defaults
 
+## Web Search
+
+Heirloom ships the built-in `docs_search` tool for developer-documentation
+sources (GitHub, Stack Overflow, package registries, Wikipedia — see
+web-search-spec.md tier 1). For **general** web search, add a search MCP
+server of your choosing under `mcpServers`; it is gated by the existing
+`mcp__*` permission rules. Heirloom ships and endorses none.
+
+```jsonc
+{
+  "mcpServers": {
+    "websearch": { "command": "npx", "args": ["-y", "<search-mcp-server-of-your-choice>"] }
+  }
+}
+```
+
+The old `webSearchTool` script-path key is deprecated (see below).
+
 ## Deprecated Keys
 
 | Key | Status | Replacement |
