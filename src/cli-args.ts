@@ -2,7 +2,13 @@ import type { Argv } from "yargs";
 import Yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
-const SESSION_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Matches the IDs generateId() produces in src/sessions/store.ts:
+// toISOString() with ":" and "." stripped, sliced to 15 chars, then "-<4hex>".
+// That 15-char prefix keeps the date dashes and stops after the minutes, so the
+// real shape is "YYYY-MM-DDThhmm-<4hex>", e.g. "2026-07-30T2358-15a3".
+// Legacy UUID IDs are intentionally not accepted: the app has never generated
+// them, so no resumable session file on disk uses that shape.
+const SESSION_ID_REGEX = /^\d{4}-\d{2}-\d{2}T\d{4}-[0-9a-f]{4}$/;
 
 export function isValidSessionId(value: string): boolean {
   return SESSION_ID_REGEX.test(value);
@@ -72,7 +78,7 @@ async function configureYargs(argv?: string[]) {
           if (argv["resume"] === "" && prompt) return "Cannot use --resume without a session ID together with --prompt.";
           if (argv["last"] === true && argv["resume"] !== undefined) return "Cannot use --last together with --resume.";
           if (argv["resume"] && argv["resume"] !== "" && !isValidSessionId(argv["resume"] as string))
-            return `Invalid session ID: "${argv["resume"]}". Must be a valid UUID.`;
+            return `Invalid session ID: "${argv["resume"]}". Expected the form <timestamp>-<hex>, e.g. 2026-07-30T2358-15a3.`;
           if (prompt !== undefined && prompt.trim() === "") return "--prompt / -p requires a non-empty value.";
           if (exec && (prompt === undefined || prompt.trim() === "")) return "--exec / -x requires a non-empty --prompt / -p value.";
           return true;
