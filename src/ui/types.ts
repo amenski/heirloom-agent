@@ -123,6 +123,7 @@ export interface AppContext {
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
   resumeSession?: (sessionId: string) => Promise<boolean>;
   showResumeOnStart?: boolean;
+  restoreCheckpoint?: (hash: string, restoreCode: boolean) => Promise<{ restored: boolean; promptDraft: string }>;
 
   // ── New: Theme & Keybinding support ──
   theme?: ThemeContextValue;

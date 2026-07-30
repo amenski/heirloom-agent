@@ -36,6 +36,7 @@ import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
+import UndoSelector from "./views/UndoSelector.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
@@ -85,6 +86,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     followUpPrompt: string;
   } | null>(null);
   const [showSessionList, setShowSessionList] = useState(false);
+  const [showUndoSelector, setShowUndoSelector] = useState(false);
+  const [promptDraft, setPromptDraft] = useState<{ nonce: number; text: string } | null>(null);
+  const draftNonceRef = useRef(0);
 
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -477,6 +481,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowSessionList(true);
       return;
     }
+    if (trimmed === "/undo") {
+      setShowUndoSelector(true);
+      return;
+    }
     ctx.handleSlash(trimmed).then((lines) => {
       for (const line of lines) pushOutput(line);
       setStatusLine(ctx.buildStatusBar());
@@ -614,6 +622,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
 
     if (showSessionList) {
+      return;
+    }
+
+    if (showUndoSelector) {
       return;
     }
 
@@ -806,6 +818,30 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showUndoSelector && (
+        <UndoSelector
+          checkpoints={(ctx.checkpoints?.list() as any[]) ?? []}
+          onRestore={async (hash, restoreCode) => {
+            if (ctx.restoreCheckpoint) {
+              const result = await ctx.restoreCheckpoint(hash, restoreCode);
+              if (result.restored) {
+                setShowUndoSelector(false);
+                setOutputLines([]);
+                if (result.promptDraft) {
+                  draftNonceRef.current += 1;
+                  setPromptDraft({ nonce: draftNonceRef.current, text: result.promptDraft });
+                }
+              }
+              return result;
+            }
+            return { restored: false, promptDraft: "" };
+          }}
+          onClose={() => setShowUndoSelector(false)}
+          width={term.columns}
+          height={term.rows}
+        />
+      )}
+
       {showModelDropdown && (
         <ModelsDropdown
           open={showModelDropdown}
@@ -823,7 +859,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showModelDropdown && !showHelp && !showCommandPalette && (
+      {!busy && !askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showModelDropdown && !showHelp && !showCommandPalette && (
         <>
           {planMode && (
             <Box>
@@ -835,6 +871,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             promptHistory={[]}
             busy={busy}
             placeholder="Type your message..."
+            promptDraft={promptDraft}
             onSubmit={({ text, command, imageUrls }) => {
               if (command) {
                 if (command === "exit") { ctx.logSessionEnd().finally(() => exit()); return; }

@@ -118,6 +118,18 @@ export class CheckpointManager {
     return { restored: true, checkpointHash: hash };
   }
 
+  async restoreFrom(hash: string): Promise<{ restored: boolean; checkpointHash?: string }> {
+    this.initialize();
+
+    try {
+      this.git(`checkout ${hash} -- .`);
+    } catch {
+      return { restored: false };
+    }
+
+    return { restored: true, checkpointHash: hash };
+  }
+
   list(): CheckpointEntry[] {
     this.initialize();
 
