@@ -14,7 +14,8 @@ export type PermissionScope =
   | "query-git-log"
   | "mutate-git-log"
   | "network"
-  | "mcp";
+  | "mcp"
+  | "scan";
 
 export interface PermissionConfig {
   allow?: PermissionScope[];
@@ -34,10 +35,16 @@ export class PermissionEngine {
   private autoApprove = false;
 
   constructor(config?: PermissionConfig, workingDir?: string) {
-    this.allow = new Set(config?.allow ?? []);
+    // No config at all, or a config that omits `allow`, means the user never
+    // stated an allow list: seed a safe default (read-in-cwd only) rather than
+    // leaving everything to ask. If the user explicitly provided `allow`
+    // (even `[]`), honor it verbatim — don't inject anything.
+    this.allow = new Set(config?.allow ?? ["read-in-cwd"]);
     this.deny = new Set(config?.deny ?? []);
     this.ask = new Set(config?.ask ?? []);
-    this.defaultMode = config?.defaultMode ?? "allowAll";
+    // Same precedence for defaultMode: only fall back to "askAll" when the
+    // user didn't set one. An explicit defaultMode is always honored.
+    this.defaultMode = config?.defaultMode ?? "askAll";
     this.workingDir = workingDir ?? process.cwd();
     this.projectConfigDir = join(this.workingDir, ".deepcode");
   }
@@ -77,9 +84,11 @@ export class PermissionEngine {
       }
 
       case "list_files":
+        return ["read-in-cwd"];
+
       case "glob":
       case "search":
-        return ["read-in-cwd"];
+        return ["scan"];
 
       case "run_bash":
         return this.classifyBashScopes(cmd);
@@ -157,6 +166,10 @@ export class PermissionEngine {
     }
     // Auto-approve turns every non-denied call into an allow.
     if (this.autoApprove) return "allow";
+
+    // scan (glob/search) always asks unless explicitly allowed
+    if (scopes.includes("scan") && !this.allow.has("scan")) return "ask";
+
     if (scopes.length === 0) return "ask";
     for (const s of scopes) {
       if (this.ask.has(s)) return "ask";

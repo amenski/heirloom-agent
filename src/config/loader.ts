@@ -44,7 +44,7 @@ export interface PermissionConfig {
   deny?: PermissionScope[];
   /** Scopes to always ask */
   ask?: PermissionScope[];
-  /** Default mode for unlisted scopes: "allowAll" or "askAll" (default "allowAll") */
+  /** Default mode for unlisted scopes: "allowAll" or "askAll" (default "askAll") */
   defaultMode?: "allowAll" | "askAll";
 }
 

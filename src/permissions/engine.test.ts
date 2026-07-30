@@ -29,9 +29,14 @@ describe("PermissionEngine", () => {
       expect(scopes).toEqual(["write-out-cwd"]);
     });
 
-    it("classifies glob as read-in-cwd", () => {
+    it("classifies glob as scan", () => {
       const scopes = engine.classifyScopes("glob", { pattern: "**/*.ts" });
-      expect(scopes).toEqual(["read-in-cwd"]);
+      expect(scopes).toEqual(["scan"]);
+    });
+
+    it("classifies search as scan", () => {
+      const scopes = engine.classifyScopes("search", { pattern: "foo", dir: "/workspace" });
+      expect(scopes).toEqual(["scan"]);
     });
 
     it("classifies mcp__* as mcp", () => {
@@ -96,9 +101,9 @@ describe("PermissionEngine", () => {
       expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("allow");
     });
 
-    it("asks unlisted scopes with defaultMode askAll", () => {
+    it("asks unlisted scopes with defaultMode askAll (out-of-cwd read)", () => {
       engine = new PermissionEngine({ defaultMode: "askAll" }, "/workspace");
-      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("ask");
+      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("ask");
     });
 
     it("deny takes priority over allow", () => {
@@ -109,6 +114,102 @@ describe("PermissionEngine", () => {
     it("ask takes priority over default allow", () => {
       engine = new PermissionEngine({ ask: ["network"], defaultMode: "allowAll" }, "/workspace");
       expect(engine.check("run_bash", { command: "curl example.com" })).toBe("ask");
+    });
+
+    it("asks for glob/search by default (scan scope)", () => {
+      engine = new PermissionEngine({ defaultMode: "allowAll" }, "/workspace");
+      expect(engine.check("glob", { pattern: "**/*.ts" })).toBe("ask");
+      expect(engine.check("search", { pattern: "foo" })).toBe("ask");
+    });
+
+    it("allows glob/search when scan is in allow set", () => {
+      engine = new PermissionEngine({ allow: ["scan"], defaultMode: "allowAll" }, "/workspace");
+      expect(engine.check("glob", { pattern: "**/*.ts" })).toBe("allow");
+      expect(engine.check("search", { pattern: "foo" })).toBe("allow");
+    });
+  });
+
+  describe("default posture with no config on disk", () => {
+    it("allows read_file in cwd by default", () => {
+      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("allow");
+    });
+
+    it("allows list_files (read-in-cwd) by default", () => {
+      expect(engine.check("list_files", { path: "/workspace" })).toBe("allow");
+    });
+
+    it("allows load_skill (read-in-cwd) by default", () => {
+      expect(engine.check("load_skill", {})).toBe("allow");
+    });
+
+    it("asks for read_file out of cwd by default", () => {
+      expect(engine.check("read_file", { path: "/etc/passwd" })).toBe("ask");
+    });
+
+    it("asks for write_to_file in cwd by default", () => {
+      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("ask");
+    });
+
+    it("asks for edit out of cwd by default", () => {
+      expect(engine.check("edit", { path: "/etc/config" })).toBe("ask");
+    });
+
+    it("asks for rm in cwd (delete-in-cwd) by default", () => {
+      expect(engine.check("run_bash", { command: "rm -rf node_modules" })).toBe("ask");
+    });
+
+    it("asks for glob/search (scan) by default", () => {
+      expect(engine.check("glob", { pattern: "**/*.ts" })).toBe("ask");
+      expect(engine.check("search", { pattern: "foo" })).toBe("ask");
+    });
+
+    it("asks for network commands by default", () => {
+      expect(engine.check("run_bash", { command: "curl https://example.com" })).toBe("ask");
+    });
+
+    it("asks for mcp tools by default", () => {
+      expect(engine.check("mcp__filesystem", {})).toBe("ask");
+    });
+
+    it("asks for git log (query-git-log) by default", () => {
+      expect(engine.check("run_bash", { command: "git log --oneline" })).toBe("ask");
+    });
+
+    it("asks for git commit (mutate-git-log) by default", () => {
+      expect(engine.check("run_bash", { command: "git commit -m test" })).toBe("ask");
+    });
+
+    it("asks for unknown/empty-scope tools by default", () => {
+      expect(engine.check("unknown_tool", {})).toBe("ask");
+    });
+  });
+
+  describe("explicit config precedence", () => {
+    it("honors an explicit empty allow array verbatim (no read-in-cwd auto-injection)", () => {
+      engine = new PermissionEngine({ allow: [] }, "/workspace");
+      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("ask");
+    });
+
+    it("honors an explicit non-empty allow array verbatim (does not add read-in-cwd)", () => {
+      engine = new PermissionEngine({ allow: ["network"] }, "/workspace");
+      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("ask");
+      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
+    });
+
+    it("honors an explicit defaultMode allowAll even with no allow list given", () => {
+      engine = new PermissionEngine({ defaultMode: "allowAll" }, "/workspace");
+      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("allow");
+    });
+
+    it("deny still wins over the default read-in-cwd allow", () => {
+      engine = new PermissionEngine({ deny: ["read-in-cwd"] }, "/workspace");
+      expect(engine.check("read_file", { path: "/workspace/src/main.ts" })).toBe("deny");
+    });
+
+    it("autoApprove still overrides the default ask-everything posture", () => {
+      engine.setAutoApprove(true);
+      expect(engine.check("write_to_file", { path: "/workspace/test.txt" })).toBe("allow");
+      expect(engine.check("run_bash", { command: "curl example.com" })).toBe("allow");
     });
   });
 
@@ -137,8 +238,8 @@ describe("PermissionEngine", () => {
   });
 
   describe("getDefaultMode", () => {
-    it("returns allowAll by default", () => {
-      expect(engine.getDefaultMode()).toBe("allowAll");
+    it("returns askAll by default", () => {
+      expect(engine.getDefaultMode()).toBe("askAll");
     });
 
     it("returns askAll when configured", () => {
