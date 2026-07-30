@@ -206,6 +206,94 @@ describe("SessionStore", () => {
     });
   });
 
+  describe("permission audit — new agent-side vocabulary", () => {
+    it("records each agent-emitted decision value with a reason and returns them in order", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+
+      await store.appendPermission(id, { tool: "read_file", subject: "./a.ts", decision: "allow-by-rule", reason: "allow rule matched (config)" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "npm test", decision: "ask-approved", reason: "approved by user" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "curl evil.com", decision: "ask-denied", reason: "denied by user at prompt" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "rm -rf /", decision: "deny-by-rule", reason: "deny rule matched (builtin-destructive)" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "make", decision: "headless-deny", reason: "headless" });
+      await store.appendPermission(id, { tool: "run_bash", subject: "a && b | c", decision: "unresolved-ask", reason: "unresolved bash segment" });
+      await store.appendPermission(id, { tool: "edit", subject: "./x.ts", decision: "allow-by-posture", reason: "auto-approve posture" });
+
+      const history = await store.queryPermissionHistory(id);
+      expect(history.map((r) => r.decision)).toEqual([
+        "allow-by-rule", "ask-approved", "ask-denied", "deny-by-rule", "headless-deny", "unresolved-ask", "allow-by-posture",
+      ]);
+      expect(history[0].reason).toBe("allow rule matched (config)");
+    });
+
+    it("redacts secrets in the reason field too", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendPermission(id, {
+        tool: "run_bash",
+        subject: "curl example.com",
+        decision: "ask-approved",
+        reason: "approved; user had token=abcdefghijklmnopqrstuvwx12345 in scrollback",
+      });
+      const history = await store.queryPermissionHistory(id);
+      expect(history[0].reason).not.toContain("abcdefghijklmnopqrstuvwx12345");
+      expect(history[0].reason).toContain("[redacted-token]");
+    });
+  });
+
+  describe("token usage audit", () => {
+    it("records token rows and computes remaining on read", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+
+      await store.appendToken(id, { turnTokens: 140, totalUsed: 500, budgetMax: 200000 });
+      await store.appendToken(id, { turnTokens: 270, totalUsed: 1200, budgetMax: 200000 });
+
+      const usage = await store.queryTokenUsage(id);
+      expect(usage).toHaveLength(2);
+      expect(usage[0]).toMatchObject({ turnTokens: 140, totalUsed: 500, budgetMax: 200000, remaining: 199500 });
+      expect(usage[1].remaining).toBe(198800);
+      expect(usage[0].at).toBeTruthy();
+    });
+
+    it("returns an empty array for a session with no token records", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendMessage(id, { role: "user", content: "hi" });
+      expect(await store.queryTokenUsage(id)).toEqual([]);
+    });
+
+    it("returns an empty array for a nonexistent session", async () => {
+      expect(await store.queryTokenUsage("nonexistent")).toEqual([]);
+    });
+
+    it("token records are ignored by load() and don't corrupt messages", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendMessage(id, { role: "user", content: "hi" });
+      await store.appendToken(id, { turnTokens: 10, totalUsed: 10, budgetMax: 128000 });
+      await store.appendMessage(id, { role: "assistant", content: "ok" });
+
+      const loaded = await store.load(id);
+      expect(loaded!.messages).toHaveLength(2);
+    });
+  });
+
+  describe("old-session resume compatibility", () => {
+    it("loads a legacy session that predates permission/token rows", async () => {
+      // Simulate an on-disk session written before this feature existed: only
+      // meta + message + state records, no permission/token rows at all.
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "ask" });
+      await store.appendMessage(id, { role: "user", content: "old message" });
+      await store.appendState(id, { model: "gpt-4o" });
+      await store.appendMessage(id, { role: "assistant", content: "old reply" });
+
+      const loaded = await store.load(id);
+      expect(loaded).not.toBeNull();
+      expect(loaded!.messages).toHaveLength(2);
+      expect(loaded!.meta.model).toBe("gpt-4o");
+
+      // The new read-side queries must return empty, not throw, on such sessions.
+      expect(await store.queryPermissionHistory(id)).toEqual([]);
+      expect(await store.queryTokenUsage(id)).toEqual([]);
+    });
+  });
+
   describe("torn last line", () => {
     it("drops torn final line and loads remaining records", async () => {
       const id = await store.create({
