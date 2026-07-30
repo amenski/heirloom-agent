@@ -21,6 +21,8 @@ import {
   useTerminalInfo,
   AccessibilityProvider,
   useAccessibility,
+  RawModeProvider,
+  useRawMode,
 } from "./contexts.js";
 import ErrorBoundary from "./ErrorBoundary.js";
 import HelpOverlay from "./HelpOverlay.js";
@@ -50,12 +52,14 @@ import {
   lookupAction,
 } from "./keybindings.js";
 import { announceToScreenReader } from "./Accessibility.js";
+import { buildExitSummaryText, buildResumeHintText } from "./exit-summary.js";
 
 function InnerApp({ ctx }: { ctx: AppContext }) {
   const { exit } = useApp();
   const theme = useTheme();
   const accessibility = useAccessibility();
   const bindings = useKeybindings();
+  const rawMode = useRawMode();
 
   const [outputLines, setOutputLines] = useState<string[]>([]);
   const [activeLine, setActiveLine] = useState("");
@@ -246,15 +250,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   }, []);
 
   function pushOutput(line: string) {
-    setOutputLines((prev) => [...prev, line]);
+    if (rawMode.mode === "raw") {
+      process.stdout.write(line + "\n");
+    } else {
+      setOutputLines((prev) => [...prev, line]);
+    }
   }
 
   const runAgentTurn = useCallback(
     async (input: string, imageUrls?: string[]) => {
       if (!input.trim()) return;
 
-      const scheduleOutput = (line: string) =>
-        outputQueueRef.current.push(line);
+      const scheduleOutput = (line: string) => {
+        if (rawMode.mode === "raw") {
+          process.stdout.write(line + "\n");
+        } else {
+          outputQueueRef.current.push(line);
+        }
+      };
 
       setActiveLineBoth("");
       setBusy(true);
@@ -272,9 +285,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         const { buffer, flushed } = reasoningRef.current;
         if (flushed || !buffer.trim()) return;
         reasoningRef.current.flushed = true;
-        const summary = buffer.trim().replace(/\s+/g, " ").slice(0, 100);
-        const line = theme.colorEnabled ? `\x1b[2m✱ ${summary}\x1b[0m` : `✱ ${summary}`;
-        scheduleOutput(line);
+        if (rawMode.mode === "normal") {
+          const line = theme.colorEnabled ? `\x1b[2m✱ ${buffer.trim()}\x1b[0m` : `✱ ${buffer.trim()}`;
+          scheduleOutput(line);
+        } else {
+          const summary = buffer.trim().replace(/\s+/g, " ").slice(0, 100);
+          const line = theme.colorEnabled ? `\x1b[2m✱ ${summary}\x1b[0m` : `✱ ${summary}`;
+          scheduleOutput(line);
+        }
       }
 
       const callbacks = {
@@ -462,7 +480,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         setStatusLine(ctx.buildStatusBar());
       }
     },
-    [ctx, theme],
+    [ctx, theme, rawMode],
   );
 
   function togglePlanMode() {
@@ -472,7 +490,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   function handleSlashCommand(trimmed: string) {
     if (trimmed === "/exit") {
-      ctx.logSessionEnd().finally(() => exit());
+      handleExit();
       return;
     }
     if (trimmed === "/model") {
@@ -489,6 +507,18 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
     if (trimmed === "/mcp") {
       setShowMcpStatus(true);
+      return;
+    }
+    if (trimmed.startsWith("/raw")) {
+      const arg = trimmed.slice(4).trim();
+      if (arg === "normal") rawMode.setMode("normal");
+      else if (arg === "raw" || arg === "raw-scrollback") rawMode.setMode("raw");
+      else {
+        const next = rawMode.mode === "lite" ? "normal" : rawMode.mode === "normal" ? "raw" : "lite";
+        rawMode.setMode(next);
+        pushOutput(`Display mode: ${next}`);
+      }
+      setStatusLine(ctx.buildStatusBar());
       return;
     }
     ctx.handleSlash(trimmed).then((lines) => {
@@ -518,7 +548,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         label: "/exit",
         description: "Exit the CLI",
         category: "command",
-        execute: () => ctx.logSessionEnd().finally(() => exit()),
+        execute: () => handleExit(),
       },
       {
         id: "cmd-cost",
@@ -619,6 +649,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   }
 
   useInput((value: string, key: any) => {
+    if (rawMode.mode === "raw") {
+      if (key.escape) {
+        rawMode.setMode("lite");
+        pushOutput("[exited raw mode]");
+        return;
+      }
+      if (key.ctrl && key.name === "c") {
+        ctx.provideAbortController().abort();
+        return;
+      }
+      return;
+    }
+
     if (showHelp) return;
     if (showCommandPalette) return;
     if (showModelDropdown) return;
@@ -732,6 +775,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
   });
+
+  function handleExit() {
+    const usage = ctx.mutable.modelUsage;
+    if (usage && Object.keys(usage).length > 0) {
+      pushOutput(buildExitSummaryText(usage as Record<string, { input: number; output: number }>));
+    }
+    pushOutput(buildResumeHintText(ctx.sessionId, colorEnabled));
+    ctx.logSessionEnd().finally(() => exit());
+  }
 
   const promptStr = ctx.getPromptStr();
   const colorEnabled = theme.colorEnabled;
@@ -891,7 +943,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             promptDraft={promptDraft}
             onSubmit={({ text, command, imageUrls }) => {
               if (command) {
-                if (command === "exit") { ctx.logSessionEnd().finally(() => exit()); return; }
+                if (command === "exit") { handleExit(); return; }
                 handleSlashCommand(`/${command}`);
                 return;
               }
@@ -904,7 +956,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               }
             }}
             onInterrupt={() => ctx.provideAbortController().abort()}
-            onExitShortcut={() => ctx.logSessionEnd().finally(() => exit())}
+            onExitShortcut={() => handleExit()}
             onModelPickerOpen={() => setShowModelDropdown(true)}
             onTogglePlanMode={() => togglePlanMode()}
             statusLineSegments={statusLine}
@@ -941,7 +993,9 @@ export default function App({
         <KeybindingProvider config={keybindingConfig}>
           <TerminalProvider>
             <AccessibilityProvider>
+              <RawModeProvider>
               <InnerApp ctx={ctx} />
+              </RawModeProvider>
             </AccessibilityProvider>
           </TerminalProvider>
         </KeybindingProvider>
