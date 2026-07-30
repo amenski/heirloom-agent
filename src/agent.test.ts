@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { runAgent } from "./agent.js";
+import { PermissionEngine } from "./permissions/index.js";
 import type { Provider, StreamEvent } from "./providers/types.js";
 import type { Message } from "./types.js";
 
@@ -92,5 +93,57 @@ describe("runAgent", () => {
       { role: "tool", toolCallId: "call_1", content: "file contents" },
       { role: "assistant", content: "done reading" },
     ]);
+  });
+
+  describe("permissions.resolve integration", () => {
+    const toolCallTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "run_bash" },
+      { type: "tool_call_delta", id: "call_1", arguments: '{"command":"npm test"}' },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("denies and skips execution when resolve() returns deny", async () => {
+      const { provider } = makeProvider([[...toolCallTurn()], textTurn("ok")]);
+      const permissions = new PermissionEngine({ rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "deny", origin: "config" }] }, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+
+      await runAgent("run tests", { provider, tools: [], executeTool, permissions });
+
+      expect(executeTool).not.toHaveBeenCalled();
+    });
+
+    it("calls the provided askUser callback when resolve() returns ask, and proceeds on approval (simulates a sub-agent's ask-tier call surfacing to the parent UI instead of auto-denying)", async () => {
+      const { provider } = makeProvider([[...toolCallTurn()], textTurn("ok")]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "ran" }));
+      const askUser = vi.fn(async () => true);
+
+      await runAgent("run tests", { provider, tools: [], executeTool, permissions, askUser });
+
+      expect(askUser).toHaveBeenCalledWith("run_bash", { command: "npm test" });
+      expect(executeTool).toHaveBeenCalled();
+    });
+
+    it("skips execution when askUser resolves false", async () => {
+      const { provider } = makeProvider([[...toolCallTurn()], textTurn("ok")]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+      const askUser = vi.fn(async () => false);
+
+      await runAgent("run tests", { provider, tools: [], executeTool, permissions, askUser });
+
+      expect(executeTool).not.toHaveBeenCalled();
+    });
+
+    it("auto-denies (headless) when resolve() returns ask but no askUser callback is provided", async () => {
+      const { provider } = makeProvider([[...toolCallTurn()], textTurn("ok")]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+
+      const result = await runAgent("run tests", { provider, tools: [], executeTool, permissions });
+
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(result.newMessages.some((m) => m.role === "tool" && String(m.content).includes("headless"))).toBe(true);
+    });
   });
 });

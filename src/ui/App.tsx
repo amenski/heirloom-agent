@@ -8,7 +8,7 @@ import React, {
 import { Box, Text, useInput, useApp } from "ink";
 import { previewEdit } from "../permissions/diffpreview.js";
 import type { AppContext, StatusSegment, GitStatus } from "./types.js";
-import type { PermissionScope } from "../permissions/index.js";
+import type { PermissionRule } from "../permissions/index.js";
 import type { KeybindingConfig } from "./keybindings.js";
 
 import {
@@ -33,7 +33,7 @@ import CommandPalette, {
 import OutputArea from "./OutputArea.js";
 import Spinner from "./Spinner.js";
 import StatusBar from "./StatusBar.js";
-import PermissionPrompt from "./PermissionPrompt.js";
+import PermissionPrompt, { DestructiveConfirmPrompt, type PermissionDecision } from "./PermissionPrompt.js";
 import WelcomeScreen from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
@@ -105,13 +105,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     resolve: (v: boolean) => void;
     toolName: string;
     args: Record<string, unknown>;
-    scopes: PermissionScope[];
-    scopeIndex: number;
+    winningRule?: PermissionRule;
     cursor: number;
-    alwaysAllows: PermissionScope[];
-    denied: boolean;
   } | null>(null);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
+  const [reasoningEffort, setReasoningEffort] = useState<"high" | "max" | undefined>(undefined);
   const [askQuestionPrompt, setAskQuestionPrompt] = useState<{
     questions: AskQuestionItem[];
     resolve: (answers: Record<string, string> | null) => void;
@@ -588,9 +587,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             const preview = previewEdit(toolName, args);
             if (preview) scheduleOutput(preview);
           }
-          const scopes = ctx.permissions.classifyScopes(toolName, args);
+
+          const { action, winningRule, wasUnresolved } = ctx.permissions.resolve(toolName, args);
+
+          // deny should never reach askUser (agent.ts only calls it for "ask"),
+          // but handle defensively rather than assume the caller's invariant.
+          if (action === "deny") return false;
+
+          // Auto-approve posture bypasses an ordinary rule-derived ask, but
+          // never a result the bash normalizer couldn't safely classify —
+          // that must always surface the real prompt, regardless of posture.
+          if (ctx.mutable.posture === "autoApprove" && !wasUnresolved) {
+            return true;
+          }
+
           return new Promise<boolean>((resolve) => {
-            setAskPrompt({ resolve, toolName, args, scopes, scopeIndex: 0, cursor: 0, alwaysAllows: [], denied: false });
+            setAskPrompt({ resolve, toolName, args, winningRule, cursor: 0 });
           });
         },
       };
@@ -723,9 +735,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   function applyPosture(next: Posture) {
     setPosture(next);
     setPlanPrompt(null);
+    // Posture is UI-only state now: the permission engine has no session-wide
+    // auto-approve flag. askUser reads ctx.mutable.posture directly and
+    // bypasses only ordinary rule-derived asks — deny and unresolved-ask
+    // results are never bypassed regardless of posture.
     ctx.mutable.posture = next;
-    // autoApprove flips the permission engine's session override; plan/normal clear it.
-    ctx.permissions.setAutoApprove(next === "autoApprove");
     setStatusLine(ctx.buildStatusBar());
   }
 
@@ -884,19 +898,36 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     [ctx, exit],
   );
 
-  function advancePrompt(decision: "allow" | "deny"): void {
+  function resolveAskPrompt(allowed: boolean): void {
     setAskPrompt((prev) => {
       if (!prev) return null;
-      const nextIndex = prev.scopeIndex + 1;
-      if (nextIndex >= prev.scopes.length) {
-        const { resolve } = prev;
-        setTimeout(() => resolve(!prev.denied), 0);
-        return null;
-      }
-      return { ...prev, scopeIndex: nextIndex, cursor: 0 };
+      const { resolve } = prev;
+      setTimeout(() => resolve(allowed), 0);
+      return null;
     });
     setBusy(true);
     startSpinner();
+  }
+
+  function handlePermissionDecision(decision: PermissionDecision): void {
+    if (!askPrompt) return;
+
+    if (decision === "deny") {
+      resolveAskPrompt(false);
+      return;
+    }
+
+    if (decision === "session" || decision === "always") {
+      const rule = askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args);
+      const matchedDestructive = askPrompt.winningRule?.origin === "builtin-destructive" ? askPrompt.winningRule : undefined;
+      if (decision === "session") {
+        ctx.permissions.approveForSession(rule, matchedDestructive);
+      } else {
+        ctx.permissions.approveAlways(rule, matchedDestructive);
+      }
+    }
+
+    resolveAskPrompt(true);
   }
 
   useInput((value: string, key: any) => {
@@ -943,11 +974,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
     if (askPrompt) {
       const lower = value.toLowerCase();
+      const decisions: PermissionDecision[] = ["once", "session", "always", "deny"];
 
       if (key.escape) {
-        const { resolve } = askPrompt;
-        setAskPrompt(null);
-        resolve(false);
+        resolveAskPrompt(false);
         return;
       }
 
@@ -956,48 +986,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         return;
       }
       if (key.downArrow) {
-        setAskPrompt((prev) => prev ? { ...prev, cursor: Math.min(2, prev.cursor + 1) } : null);
+        setAskPrompt((prev) => prev ? { ...prev, cursor: Math.min(decisions.length - 1, prev.cursor + 1) } : null);
         return;
       }
 
-      if (lower === "1" || lower === "2" || lower === "3") {
-        const idx = Number(lower) - 1;
-        const kinds: Array<"allow" | "always" | "deny"> = ["allow", "always", "deny"];
-        const decision = kinds[idx];
-        const scope = askPrompt.scopes[askPrompt.scopeIndex];
-        if (!scope) return;
-
-        if (decision === "always") {
-          ctx.permissions.persistAllow([scope]);
-          const isFirstScope = askPrompt.scopeIndex === 0;
-          if (isFirstScope) {
-            firstTokenRef.current = askPrompt.scopes.every(s => s === scope);
-          }
-          advancePrompt("allow");
-        } else if (decision === "deny") {
-          setAskPrompt((prev) => prev ? { ...prev, denied: true } : null);
-          advancePrompt("deny");
-        } else {
-          advancePrompt("allow");
-        }
+      if (lower === "1" || lower === "2" || lower === "3" || lower === "4") {
+        handlePermissionDecision(decisions[Number(lower) - 1]);
         return;
       }
 
       if (key.return) {
-        const kinds: Array<"allow" | "always" | "deny"> = ["allow", "always", "deny"];
-        const decision = kinds[askPrompt.cursor];
-        const scope = askPrompt.scopes[askPrompt.scopeIndex];
-        if (!scope) return;
-
-        if (decision === "always") {
-          ctx.permissions.persistAllow([scope]);
-          advancePrompt("allow");
-        } else if (decision === "deny") {
-          setAskPrompt((prev) => prev ? { ...prev, denied: true } : null);
-          advancePrompt("deny");
-        } else {
-          advancePrompt("allow");
-        }
+        handlePermissionDecision(decisions[askPrompt.cursor]);
         return;
       }
       return;
@@ -1047,7 +1046,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           the conversation renders below it rather than replacing it. */}
       <WelcomeScreen
         model={`${ctx.providerName}/${ctx.activeModel ?? "unknown"}`}
-        thinkingEnabled={true}
+        thinkingEnabled={thinkingEnabled}
+        reasoningEffort={reasoningEffort}
         cwd={process.cwd()}
         width={term.columns}
       />
@@ -1079,19 +1079,29 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {askPrompt && (
-        <PermissionPrompt
-          request={{ toolName: askPrompt.toolName, command: String(askPrompt.args?.command ?? askPrompt.args?.path ?? ""), scopes: askPrompt.scopes }}
-          scopeIndex={askPrompt.scopeIndex}
-          cursor={askPrompt.cursor}
-          onChoose={() => {}}
-          onCancel={() => {
-            const { resolve } = askPrompt;
-            setAskPrompt(null);
-            resolve(false);
+      {askPrompt && (askPrompt.winningRule?.origin === "builtin-destructive" ? (
+        <DestructiveConfirmPrompt
+          request={{
+            toolName: askPrompt.toolName,
+            command: String(askPrompt.args?.command ?? askPrompt.args?.path ?? ""),
+            winningRule: askPrompt.winningRule,
           }}
+          cursor={askPrompt.cursor}
+          onChoose={handlePermissionDecision}
+          onCancel={() => resolveAskPrompt(false)}
         />
-      )}
+      ) : (
+        <PermissionPrompt
+          request={{
+            toolName: askPrompt.toolName,
+            command: String(askPrompt.args?.command ?? askPrompt.args?.path ?? ""),
+            winningRule: askPrompt.winningRule,
+          }}
+          cursor={askPrompt.cursor}
+          onChoose={handlePermissionDecision}
+          onCancel={() => resolveAskPrompt(false)}
+        />
+      ))}
 
       {planPrompt && (
         <PlanImplementationPrompt

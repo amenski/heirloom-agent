@@ -43,6 +43,14 @@ export interface OrchestratorOptions {
   executeTool: (call: ToolCall) => Promise<ToolOutput>;
   modeLoader: ModeLoader;
   permissions?: PermissionEngine;
+  /**
+   * Surfaces a sub-agent's ask-tier permission calls to the same prompt flow
+   * the top-level agent uses, instead of auto-denying them. Without this,
+   * a sub-agent spawned while the parent UI is mid-session gets
+   * PERMISSION_DENIED on every ask-tier action it attempts, since agent.ts's
+   * headless branch (no askUser) denies rather than asks.
+   */
+  askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
   maxDepth?: number;
   maxSubTurns?: number;
 }
@@ -56,6 +64,7 @@ export class Orchestrator {
     executeTool: (call: ToolCall) => Promise<ToolOutput>;
     modeLoader: ModeLoader;
     permissions?: PermissionEngine;
+    askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
   };
 
   constructor(options: OrchestratorOptions) {
@@ -121,6 +130,7 @@ export class Orchestrator {
           executeTool: subExecuteTool,
           compactor: subCompactor,
           permissions: subPermissions,
+          askUser: this.options.askUser,
           maxTurns: this.options.maxSubTurns,
           mode: subMode,
         });
