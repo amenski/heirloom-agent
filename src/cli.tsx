@@ -64,7 +64,7 @@ async function main() {
   const configEnv = configResult.config.env;
 
   if (configResult.config.mcpServers) {
-    await connectMCPServers(configResult.config.mcpServers);
+    await connectMCPServers(configResult.config.mcpServers, { strictMcpConfig: configResult.config.strictMcpConfig });
   }
 
   let initialPrompt = parsed.prompt;
