@@ -4,11 +4,8 @@ export interface ModelCapabilities {
   supportsTools: boolean;
   contextWindow: number;
   displayName?: string;
-  /** Absent = this model has no reasoning-effort knob. */
   effort?: {
-    /** The model's own vocabulary, e.g. ["minimal","low","medium","high"]. */
     values: string[];
-    /** Used when the user hasn't picked a value. */
     default: string;
   };
   pricing?: { inputPerM: number; outputPerM: number };
@@ -26,6 +23,6 @@ export interface Provider {
   streamChat(
     messages: Message[],
     tools: ToolDef[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; effort?: string },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; effort?: string; thinkingEnabled?: boolean },
   ): AsyncGenerator<StreamEvent>;
 }

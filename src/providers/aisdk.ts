@@ -77,10 +77,6 @@ function createAIInstance(apiType: string, baseUrl: string, apiKey: string, mode
   if (apiType === "anthropic") {
     return createAnthropic({ apiKey })(model);
   }
-  // @ai-sdk/openai's callable default hits the Responses API
-  // (/responses), which only OpenAI itself implements. DeepSeek/Groq/
-  // OpenRouter/Ollama etc. are Chat Completions (/chat/completions) only,
-  // so route explicitly through `.chat()` for every openai-compatible preset.
   return createOpenAI({ baseURL: baseUrl, apiKey }).chat(model);
 }
 
@@ -91,7 +87,7 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
     async *streamChat(
       messages: Message[],
       tools: ToolDef[],
-      options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; effort?: string },
+      options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; effort?: string; thinkingEnabled?: boolean },
     ): AsyncGenerator<StreamEvent> {
       const baseUrl = preset.baseUrl;
       const modelInstance = createAIInstance(preset.api, baseUrl, apiKey, model);
@@ -103,6 +99,7 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
         max_tokens: options?.maxTokens,
         temperature: options?.temperature,
         effort: options?.effort,
+        thinking_enabled: options?.thinkingEnabled,
       });
 
       const result = streamText({
@@ -113,21 +110,9 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
         maxOutputTokens: options?.maxTokens,
         abortSignal: options?.signal,
         maxRetries: 3,
-        // Map effort → `reasoning_effort` for OpenAI-compatible providers (the
-        // only API type in built-in presets). Anthropic would map it differently
-        // (thinking.budget_tokens) when an Anthropic adapter exists. Models
-        // without an effort knob never send this field.
         ...(options?.effort && preset.api === "openai-compatible" ? { reasoningEffort: options.effort } : {}),
-        // agent.ts owns the tool-calling loop: it executes tool calls itself
-        // and starts a fresh streamChat next turn. streamText must therefore
-        // stop after a single generation step (assistant text + tool call(s))
-        // rather than running its own internal multi-step agentic loop, or
-        // fullStream re-emits the assistant preamble/tool calls once per step.
+        ...(options?.thinkingEnabled && preset.api === "openai-compatible" ? { body: { thinking: { type: "enabled" } } as any } : {}),
         stopWhen: stepCountIs(1),
-        // Our message history interleaves system messages (initial prompt,
-        // mid-conversation corrections from agent.ts) rather than confining
-        // them to position 0. ai@7 rejects that by default; opt back in to
-        // the pre-v7 behavior instead of restructuring the message array.
         allowSystemInMessages: true,
       });
 
