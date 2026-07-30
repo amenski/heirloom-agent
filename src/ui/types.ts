@@ -18,11 +18,13 @@ export interface MutableState {
 
 /** A single segment of the status bar, rendered as an Ink <Text> with these props. */
 export interface StatusSegment {
+  id?: string;
   text: string;
   bold?: boolean;
   dimColor?: boolean;
   color?: string;
   backgroundColor?: string;
+  newLine?: boolean;
 }
 
 // ── Tab / Multiplex ──
@@ -118,7 +120,7 @@ export interface AppContext {
 
   handleSlash: (input: string) => Promise<string[]>;
   getModelEntries: () => ModelEntry[];
-  runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks) => Promise<any>;
+  runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[]) => Promise<any>;
 
   // ── New: Theme & Keybinding support ──
   theme?: ThemeContextValue;
@@ -144,6 +146,7 @@ export interface AppContext {
 
 export interface AgentBridgeCallbacks {
   onText: (c: string) => void;
+  onReasoning?: (c: string) => void;
   onToolStart: (name: string, args: Record<string, unknown>) => void;
   onToolResult: (name: string, result: { content: string; error?: string }) => void;
   onDiagnostic: (m: string) => void;

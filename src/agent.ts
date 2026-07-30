@@ -40,7 +40,9 @@ export interface AgentOptions {
   signal?: AbortSignal;
   effort?: string;
   history?: Message[];
+  imageUrls?: string[];
   onText?: (chunk: string) => void;
+  onReasoning?: (chunk: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
   onToolResult?: (name: string, result: ToolOutput) => void;
   onDiagnostic?: (msg: string) => void;
@@ -73,7 +75,7 @@ export async function runAgent(
   // turn bloats the context and degrades openai-compatible models.
   if (messages[0]?.role === "system") messages.shift();
   messages.unshift({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: userMessage });
+  messages.push({ role: "user", content: userMessage, ...(options.imageUrls?.length ? { imageUrls: options.imageUrls } : {}) });
   const newStart = messages.length;
 
   let stopReason: "done" | "aborted" | "max_turns" = "done";
@@ -95,6 +97,7 @@ export async function runAgent(
     errorRecovery?.reset();
 
     let content = "";
+    let reasoning = "";
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
 
     try {
@@ -103,6 +106,10 @@ export async function runAgent(
         case "text_delta":
           content += event.content;
           options.onText?.(event.content);
+          break;
+        case "reasoning_delta":
+          reasoning += event.content;
+          options.onReasoning?.(event.content);
           break;
         case "tool_call_start":
           pendingCalls.set(event.id, { name: event.name, args: "" });
@@ -129,6 +136,8 @@ export async function runAgent(
     }
 
     if (content) options.onText?.("\n");
+
+    if (reasoning) messages.push({ role: "assistant", content: reasoning, meta: { asThinking: true } });
 
     if (pendingCalls.size === 0) {
       if (content) messages.push({ role: "assistant", content });

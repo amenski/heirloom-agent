@@ -17,13 +17,27 @@ function mapMessages(messages: Message[]): ModelMessage[] {
     }
   }
 
-  return messages.map((m) => {
+  return messages.filter((m) => !(m.role === "assistant" && m.meta?.asThinking)).map((m) => {
     switch (m.role) {
       case "system":
         return { role: "system", content: m.content };
 
-      case "user":
-        return { role: "user", content: m.content };
+      case "user": {
+        if (!m.imageUrls || m.imageUrls.length === 0) {
+          return { role: "user", content: m.content };
+        }
+        const parts: Array<
+          | { type: "text"; text: string }
+          | { type: "file"; mediaType: string; data: string }
+        > = [];
+        if (m.content) {
+          parts.push({ type: "text", text: m.content });
+        }
+        for (const url of m.imageUrls) {
+          parts.push({ type: "file", mediaType: "image", data: url });
+        }
+        return { role: "user", content: parts };
+      }
 
       case "assistant": {
         const parts: Array<
@@ -123,6 +137,10 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
         switch (event.type) {
           case "text-delta":
             yield { type: "text_delta", content: event.text };
+            break;
+
+          case "reasoning-delta":
+            yield { type: "reasoning_delta", content: event.text };
             break;
 
           case "tool-input-start": {

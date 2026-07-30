@@ -8,12 +8,16 @@ export interface SystemMessage {
 export interface UserMessage {
   role: "user";
   content: string;
+  /** Data URLs (e.g. "data:image/png;base64,...") for images attached to this message. */
+  imageUrls?: string[];
 }
 
 export interface AssistantMessage {
   role: "assistant";
   content: string | null;
   toolCalls?: ToolCall[];
+  /** Present only on synthetic messages carrying model "thinking"/reasoning text, rendered collapsed by default. */
+  meta?: { asThinking?: boolean };
 }
 
 export interface ToolResultMessage {

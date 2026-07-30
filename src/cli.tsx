@@ -185,6 +185,7 @@ async function main() {
     lastContextTokens: 0,
     sessionUserInputs: [] as string[],
     abort: new AbortController(),
+    toolUsage: {} as Record<string, number>,
   };
 
   async function logSessionEnd() {
@@ -221,34 +222,46 @@ async function main() {
   try { knownModeSlugs = (await modeLoader.listAll()).map(m => m.slug); } catch {}
 
   function buildStatusBar(): import("./ui/types.js").StatusSegment[] {
-    const T = (text: string, props?: Partial<import("./ui/types.js").StatusSegment>): import("./ui/types.js").StatusSegment => ({ text, ...props });
-    const dim = (text: string) => T(text, { dimColor: true });
-    const sep = () => T(" │ ", { dimColor: true });
+    const T = (id: string, text: string, props?: Partial<import("./ui/types.js").StatusSegment>): import("./ui/types.js").StatusSegment => ({ id, text, ...props });
+    const dim = (id: string, text: string) => T(id, text, { dimColor: true });
     const segments: import("./ui/types.js").StatusSegment[] = [];
-    segments.push(dim(activeMode?.name ?? "chat"));
-    if (permissions.getDefaultMode() === "askAll") { segments.push(T(" ", {})); segments.push(T("\u{1F512}askAll", { color: "yellow", bold: true })); }
-    segments.push(T(" · ", { dimColor: true }));
+    let idCounter = 0;
+    const nextId = () => `s${++idCounter}`;
+
+    segments.push(dim(nextId(), activeMode?.name ?? "chat"));
+
+    if (permissions.getDefaultMode() === "askAll") {
+      segments.push(T(nextId(), "🔒askAll", { color: "yellow", bold: true }));
+    }
+
     const modelId = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
-    segments.push(T(`${getProviderLabel(providerName)}/${modelId}`, { bold: true }));
-    segments.push(T(" · ", { dimColor: true }));
+    segments.push(T(nextId(), `${getProviderLabel(providerName)}/${modelId}`, { bold: true }));
+
     let cwd = process.cwd();
     const home = process.env.HOME || process.env.USERPROFILE || "";
     if (home && cwd.startsWith(home)) cwd = "~" + cwd.slice(home.length);
     if (cwd.length > 30) { const parts = cwd.split("/"); cwd = "…/" + parts.slice(-2).join("/"); }
-    segments.push(dim(cwd));
+    segments.push(dim(nextId(), cwd));
+
     const ctxPercent = getContextPercent();
     if (ctxPercent !== null) {
-      segments.push(sep()); segments.push(dim("ctx "));
       const filled = Math.round((Math.min(ctxPercent, 100) / 100) * 8);
       const bar = "█".repeat(filled) + "░".repeat(8 - filled);
       const ctxText = `${bar} ${Math.round(ctxPercent)}%`;
-      if (ctxPercent >= 95) segments.push(T(ctxText, { color: "red" }));
-      else if (ctxPercent >= 80) segments.push(T(ctxText, { color: "yellow" }));
-      else segments.push(dim(ctxText));
+      const color = ctxPercent >= 95 ? "red" : ctxPercent >= 80 ? "yellow" : undefined;
+      segments.push(T(nextId(), `ctx ${ctxText}`, color ? { color } : { dimColor: true }));
     }
+
     const costStr = getCostStr();
-    if (costStr) { segments.push(sep()); segments.push(dim(`$${costStr}`)); }
-    if (activeEffort) { segments.push(sep()); segments.push(T(activeEffort, { bold: true })); }
+    if (costStr) segments.push(dim(nextId(), `$${costStr}`));
+    if (activeEffort) segments.push(T(nextId(), activeEffort, { bold: true }));
+
+    const toolNames = Object.keys(shared.toolUsage);
+    if (toolNames.length > 0) {
+      const top = toolNames.sort((a, b) => (shared.toolUsage[b] ?? 0) - (shared.toolUsage[a] ?? 0)).slice(0, 4);
+      segments.push(dim(nextId(), top.map(t => `${t}×${shared.toolUsage[t]}`).join(" ")));
+    }
+
     return segments;
   }
 
@@ -342,7 +355,7 @@ async function main() {
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[]) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, providerName, activeModel, activeEffort, imageUrls),
       theme: resolvedTheme,
       keybindings: resolvedKeybindings,
       keybindingConfig: resolvedKeybindingConfig,
@@ -551,7 +564,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, providerName: string, activeModel: string | undefined, activeEffort: string | undefined, imageUrls?: string[]): Promise<any> {
   shared.sessionUserInputs.push(input);
   const processed = await processAtMentions(input);
   const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
@@ -562,7 +575,8 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
     signal: shared.abort.signal, effort: activeEffort,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
-    onText: cb.onText, onToolStart: cb.onToolStart, onToolResult: cb.onToolResult,
+    imageUrls,
+    onText: cb.onText, onReasoning: cb.onReasoning, onToolStart: (name, args) => { shared.toolUsage[name] = (shared.toolUsage[name] || 0) + 1; cb.onToolStart(name, args); }, onToolResult: cb.onToolResult,
     onDiagnostic: cb.onDiagnostic, onRetry: cb.onRetry, onCompacted: cb.onCompacted,
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,
     onUsage: (input: number, output: number) => {

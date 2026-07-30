@@ -1,0 +1,56 @@
+import React from "react";
+import { Box, Text } from "ink";
+import type { SlashCommandItem } from "../core/slash-commands.js";
+
+type Props = {
+  items: SlashCommandItem[];
+  activeIndex: number;
+  width: number;
+  maxVisible?: number;
+};
+
+const SlashCommandMenu = React.memo(function SlashCommandMenu({
+  items, activeIndex, width, maxVisible = 8,
+}: Props): React.ReactElement | null {
+  if (items.length === 0) return null;
+
+  const labelColumnWidth = React.useMemo(() => {
+    if (items.length === 0) return 0;
+    const longestLabel = Math.max(...items.map((s) => s.label.length));
+    return Math.min(longestLabel + 2, Math.max(10, (width - 2) >> 1));
+  }, [items, width]);
+
+  const visibleStart = Math.min(Math.max(0, activeIndex - Math.floor((maxVisible - 1) / 2)), Math.max(0, items.length - maxVisible));
+  const visibleItems = items.slice(visibleStart, visibleStart + maxVisible);
+
+  return (
+    <Box flexDirection="column" marginBottom={1} width={width}>
+      {visibleStart > 0 ? <Box marginLeft={2}><Text dimColor>▲</Text></Box> : null}
+      {visibleItems.map((item, idx) => {
+        const actualIndex = visibleStart + idx;
+        const isActive = actualIndex === activeIndex;
+        return (
+          <Box key={item.label} gap={2} flexDirection="row" flexGrow={1}>
+            <Box width={labelColumnWidth} flexShrink={0}>
+              <Text color={isActive ? "#229ac3" : undefined} wrap="truncate-end">
+                {isActive ? "> " : "  "}
+                <Text bold>{item.label}</Text>
+              </Text>
+            </Box>
+            <Box flexGrow={1}>
+              <Text color={isActive ? "#229ac3" : undefined} wrap="truncate-end" dimColor>
+                {item.description}
+              </Text>
+            </Box>
+          </Box>
+        );
+      })}
+      {visibleStart + visibleItems.length < items.length ? <Box marginLeft={2}><Text dimColor>▼</Text></Box> : null}
+      <Box marginLeft={2}>
+        <Text dimColor>({activeIndex + 1}/{items.length}) ↑↓ navigate · Enter select</Text>
+      </Box>
+    </Box>
+  );
+});
+
+export default SlashCommandMenu;
