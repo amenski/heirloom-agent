@@ -15,6 +15,7 @@ import {
   ThemeProvider,
   type ThemeProviderOptions,
   useTheme,
+  useThemeController,
   KeybindingProvider,
   useKeybindings,
   TerminalProvider,
@@ -48,6 +49,7 @@ import type { Message } from "../types.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
+import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
 import {
   SPINNER_FRAMES,
@@ -84,6 +86,7 @@ function formatQueueTime(at: number): string {
 function InnerApp({ ctx }: { ctx: AppContext }) {
   const { exit } = useApp();
   const theme = useTheme();
+  const themeController = useThemeController();
   const accessibility = useAccessibility();
   const bindings = useKeybindings();
   const rawMode = useRawMode();
@@ -110,6 +113,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     cursor: number;
   } | null>(null);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [showThemeDropdown, setShowThemeDropdown] = useState(false);
+  // The theme name active when the /theme picker opened — the revert target if
+  // the user presses Esc after live-previewing other themes.
+  const themeBeforePreviewRef = useRef<string>("dark");
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
   const [reasoningEffort, setReasoningEffort] = useState<"high" | "max" | undefined>(undefined);
   const [askQuestionPrompt, setAskQuestionPrompt] = useState<{
@@ -765,6 +772,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowModelDropdown(true);
       return;
     }
+    if (trimmed === "/theme") {
+      themeBeforePreviewRef.current = themeController.current;
+      setShowThemeDropdown(true);
+      return;
+    }
     if (trimmed === "/resume" || trimmed === "/continue") {
       setShowSessionList(true);
       return;
@@ -967,6 +979,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (showHelp) return;
     if (showCommandPalette) return;
     if (showModelDropdown) return;
+    if (showThemeDropdown) return;
 
     if (planPrompt) {
       return;
@@ -1056,7 +1069,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const modalOpen =
     !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList ||
-    showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showHelp || showCommandPalette ||
+    showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   modalOpenRef.current = modalOpen;
 
@@ -1214,6 +1227,30 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showThemeDropdown && (
+        <ThemeDropdown
+          open={showThemeDropdown}
+          currentName={themeBeforePreviewRef.current}
+          width={term.columns}
+          onPreview={(name) => themeController.setThemeName(name)}
+          onConfirm={(name) => {
+            themeController.setThemeName(name);
+            try {
+              persistThemeChoice(name);
+              pushOutput(`Theme set to ${name}.`);
+            } catch (err) {
+              pushOutput(`Failed to save theme: ${(err as Error).message}`);
+            }
+            setShowThemeDropdown(false);
+          }}
+          onCancel={() => {
+            // Revert the live preview to the theme active when the picker opened.
+            themeController.setThemeName(themeBeforePreviewRef.current);
+            setShowThemeDropdown(false);
+          }}
+        />
+      )}
+
       {resumeChoice && !compactingResume && (
         <ResumeChooser
           messageCount={resumeChoice.count}
@@ -1243,7 +1280,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}
@@ -1287,6 +1324,7 @@ export default function App({
       <ThemeProvider
         config={{
           mode: themeConfig?.mode ?? "dark",
+          name: themeConfig?.name,
           overrides: themeConfig?.overrides,
           colorEnabled,
         }}
