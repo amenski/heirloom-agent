@@ -142,7 +142,7 @@ export function createProvider(name: string, options?: ProviderOptions): Provide
     || "";
   if (!apiKey && preset.keyEnv) {
     throw new Error(
-      `Provider "${name}" requires ${preset.keyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.json`,
+      `Provider "${name}" requires ${preset.keyEnv} to be set, or run \`heirloom auth\` to store a key in credentials.yaml`,
     );
   }
 
