@@ -1,163 +1,186 @@
 # CLI Specification
 
-How heirloom is invoked and what the user can type. This consolidates the
-command surface that grew across architecture.md (Layer 7), session-spec.md,
-and skill-spec.md — this doc is now the authority; the others defer to it.
+How heirloom is invoked and what the user can type. This documents the command
+surface that actually ships, verified against `src/cli-args.ts` (flags,
+validation, epilog), `src/cli.tsx` (subcommand dispatch, slash routing), and
+`src/ui/core/slash-commands.ts` + `src/ui/App.tsx` (the TUI command registry and
+handlers).
 
 ---
 
 ## Invocation
 
 ```
-heirloom [flags]               # interactive session (the normal case)
-heirloom -p "<prompt>" [flags] # headless: run one task, print, exit
-heirloom auth                       # interactive provider setup wizard
-heirloom auth list                  # show configured providers + key sources
-heirloom auth logout <name>         # remove a credential
-heirloom auth <provider>            # set <provider>'s key (masked prompt)
-heirloom auth <provider> --api-key <key>   # non-interactive; -k alias
-echo <key> | heirloom auth <provider>      # piped: key read from stdin
+heirloom [flags]                        # interactive TUI (the normal case)
+heirloom -p "<prompt>" [flags]          # launch the TUI and submit one prompt
+heirloom -x -p "<prompt>" [flags]       # headless: run one task, print, exit
+heirloom auth                           # interactive provider setup wizard
+heirloom auth list                      # show configured providers + key sources
+heirloom auth logout <provider>         # remove a credential
+heirloom auth <provider>                # set <provider>'s key (masked prompt)
+heirloom auth <provider> --api-key <key># non-interactive; -k alias
+echo <key> | heirloom auth <provider>   # piped: key read from stdin
+heirloom doctor                         # print environment / config diagnostics
 ```
 
-`auth` is the guided path for connecting LLM APIs (opencode's `auth login`
-pattern): choose a preset (DeepSeek, OpenRouter, Groq, Together, Ollama,
-OpenAI, Anthropic) or "custom" (asks for a baseUrl), enter the key, and it
-writes `~/.heirloom/credentials.yaml` (0600) plus, for custom endpoints, the
-provider entry in config. Manual YAML editing (config-spec.md) remains the
-escape hatch. Arrives Phase 3 with the config layer.
+`doctor` and `auth` are the only real subcommands — they are special-cased in
+`src/cli.tsx` (`main()`, lines 45 and 50) *before* argument parsing. Everything
+else on the command line is parsed by yargs as flags plus an optional positional
+`query`. A non-flag word that is not `auth`/`doctor` (e.g. `heirloom frobnicate`)
+is therefore treated as a positional prompt, not rejected as an unknown command.
 
-**The API key goes only to `~/.heirloom/credentials.yaml` (0600) — never into
-any `settings.json`.** Keys are not config (repo ethos).
+`auth` is the guided path for connecting LLM APIs: pass a preset provider name
+(`deepseek`, `openai`, `openrouter`, `groq`, `ollama`) and enter the key, and it
+writes `~/.heirloom/credentials.yaml` (mode `0600`). See config-spec.md for the
+credential store and precedence.
+
+**The API key belongs in `~/.heirloom/credentials.yaml` (0600) or an env var.**
+A key may also be placed at `env.API_KEY` inside `settings.json` (it is read and
+works — `src/cli.tsx:87,112`), but that is discouraged: settings.json is meant to
+be shareable/committable. See config-spec.md §Credentials.
 
 ### Key entry
 
 - **Masked interactive input.** On a TTY the key prompt reads in raw mode and
-  echoes `*` per character — the key is never shown in plaintext. Backspace
-  (and Ctrl+H) erase one character, Ctrl+U clears the line, Enter submits, and
+  echoes `*` per character — the key is never shown in plaintext. Enter submits,
   Ctrl+C cancels (nothing is written).
 - **Non-interactive `--api-key` (alias `-k`).** `heirloom auth <provider>
   --api-key <key>` writes the credential with no prompt — for scripts and CI.
-- **Piped stdin.** When stdin is not a TTY, `heirloom auth <provider>` reads
-  one line from stdin as the key (`echo <key> | heirloom auth <provider>`),
-  with no prompt echoed.
+- **Piped stdin.** When stdin is not a TTY, `heirloom auth <provider>` reads one
+  line from stdin as the key (`echo <key> | heirloom auth <provider>`).
 
 After a successful save, the credentials file path and a `Run \`heirloom\` to
-start.` hint are printed. `auth` (wizard), `auth list`, and `auth logout`
-behave as before.
+start.` hint are printed.
 
-- Today (Phase 1): `npm start` runs `tsx src/index.ts`.
-- Target: a `bin` entry in package.json (`"heirloom": "dist/index.js"`) so
-  `npm link` / global install provides the `heirloom` command. Add when the
-  engine stabilizes — not before Phase 3.
+### Running it
+
+- Dev: `npm start -- <args>` runs the CLI through `tsx`.
+- Built binary: `npm run build && npm link` puts `heirloom` on `PATH`, after
+  which the examples above work verbatim (`heirloom` in place of `npm start --`).
 
 ## Flags
 
-| Flag | Effect | Arrives |
-|------|--------|---------|
-| `-c`, `--continue` | Resume the most recent session for this cwd | with sessions |
-| `--session <id>` | Resume a specific session | with sessions |
-| `--mode <slug>` | Start in the given mode | Phase 3 |
-| `--model <provider/model>` | Override config/mode model | Phase 3 |
-| `-p`, `--print <prompt>` | Headless mode (below) | with golden-task harness |
-| `--approve <edits\|all>` | Set approval mode (permission-spec.md); mainly for headless runs | Phase 3 |
-| `--help`, `--version` | The obvious | Phase 2 |
+Real flag surface (`src/cli-args.ts`; `--help`/`-h` and `--version`/`-v` are
+added by yargs):
 
-Flags sit at the top of the config precedence chain (config-spec.md).
+| Flag | Effect |
+|------|--------|
+| `-p`, `--prompt <text>` | Submit a prompt on launch. With `-x`, the headless prompt; without, prefills the first TUI turn. |
+| `-x`, `--exec` | Run one prompt non-interactively, then exit. **Requires** a non-empty `--prompt`. |
+| `-r`, `--resume [id]` | Resume a specific session by its ID. Use with no ID (`-r`) to open the session picker. |
+| `-l`, `--last` | Resume the most recent session for the current project directory. |
+| `--model <provider/model>` | Override the configured model (split on the first `/`). |
+| `--mode <slug>` | Start in the given mode. Not validated at the CLI layer — an unknown slug is accepted and silently ignored. |
+| `--debug` | Write redacted request/response JSONL. |
+| `-h`, `--help` | Show help and the epilog, exit 0. |
+| `-v`, `--version` | Print version (`1.0.0`), exit 0. |
 
-## Headless Mode (`-p`)
+There is **no** `-c`/`--continue`, `--session`, `--print`, or `--approve` flag.
+A positional `query` (a bare prompt with no `-p`) is also accepted.
 
-Runs one task non-interactively: streams output to stdout, exits when the
-agent completes or hits `maxTurns`. Exists primarily so golden tasks
-(conventions.md) can be scripted.
+### Flag validation (`.check()` in `src/cli-args.ts`)
 
-- **Permissions fail closed.** There is no user to ask, so any tool call
-  that resolves to `ask` is **denied** with `PERMISSION_DENIED: headless
-  session — rule resolved to ask`. Headless runs need explicit `allow` rules
-  or `--approve <edits|all>` (deny rules still hold — permission-spec.md).
-- `ask_followup_question` in headless → the question is printed and the run
-  ends with exit code 2. An agent that needs to ask cannot finish headless.
-- No session file is written unless `--session`/`-c` is also passed.
+- `-p` together with a positional prompt → error (use one or the other).
+- `-x` without a non-empty `-p` → error.
+- `-p ""` (empty/whitespace) → error.
+- `-r <id>` with `-p` → error (resume-with-picker is interactive).
+- `-l` together with `-r` → error.
+- `-r <id>` where `<id>` fails the session-ID check → `Invalid session ID`.
+
+> **Known defect (verified):** the `-r` validator (`isValidSessionId`,
+> `src/cli-args.ts:5`) requires a v1–5 **UUID**, but the session store generates
+> IDs of the form `<compact-timestamp>-<4hex>` (`src/sessions/store.ts:95`, e.g.
+> `20260731T014800-a3f2`) and stores files as `<id>.jsonl`. No ID the app
+> actually creates passes the `-r` validator, so resume-*by-ID* is currently
+> broken; use `-l` (last) or `-r` with no argument (picker) instead. The stable
+> truth is the store's `<timestamp>-<4hex>` format (see session-spec.md).
+
+## Headless Mode (`-x -p`)
+
+Runs one task non-interactively: streams output to stdout, exits when the agent
+completes. `-x` requires `-p`. Errors go to stderr so stdout stays pipeable.
+
+- **Permissions fail closed.** There is no user to ask, so any tool call that
+  resolves to `ask` is denied (permission-spec.md). Headless runs need explicit
+  `allow` rules.
+- If no provider key is resolvable, the run fails (see Exit Codes).
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Clean exit / headless task completed |
-| 1 | Fatal error (provider failure after retries, bad config) |
-| 2 | Headless task could not complete (needed user input, hit maxTurns) |
+| 0 | Clean exit / headless task completed / `--help`/`--version` / `auth`/`doctor` success |
+| 1 | Fatal error (bad config, provider failure, flag validation failure, non-TTY launch of the interactive UI) |
 
 ---
 
 ## Slash Commands
 
-Typed at the prompt. Consolidated reference — phase column says when each
-lands (matching todo.md):
+Typed at the prompt inside the TUI. The registry lives in
+`src/ui/core/slash-commands.ts` (`BUILTIN_SLASH_COMMANDS` — what the `/`
+autocomplete menu offers); routing is split between `src/ui/App.tsx`
+(`handleSlashCommand`) and `src/cli.tsx` (`handleSlashCore`).
 
-| Command | Behavior | Phase |
-|---------|----------|-------|
-| `/help` | List commands | 1 |
-| `/exit` | Quit (also Ctrl+D) | 1 |
-| `/clear` | Clear conversation, keep session file | 1 |
-| `/mode <slug>` | Switch mode; prompt shows `heirloom [code] >` | 3 |
-| `/approve [manual\|edits\|all]` | Show or set approval mode; lists session rules (permission-spec.md) | 3 |
-| `/compact` | Force compaction now | 4 |
-| `/checkpoint` | Manual checkpoint | 5 |
-| `/restore [files\|full]` | Restore last checkpoint | 5 |
-| `/checkpoints` | List checkpoints | 5 |
-| `/sessions` | List this project's sessions | with sessions |
-| `/new` | Save current session, start fresh | with sessions |
-| `/skills` | List available skills + source paths | 9 |
-| `/skill <name>` | Force-load a skill | 9 |
+### Registered and routed (appear in the `/` menu and work)
 
-Unknown `/command` → error + `/help` hint, never sent to the LLM. Input not
-starting with `/` is always a user message — no ambiguity.
+| Command | Behavior | Handler |
+|---------|----------|---------|
+| `/help` | Show help / command list | `handleSlashCore` (typed) / HelpOverlay (palette) |
+| `/exit` | Quit (also Ctrl+D twice) | App `handleExit` |
+| `/clear` | Clear conversation history | `handleSlashCore` |
+| `/model` | Open the model / thinking / effort selector | App (dropdown) |
+| `/theme` | Switch color theme with live preview | App (dropdown) |
+| `/resume` | Pick a previous session to continue | App (session list) |
+| `/continue` | Continue the active session (or pick one if empty) | App (session list) |
+| `/undo` | Restore code and/or conversation to a previous point | App (undo selector) |
+| `/mcp` | Show MCP server status and available tools | App (MCP status) |
+| `/permissions` | Show this session's permission-decision history | App (history view) |
+| `/raw` | Cycle display mode (`lite` → `normal` → `raw-scrollback`) | App (raw-mode cycle) |
+| `/skills` | List available skills | `handleSlashCore` |
+
+### Routed but not in the autocomplete registry
+
+These work when typed but do not appear in the `/` menu (handled in
+`handleSlashCore`): `/mode <slug>`, `/modes`, `/skill <name>`, `/cost`,
+`/effort`.
+
+### Registered but NOT routed (known defects — print `Unknown:`)
+
+- `/new` — in the registry and the command palette, but no handler intercepts
+  it, so it falls through to `handleSlashCore`'s `default:` and prints
+  `Unknown: /new`. Advertised as "Start a fresh conversation"; currently a no-op
+  error.
+- `/plan` — in the registry ("Toggle plan mode"), but likewise unrouted →
+  `Unknown: /plan`. Plan posture is reachable only via Shift+Tab cycling in the
+  UI, not via this command.
+
+Unknown `/command` → `Unknown: <cmd>\nType /help.`, never sent to the LLM. Input
+not starting with `/` is always a user message.
 
 ---
 
 ## Interrupt Semantics & Keybindings
 
-Esc requires keypress events (`readline.emitKeypressEvents` + raw mode).
-Raw keypress listening is enabled **only while the agent is running** — no
-readline question is active then, so there's no conflict — and terminal
-state is restored in a `finally`; a crash must never leave the terminal in
-raw mode.
+From the epilog in `src/cli-args.ts` and the TUI input handlers.
 
 | Key | When | Effect |
 |-----|------|--------|
-| Esc | Agent is streaming or running tools | Abort the turn: fire `AbortSignal` → provider stream closes, running tool gets `signal`, partial turn is **not** persisted (session-spec: writes happen only on turn completion). Prompt returns. |
-| Ctrl+C | Agent running | Same as Esc (fallback abort) |
-| Ctrl+C | At an idle prompt | Print `(use /exit or Ctrl+D to quit)` — never exit on a single Ctrl+C |
-| Ctrl+D | At an idle prompt | Exit cleanly (= `/exit`) |
-| Shift+Tab | At an idle prompt | Cycle approval mode `manual → edits → all → manual` (permission-spec.md); prompt indicator updates immediately |
-
-The abort path is why `ToolContext.signal` exists (tool-spec.md): an aborted
-tool returns `COMMAND_FAILED: aborted by user` and the loop stops without
-feeding results back to the LLM.
-
-### Configurable bindings
-
-Defaults above; rebindable via `keybindings:` in config (config-spec.md).
-Actions: `abort`, `cycle-approval`, `cycle-mode` (cycles personas —
-**unbound by default**: blind persona cycling swaps the toolset, which
-should usually be deliberate; `/mode <slug>` is the primary path).
-Reserved and rejected at config validation: `ctrl+c`, `ctrl+d`, `enter`,
-and `ctrl+m` (indistinguishable from Enter in terminals).
+| Enter | Composing a prompt | Send the prompt |
+| Shift+Enter | Composing | Insert a newline |
+| Esc | Agent streaming or running tools | Interrupt the current model turn; the partial turn is not persisted |
+| Shift+Tab | Idle prompt | Toggle the approval posture (askAll ↔ allowAll) |
+| Home / End | Composing | Move within the current line |
+| Alt+Left / Alt+Right | Composing | Move by word |
+| Ctrl+W | Composing | Delete the previous word |
+| `/` | Idle prompt | Open the commands menu |
+| Ctrl+D (twice) | Idle prompt | Quit |
 
 ---
 
 ## Output Conventions
 
-- Assistant text streams token-by-token to stdout, verbatim.
-- Tool calls render as one dim line each: `  [read_file] {"path":"src/agent.ts"}`
-  (args truncated at 120 chars — already the Phase 1 behavior).
-- Errors and warnings go to **stderr**, so `-p` output stays pipeable.
-- No markdown rendering in the readline CLI; that's an Ink-TUI feature
-  (architecture.md tradeoff 5).
-
-## Layer Discipline
-
-Everything in this doc is Layer 7. The agent loop must stay I/O-free
-(architecture.md tradeoff 6): streaming display, tool-call rendering, and
-interrupt handling reach the loop only as injected callbacks/signals, so a
-future TUI or server frontend replaces this file's implementation without
-touching `agent.ts`.
+- Assistant text streams to stdout.
+- Errors and warnings go to **stderr**, so `-x` stdout stays pipeable.
+- The interactive UI is an Ink TUI and requires a TTY; launching the interactive
+  path without a TTY prints `heirloom requires an interactive terminal (TTY)...`
+  and exits 1. (`-x` headless mode does not need a TTY.)
