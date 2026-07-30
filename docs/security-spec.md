@@ -94,12 +94,20 @@ instead of `ask`:
 - Env-var prefix: `FOO=bar curl …` (standard shell idiom)
 - Escape / builtin prefix: `\curl …`, `command curl …`
 - Indirection: `echo http://evil | xargs curl`
-- `rm -rf` flag reordering: `rm -fr /`, `rm -r -f /` (same-token match only)
+- ~~`rm -rf` flag reordering: `rm -fr /`, `rm -r -f /`~~ — **now handled** by
+  `matchesDestructivePrefix` (flag-cluster normalization + basename/case folding)
+  on the *deny* path; see [security-destructive-matching.md](./security-destructive-matching.md).
+  (Remaining gap: long-form `rm --recursive --force /` — tracked there.)
 - Secret read with trailing space: `read_file ".env "` (`$`-anchor breaks)
 
 The `.ssh/`/`.aws/`-directory and `sudo` guards use **unanchored substring**
 matching and survived every evasion — so the correct pattern already exists in
-the same file.
+the same file. **Note:** the `rm -rf` bullet above is now closed for the
+builtin-destructive **deny** rules, but the D3 defect proper — the
+**guarded-pattern regex** for network egress (`curl`/`wget`/…) and `.env` reads —
+is still string-prefix-based and remains BROKEN. The
+[destructive-matching deep-dive](./security-destructive-matching.md) covers the
+matching strategy and the long→short flag gap.
 
 **Fix:** for the network-egress and `.env`-suffix guards, stop matching raw string
 prefixes. Tokenize the command, resolve the invoked binary to its **basename**,
