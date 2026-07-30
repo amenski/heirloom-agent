@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AskQuestionItem } from "../../tools/types.js";
+import { useTheme } from "../contexts.js";
+import { ansi256 } from "../theme.js";
 
 interface Props {
   questions: AskQuestionItem[];
@@ -9,6 +11,9 @@ interface Props {
 }
 
 export default function AskUserQuestionPrompt({ questions, resolve, width }: Props) {
+  const theme = useTheme();
+  const accentColor = theme.colorEnabled ? ansi256(theme.theme.accent) : undefined;
+  const normalBorderColor = theme.colorEnabled ? ansi256(theme.theme.border) : undefined;
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
@@ -149,12 +154,14 @@ export default function AskUserQuestionPrompt({ questions, resolve, width }: Pro
     }
   });
 
-  const borderColor = focused === "other" ? "cyan" : "cyan";
+  // When the "Other" free-text field is focused, highlight the border with the
+  // accent; otherwise use the normal border color.
+  const borderColor = focused === "other" ? accentColor : normalBorderColor;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1} width={width}>
       <Box marginBottom={1}>
-        <Text color="cyan" bold>Question {currentIndex + 1}/{questions.length}</Text>
+        <Text color={accentColor} bold>Question {currentIndex + 1}/{questions.length}</Text>
       </Box>
       <Text bold wrap="wrap">{current.question}</Text>
       <Box flexDirection="column" marginTop={1}>
@@ -163,7 +170,7 @@ export default function AskUserQuestionPrompt({ questions, resolve, width }: Pro
           if (isMulti) {
             const checked = selectedIndices.has(i);
             return (
-              <Text key={i} color={isSelected ? "cyanBright" : undefined}>
+              <Text key={i} color={isSelected ? accentColor : undefined}>
                 {isSelected ? "> " : "  "}
                 {checked ? "[x]" : "[ ]"} {opt.label}
                 {opt.description ? <Text dimColor> — {opt.description}</Text> : null}
@@ -171,18 +178,18 @@ export default function AskUserQuestionPrompt({ questions, resolve, width }: Pro
             );
           }
           return (
-            <Text key={i} color={isSelected ? "cyanBright" : undefined}>
+            <Text key={i} color={isSelected ? accentColor : undefined}>
               {isSelected ? ">" : " "} {isSelected ? "\u25C9" : "\u25CB"} {opt.label}
               {opt.description ? <Text dimColor> — {opt.description}</Text> : null}
             </Text>
           );
         })}
-        <Text color={selectedIndex === current.options.length ? "cyanBright" : undefined} dimColor={selectedIndex !== current.options.length}>
+        <Text color={selectedIndex === current.options.length ? accentColor : undefined} dimColor={selectedIndex !== current.options.length}>
           {selectedIndex === current.options.length ? "> " : "  "}
           {isMulti && selectedIndex === current.options.length && showOther ? "[x]" : isMulti ? "[ ]" : selectedIndex === current.options.length ? "\u25C9" : "\u25CB"}
           {" "}Other
           {focused === "other" && selectedIndex === current.options.length && (
-            <Text> — <Text color="cyan" inverse> {otherText || (showOther ? "\u00A0" : "")} </Text></Text>
+            <Text> — <Text color={accentColor} inverse> {otherText || (showOther ? "\u00A0" : "")} </Text></Text>
           )}
           {focused !== "other" && selectedIndex === current.options.length && showOther && (
             <Text> — {otherText || <Text dimColor>type your answer</Text>}</Text>

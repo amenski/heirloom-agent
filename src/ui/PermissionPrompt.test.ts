@@ -9,17 +9,21 @@ function req(toolName: string, winningRule?: PermissionRule): PermissionRequest 
 describe("riskLevel", () => {
   it("is high for any destructive-origin winning rule, regardless of tool", () => {
     const destructiveRule: PermissionRule = { tool: "run_bash", kind: "prefix", pattern: "git reset --hard", action: "deny", origin: "builtin-destructive" };
-    expect(riskLevel(req("run_bash", destructiveRule)).level).toBe("high");
+    const risk = riskLevel(req("run_bash", destructiveRule));
+    expect(risk.level).toBe("high");
+    expect(risk.slot).toBe("error");
   });
 
   it("is low for read-only tools with no destructive match", () => {
     expect(riskLevel(req("read_file")).level).toBe("low");
+    expect(riskLevel(req("read_file")).slot).toBe("success");
     expect(riskLevel(req("list_files")).level).toBe("low");
     expect(riskLevel(req("glob")).level).toBe("low");
   });
 
   it("is medium for run_bash and write tools with no destructive match", () => {
     expect(riskLevel(req("run_bash")).level).toBe("medium");
+    expect(riskLevel(req("run_bash")).slot).toBe("warning");
     expect(riskLevel(req("write_to_file")).level).toBe("medium");
     expect(riskLevel(req("edit")).level).toBe("medium");
   });

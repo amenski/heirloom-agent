@@ -29,13 +29,13 @@ architectural swings on the roadmap; drop the rest.
 | Item | Source | Effort | Why now |
 |---|---|---|---|
 | **`/theme` command** (live preview, Esc-revert, persist) | #132 | S–M | Heirloom has all the theming infra but **no runtime switch**. Clearest feature gap. |
-| **Fix `detectSystemTheme` stub** (real `COLORFGBG`/macOS detection) | #132 | S | Current `mode:"auto"` is silently "always dark" — a **real bug**. Ships with tests. |
+| ~~**Fix `detectSystemTheme` stub**~~ ✅ **shipped 2026-08-01** | #132 | S | COLORFGBG + macOS `AppleInterfaceStyle` detection, injectable + tested; `auto` works. |
 | **Permission audit trail** (JSONL sidecar) | #266 | S | Records every allow/deny/ask + reason. The core of "permission saving." |
 | **Masked key input + `--api-key`/piped stdin** for `auth` | #225 | S | Key is typed in **plaintext** today; wizard can't be scripted. |
 | **`strictMcpConfig`** MCP command allowlist | #263 | S | ~30 lines; real, cheap MCP hardening. |
 | **Token-usage log + in-memory metrics** | #266, #263 | S | Per-turn usage + accept/reject counts in the exit summary. |
 | **Extra theme presets** (dracula, monokai, github, ansi) | #132 | S | Pure data, re-expressed in Heirloom's richer theme shape. |
-| **Gutter/prompt contrast fix** (route accents through theme slots) | local | S | Hardcoded `#229ac3` washes out on light terminals. See [theme-spec.md](./theme-spec.md). |
+| ~~**Gutter/prompt contrast fix**~~ ✅ **shipped 2026-08-01** | local | S | Gutter + permission/ask prompts routed through tuned theme slots (dark 39/33, light 26/27); border-focus bug fixed. Remaining `#229ac3` in menus/PromptInput listed for a follow-up pass. |
 | **Long→short flag map** for destructive rules | local | S | Closes `rm --recursive --force /` gap. See [security-destructive-matching.md](./security-destructive-matching.md). |
 | ~~**`docs_search` tool**~~ ✅ **shipped 2026-08-01** | local | M | Keyless official-API search, live-smoke verified; general web via MCP. Spec: [web-search-spec.md](./web-search-spec.md). |
 
