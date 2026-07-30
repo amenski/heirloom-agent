@@ -104,9 +104,19 @@ belong here:
    effectively "always dark." Replace with real detection (`COLORFGBG`, macOS
    `AppleInterfaceStyle`). **This is a real bug**, and the gutter fix above
    depends on it to auto-pick light values on a light terminal.
-3. **Extra presets** (dracula, monokai, github-light/dark, ansi ×2) — re-expressed
-   in Heirloom's richer `ThemeDefinition` shape (not PR #132's thinner token
-   model, which would be a downgrade).
+3. **Extra presets** — **shipped** (2026-07-31): `dracula`, `monokai`,
+   `github-dark`, `github-light` added to `BUILTIN_THEMES` as full
+   `ThemeDefinition` objects (all ~20 semantic slots + 19-color `SyntaxColors` +
+   `statusBar` sub-palette), re-expressed in Heirloom's richer shape — **not**
+   PR #132's thinner 13-token model, which would be a downgrade. They are
+   faithful ANSI-256 approximations with the tuned promptFg/accent contrast
+   convention (dark presets: bright accents on their dark bg; `github-light`:
+   deep blue like `LIGHT_THEME`). `resolveTheme` now honors a `name` field
+   (a named builtin preset takes precedence over `mode`); the loader already
+   maps an unrecognized `theme.mode` string to `theme.name`. Still pending: the
+   `ansi ×2` presets, and wiring `theme.name` through the `cli.tsx` /
+   `ThemeProvider` call sites so the named form reaches `resolveTheme` at
+   runtime (call sites currently forward only `mode`+`overrides`).
 4. **`ThemeableStatic`** — needed only if live-preview `/theme` is added, so a
    preview repaints already-committed scrollback. (Note: interacts with the
    separate output-render work in [input-stall-diagnosis.md](./input-stall-diagnosis.md),
