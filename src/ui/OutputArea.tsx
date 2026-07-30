@@ -15,6 +15,7 @@ import { Box, Text } from "ink";
 import MarkdownText from "./MarkdownText.js";
 import { isTableBlock } from "./MarkdownTable.js";
 import { useTheme } from "./contexts.js";
+import { ansi256 } from "./theme.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
 import type { TabDefinition } from "./types.js";
 
@@ -80,7 +81,7 @@ const OutputLine = memo(function OutputLine({
     const msg = line.slice(USER_ECHO_TAG.length).replace(/\n/g, " ");
     return (
       <Box>
-        <Text color={theme.colorEnabled ? "#229ac3" : undefined}>{"▌ "}</Text>
+        <Text color={theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined}>{"▌ "}</Text>
         <Text>{msg}</Text>
       </Box>
     );

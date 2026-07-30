@@ -8,6 +8,8 @@
  * No external dependencies — pure TypeScript.
  */
 
+import { execSync } from "node:child_process";
+
 // ── ANSI 8-bit color palette helpers ──
 
 /** Named ANSI 8-bit colors for easy reference. */
@@ -100,6 +102,15 @@ export function ansiBg(code: number): string {
 
 /** Reset ANSI formatting. */
 export const ANSI_RESET = "\x1b[0m";
+
+/**
+ * Bridge an ANSI 8-bit theme slot (0–255) to an Ink `<Text color>` string.
+ * Ink parses `ansi256(N)` and routes it to `chalk.ansi256(N)` — this is the
+ * canonical way to feed a numeric theme slot into a `color` prop.
+ */
+export function ansi256(code: number): string {
+  return `ansi256(${code})`;
+}
 
 /**
  * Apply ANSI codes to text for a given color code.
@@ -198,7 +209,10 @@ export const DARK_THEME: ThemeDefinition = {
 
   primary: ANSI.blue,
   secondary: ANSI.cyan,
-  accent: ANSI.purple,
+  // accent doubles as the secondary gutter/ask emphasis — a bright blue that
+  // stays legible on a black background (see theme-spec.md "Gutter & prompt
+  // contrast"). Distinct from promptFg so the two accents don't collide.
+  accent: 33,
   error: ANSI.red,
   warning: ANSI.orange,
   success: ANSI.green,
@@ -215,7 +229,8 @@ export const DARK_THEME: ThemeDefinition = {
   border: ANSI.grey47,
   selection: ANSI.blue,
 
-  promptFg: ANSI.blue,
+  // Bright blue gutter/prompt accent, readable on black.
+  promptFg: 39,
   promptBg: undefined,
 
   statusBar: {
@@ -260,7 +275,9 @@ export const LIGHT_THEME: ThemeDefinition = {
 
   primary: ANSI.blue,
   secondary: ANSI.teal,
-  accent: ANSI.purple,
+  // Deep indigo accent — high contrast on white, off the washed-out mid-tones
+  // (see theme-spec.md "Gutter & prompt contrast"). Distinct from promptFg.
+  accent: 27,
   error: ANSI.red,
   warning: ANSI.orange,
   success: ANSI.green,
@@ -277,7 +294,9 @@ export const LIGHT_THEME: ThemeDefinition = {
   border: ANSI.grey151,
   selection: ANSI.sky,
 
-  promptFg: ANSI.blue,
+  // Deep blue gutter/prompt accent — legible on white (not the old mid-cyan,
+  // which washed out).
+  promptFg: 26,
   promptBg: undefined,
 
   statusBar: {
@@ -417,37 +436,65 @@ export function resolveTheme(config?: ThemeConfig): ThemeDefinition {
   return deepMergeTheme(base, config.overrides);
 }
 
+/** Dependencies for system-theme detection, injectable for testing. */
+export interface SystemThemeDeps {
+  env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  /** Runs a command and returns stdout; must throw on non-zero exit. */
+  exec: (cmd: string) => string;
+}
+
+/**
+ * Pure system-theme detector (no caching, no I/O of its own beyond the injected
+ * `exec`). Detection order:
+ *   1. COLORFGBG ("fg;bg" or "fg;x;bg") — last field 0–6 or 8 → dark, 7/15 → light.
+ *   2. macOS: `defaults read -g AppleInterfaceStyle` prints "Dark" → dark;
+ *      a non-zero exit (key absent) → light. Only attempted on darwin.
+ *   3. Fallback: dark.
+ */
+export function detectSystemThemeFrom(deps: SystemThemeDeps): "dark" | "light" {
+  // 1. COLORFGBG — set by many terminals to advertise fg/bg palette indices.
+  const colorfgbg = deps.env.COLORFGBG;
+  if (colorfgbg) {
+    const parts = colorfgbg.split(";");
+    const bg = parts[parts.length - 1]?.trim();
+    const bgNum = Number(bg);
+    if (bg !== "" && Number.isInteger(bgNum)) {
+      if (bgNum === 7 || bgNum === 15) return "light";
+      if ((bgNum >= 0 && bgNum <= 6) || bgNum === 8) return "dark";
+      // Any other value: fall through to the next detection stage.
+    }
+  }
+
+  // 2. macOS system appearance.
+  if (deps.platform === "darwin") {
+    try {
+      const out = deps.exec("defaults read -g AppleInterfaceStyle");
+      if (out.trim() === "Dark") return "dark";
+      // Key present but not "Dark" — treat as light.
+      return "light";
+    } catch {
+      // Non-zero exit means the key is absent, i.e. Light mode.
+      return "light";
+    }
+  }
+
+  // 3. Fallback.
+  return "dark";
+}
+
 function detectSystemTheme(): "dark" | "light" {
   if (_systemThemeCache) return _systemThemeCache;
 
-  try {
-    // Only available in browser/Electron, but we check anyway
-    if (typeof globalThis !== "undefined" && "matchMedia" in globalThis) {
-      const mq = (globalThis as any).matchMedia("(prefers-color-scheme: dark)");
-      if (mq?.matches) {
-        _systemThemeCache = "dark";
-        return "dark";
-      }
-    }
-  } catch {
-    // Ignore
-  }
+  const result = detectSystemThemeFrom({
+    env: process.env,
+    platform: process.platform,
+    exec: (cmd) =>
+      execSync(cmd, { timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).toString(),
+  });
 
-  // Heuristic: check for common dark-mode indicators
-  try {
-    const home = process.env.HOME || "";
-    const dconf = `${home}/.config/dconf/user`;
-    const fs = require("node:fs") as typeof import("node:fs");
-    if (fs.existsSync(dconf)) {
-      _systemThemeCache = "dark";
-      return "dark";
-    }
-  } catch {
-    // silent
-  }
-
-  _systemThemeCache = "dark";
-  return "dark"; // sensible default: dark mode
+  _systemThemeCache = result;
+  return result;
 }
 
 let _systemThemeCache: "dark" | "light" | null = null;

@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { PermissionRule } from "../permissions/index.js";
+import { useTheme } from "./contexts.js";
+import { ansi256, type ThemeContextValue } from "./theme.js";
 
 export interface PermissionRequest {
   toolName: string;
@@ -21,7 +23,8 @@ interface Props {
 
 export interface RiskInfo {
   level: "low" | "medium" | "high";
-  color: string;
+  /** Semantic theme slot that colors the risk label (high=error, etc.). */
+  slot: "error" | "warning" | "success";
   label: string;
 }
 
@@ -36,18 +39,24 @@ export function riskLevel(request: PermissionRequest): RiskInfo {
   const rule = request.winningRule;
 
   if (rule?.origin === "builtin-destructive") {
-    return { level: "high", color: "#ef4444", label: "destructive command" };
+    return { level: "high", slot: "error", label: "destructive command" };
   }
 
   if (READ_TOOLS.has(request.toolName)) {
-    return { level: "low", color: "#22c55e", label: "read-only" };
+    return { level: "low", slot: "success", label: "read-only" };
   }
 
   if (request.toolName === "run_bash" || request.toolName.startsWith("write") || request.toolName === "edit") {
-    return { level: "medium", color: "#f59e0b", label: "modifies state" };
+    return { level: "medium", slot: "warning", label: "modifies state" };
   }
 
-  return { level: "medium", color: "#f59e0b", label: "unclassified" };
+  return { level: "medium", slot: "warning", label: "unclassified" };
+}
+
+/** Resolve a semantic theme slot to an Ink color string, honoring the color gate. */
+function slotColor(theme: ThemeContextValue, key: keyof ThemeContextValue["theme"]): string | undefined {
+  if (!theme.colorEnabled) return undefined;
+  return ansi256(theme.theme[key] as number);
 }
 
 const OPTIONS: { decision: PermissionDecision; label: string }[] = [
@@ -58,26 +67,29 @@ const OPTIONS: { decision: PermissionDecision; label: string }[] = [
 ];
 
 export default function PermissionPrompt({ request, cursor, onChoose, onCancel }: Props) {
+  const theme = useTheme();
   const risk = riskLevel(request);
+  const warningColor = slotColor(theme, "warning");
+  const accentColor = slotColor(theme, "accent");
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginY={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={warningColor} paddingX={1} marginY={1}>
       <Box marginBottom={1}>
-        <Text color="yellow" bold>Permission required</Text>
+        <Text color={warningColor} bold>Permission required</Text>
       </Box>
       <Text bold>{request.toolName}</Text>
       <Text>{request.command}</Text>
       {request.description ? <Text dimColor>{request.description}</Text> : null}
       <Box marginTop={1}>
         <Text dimColor>Risk: </Text>
-        <Text color={risk.color}>{risk.label}</Text>
+        <Text color={slotColor(theme, risk.slot)}>{risk.label}</Text>
       </Box>
       <Box marginTop={1}>
         <Text>Do you want to proceed?</Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
         {OPTIONS.map((opt, i) => (
-          <Text key={opt.decision} color={i === cursor ? "cyanBright" : undefined}>
+          <Text key={opt.decision} color={i === cursor ? accentColor : undefined}>
             {i === cursor ? "> " : "  "}
             {i + 1}. {opt.label}
           </Text>
@@ -99,13 +111,17 @@ export default function PermissionPrompt({ request, cursor, onChoose, onCancel }
  * this prompt's interaction style.
  */
 export function DestructiveConfirmPrompt({ request, cursor, onChoose, onCancel }: Props) {
+  const theme = useTheme();
+  const errorColor = slotColor(theme, "error");
+  const accentColor = slotColor(theme, "accent");
+
   return (
-    <Box flexDirection="column" borderStyle="double" borderColor="#ef4444" paddingX={1} marginY={1}>
+    <Box flexDirection="column" borderStyle="double" borderColor={errorColor} paddingX={1} marginY={1}>
       <Box marginBottom={1}>
-        <Text color="#ef4444" bold>⚠ Destructive command</Text>
+        <Text color={errorColor} bold>⚠ Destructive command</Text>
       </Box>
       <Text bold>{request.toolName}</Text>
-      <Text color="#ef4444">{request.command}</Text>
+      <Text color={errorColor}>{request.command}</Text>
       {request.description ? <Text dimColor>{request.description}</Text> : null}
       <Box marginTop={1}>
         <Text dimColor>This command can cause irreversible data loss. Approving "always" whitelists only this exact command, never the whole category.</Text>
@@ -115,7 +131,7 @@ export function DestructiveConfirmPrompt({ request, cursor, onChoose, onCancel }
       </Box>
       <Box flexDirection="column" marginTop={1}>
         {OPTIONS.map((opt, i) => (
-          <Text key={opt.decision} color={i === cursor ? "cyanBright" : undefined}>
+          <Text key={opt.decision} color={i === cursor ? accentColor : undefined}>
             {i === cursor ? "> " : "  "}
             {i + 1}. {opt.label}
           </Text>
