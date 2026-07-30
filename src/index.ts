@@ -723,7 +723,7 @@ async function main() {
     const preset = getPreset(providerName);
     const caps = preset?.models[activeModel ?? preset.defaultModel];
     if (!caps?.contextWindow) return null;
-    const total = shared.sessionInput + shared.sessionOutput;
+    const total = shared.lastContextTokens;
     if (total === 0) return null;
     return (total / caps.contextWindow) * 100;
   }
