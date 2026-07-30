@@ -283,7 +283,7 @@ async function main() {
 
   const colorEnabled = !!process.stdout.isTTY && !process.env.NO_COLOR;
 
-  const resolvedTheme = new ThemeContextValue(resolveTheme({ mode: configResult.config.theme?.mode ?? "dark", overrides: configResult.config.theme?.overrides }));
+  const resolvedTheme = new ThemeContextValue(resolveTheme({ mode: configResult.config.theme?.mode ?? "dark", name: configResult.config.theme?.name, overrides: configResult.config.theme?.overrides }));
 
   let resolvedKeybindings: KeybindingMap | undefined;
   let resolvedKeybindingConfig: KeybindingSystemConfig | undefined;
@@ -433,7 +433,7 @@ async function main() {
     const inkInstance = render(
       createElement(App, {
         ctx: appCtx,
-        themeConfig: { mode: configResult.config.theme?.mode ?? "dark", overrides: configResult.config.theme?.overrides },
+        themeConfig: { mode: configResult.config.theme?.mode ?? "dark", name: configResult.config.theme?.name, overrides: configResult.config.theme?.overrides },
         keybindingConfig: resolvedKeybindingConfig,
       }),
       { exitOnCtrlC: false },
