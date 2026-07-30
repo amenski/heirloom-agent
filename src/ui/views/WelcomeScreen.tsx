@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text } from "ink";
 import { getSlashCommands } from "../core/slash-commands.js";
+import { heirloomLogo } from "../ascii-art.js";
+import ThemedGradient from "./ThemedGradient.js";
 
 const SHORTCUT_TIPS = [
   { label: "Enter", description: "Send the prompt" },
@@ -33,6 +35,7 @@ export default function WelcomeScreen({ model, thinkingEnabled, reasoningEffort,
   const [tipIndex] = useState(() => tips.length > 0 ? Math.floor(Math.random() * tips.length) : 0);
   const tip = tips[Math.min(tipIndex, tips.length - 1)] ?? tips[0];
   const compact = width < 70;
+  const narrow = width < 112;
 
   function formatCwd(path: string): string {
     const home = process.env.HOME || process.env.USERPROFILE || "";
@@ -40,9 +43,14 @@ export default function WelcomeScreen({ model, thinkingEnabled, reasoningEffort,
     return resolved.length > 40 ? "…" + resolved.slice(-37) : resolved;
   }
 
+  const logo = heirloomLogo();
+
   return (
-    <Box flexDirection="column" marginY={1} paddingX={1}>
-      <Box flexDirection="column" width={compact ? undefined : 72}>
+    <Box flexDirection="column" marginY={1} paddingX={narrow ? 0 : 1}>
+      <Box marginBottom={1}>
+        <ThemedGradient>{logo}</ThemedGradient>
+      </Box>
+      <Box flexDirection="column" width={compact ? undefined : narrow ? undefined : 72}>
         <Box borderStyle="round" borderColor="#229ac3e6" flexDirection="column" paddingX={1}>
           <Box marginBottom={1}>
             <Text bold color="#229ac3e6">{">"}_ Heirloom</Text>

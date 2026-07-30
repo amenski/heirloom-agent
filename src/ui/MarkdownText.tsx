@@ -12,6 +12,7 @@
 import React from "react";
 import { Text } from "ink";
 import SyntaxHighlighter, { detectLanguage, type Language } from "./SyntaxHighlighter.js";
+import MarkdownTable, { isTableBlock } from "./MarkdownTable.js";
 
 // ── Types ──
 
@@ -187,6 +188,11 @@ function MarkdownText({ children, theme }: MarkdownTextProps) {
     const lang = text.length > 3 ? text.slice(3).trim() : "";
     const dim = theme?.dim ?? ((s: string) => `\x1b[2m${s}\x1b[0m`);
     return <Text dimColor>{dim(lang ? `  ── ${lang} ──` : "  ── code ──")}</Text>;
+  }
+
+  // ── Table: multi-line pipe-separated with separator row ──
+  if (isTableBlock(text)) {
+    return <MarkdownTable theme={theme}>{text}</MarkdownTable>;
   }
 
   // ── Heading: #, ##, ###, etc. ──

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../types.js";
@@ -274,6 +274,26 @@ export class SessionStore {
       if (rec.type === "message") count++;
     }
     return count;
+  }
+
+  async deleteSession(sessionId: string): Promise<boolean> {
+    try {
+      await unlink(this.filePath(sessionId));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getSummary(sessionId: string): Promise<string | undefined> {
+    const records = await this.readRecords(sessionId);
+    if (!records) return undefined;
+    for (const rec of records) {
+      if (rec.type === "state" && typeof rec.summary === "string") {
+        return rec.summary as string;
+      }
+    }
+    return undefined;
   }
 
   async list(): Promise<SessionListItem[]> {

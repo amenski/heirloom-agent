@@ -1,0 +1,221 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { Box, Text, useInput } from "ink";
+import type { SessionListItem, SessionStore } from "../../sessions/store.js";
+
+interface Props {
+  sessionStore: SessionStore;
+  onResume: (sessionId: string) => void;
+  onClose: () => void;
+  width: number;
+  height: number;
+}
+
+export default function SessionList({ sessionStore, onResume, onClose, width, height }: Props) {
+  const [sessions, setSessions] = useState<SessionListItem[]>([]);
+  const [searchText, setSearchText] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const searchRef = useRef("");
+
+  useEffect(() => {
+    sessionStore.list().then((list) => setSessions(list));
+  }, [sessionStore]);
+
+  const filtered = useMemo(() => {
+    const q = searchText.toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter(
+      (s) =>
+        s.firstMessage.toLowerCase().includes(q) ||
+        s.id.toLowerCase().includes(q)
+    );
+  }, [sessions, searchText]);
+
+  const pageSize = Math.max(3, height - 8);
+  const safeIndex = Math.max(0, Math.min(selectedIndex, filtered.length - 1));
+
+  useEffect(() => {
+    if (safeIndex < scrollOffset) setScrollOffset(safeIndex);
+    else if (safeIndex >= scrollOffset + pageSize) setScrollOffset(safeIndex - pageSize + 1);
+  }, [safeIndex, pageSize, scrollOffset]);
+
+  const visible = filtered.slice(scrollOffset, scrollOffset + pageSize);
+
+  function formatDate(iso: string): string {
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = now.getTime() - d.getTime();
+      if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+      if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+      return d.toISOString().slice(0, 10);
+    } catch {
+      return iso.slice(0, 10);
+    }
+  }
+
+  useInput((value, key) => {
+    if (deleteConfirm) {
+      if (key.return) {
+        sessionStore.deleteSession(deleteConfirm).then(() => {
+          setSessions((prev) => prev.filter((s) => s.id !== deleteConfirm));
+          setDeleteConfirm(null);
+        });
+        return;
+      }
+      if (key.escape) {
+        setDeleteConfirm(null);
+        return;
+      }
+      return;
+    }
+
+    if (renameTarget) {
+      if (key.return) {
+        const summary = renameText.trim();
+        if (summary) {
+          sessionStore.appendState(renameTarget, { summary }).then(() => {
+            setRenameTarget(null);
+            setRenameText("");
+          });
+        } else {
+          setRenameTarget(null);
+          setRenameText("");
+        }
+        return;
+      }
+      if (key.escape) {
+        setRenameTarget(null);
+        setRenameText("");
+        return;
+      }
+      if (key.backspace) {
+        const next = renameText.slice(0, -1);
+        setRenameText(next);
+        return;
+      }
+      if (value && value.length === 1 && !key.ctrl && !key.meta && !key.shift) {
+        setRenameText((prev) => prev + value);
+        return;
+      }
+      return;
+    }
+
+    if (key.escape) {
+      if (searchText) {
+        setSearchText("");
+        searchRef.current = "";
+        return;
+      }
+      onClose();
+      return;
+    }
+
+    if (key.ctrl && (value === "r" || value === "R")) {
+      const s = filtered[safeIndex];
+      if (s) {
+        sessionStore.getSummary(s.id).then((summary) => {
+          setRenameTarget(s.id);
+          setRenameText(summary ?? "");
+        });
+      }
+      return;
+    }
+
+    if (key.delete || (key.backspace && !searchText && !value)) {
+      const s = filtered[safeIndex];
+      if (s) {
+        setDeleteConfirm(s.id);
+      }
+      return;
+    }
+
+    if (key.upArrow) {
+      setSelectedIndex((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (key.downArrow) {
+      setSelectedIndex((i) => Math.min(filtered.length - 1, i + 1));
+      return;
+    }
+
+    if (key.return) {
+      const s = filtered[safeIndex];
+      if (s) onResume(s.id);
+      return;
+    }
+
+    if (value && value.length === 1 && !key.ctrl && !key.meta && !key.shift) {
+      searchRef.current += value;
+      setSearchText(searchRef.current);
+      setSelectedIndex(0);
+      setScrollOffset(0);
+      return;
+    }
+
+    if (key.backspace && searchText && !value) {
+      searchRef.current = searchRef.current.slice(0, -1);
+      setSearchText(searchRef.current);
+      return;
+    }
+  });
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1} width={width}>
+      {deleteConfirm ? (
+        <Box flexDirection="column">
+          <Text color="red" bold>Delete session?</Text>
+          <Text>Session {deleteConfirm.slice(0, 16)}...</Text>
+          <Box marginTop={1}><Text dimColor>Enter to confirm · Esc to cancel</Text></Box>
+        </Box>
+      ) : renameTarget ? (
+        <Box flexDirection="column">
+          <Text bold>Rename session</Text>
+          <Text color="cyan">{renameText || <Text dimColor>type new name</Text>}<Text color="cyan" inverse> </Text></Text>
+          <Box marginTop={1}><Text dimColor>Enter to save · Esc to cancel</Text></Box>
+        </Box>
+      ) : (
+        <>
+          <Box marginBottom={1}>
+            <Text color="cyan" bold>Sessions</Text>
+            {searchText && <Text dimColor> — matching "{searchText}"</Text>}
+          </Box>
+
+          {filtered.length === 0 ? (
+            <Text dimColor>No sessions found.</Text>
+          ) : (
+            <Box flexDirection="column">
+              {scrollOffset > 0 && (
+                <Text dimColor>{`  ... (${scrollOffset} more above) ...`}</Text>
+              )}
+              {visible.map((s, i) => {
+                const globalIdx = scrollOffset + i;
+                const isSelected = globalIdx === safeIndex;
+                return (
+                  <Box key={s.id}>
+                    <Text color={isSelected ? "cyanBright" : undefined} dimColor={!isSelected}>
+                      {isSelected ? "> " : "  "}
+                      {formatDate(s.createdAt).padEnd(10)} {String(s.messageCount).padStart(3)}msgs{"  "}
+                      {s.firstMessage || s.id.slice(0, 12)}
+                    </Text>
+                  </Box>
+                );
+              })}
+              {scrollOffset + pageSize < filtered.length && (
+                <Text dimColor>{`  ... (${filtered.length - scrollOffset - pageSize} more below) ...`}</Text>
+              )}
+            </Box>
+          )}
+
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>↑↓ navigate · Enter resume · Ctrl+R rename · Del delete · Esc close</Text>
+            {searchText && <Text dimColor>Search: {searchText}</Text>}
+          </Box>
+        </>
+      )}
+    </Box>
+  );
+}
