@@ -16,6 +16,7 @@ export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
 function permissionSubjectText(toolName: string, args: Record<string, unknown>): string {
   if (toolName === "run_bash") return String(args?.command ?? "");
+  if (toolName === "docs_search") return String(args?.query ?? "");
   return String(args?.path ?? args?.filePath ?? "");
 }
 
