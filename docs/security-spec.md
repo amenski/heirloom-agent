@@ -45,6 +45,7 @@ bypassed (auto-approve posture, headless).
 | T9 | Secrets copied into shadow checkpoint repo | **Partial — not re-verified this pass** | Holds only when `.env` is already gitignored: shadow repo honors the workspace `.gitignore` via `--work-tree`. A workspace with no `.gitignore` (or one added after `.env` exists) can commit `.env` into the shadow repo — there is no heirloom-side backstop independent of the workspace `.gitignore`. Unrelated to the permission-engine rewrite; not re-verified during this pass. |
 | T10 | MCP tool-description rug pull | **Open** | Pin tool definitions at connect; description/schema change → warning + re-approval |
 | T11 | Headless exec mode runs with no permission engine at all | **Open (new)** | `src/exec-runner.ts` does not construct a `PermissionEngine` or pass `permissions`/`askUser` to `runAgent` — every tool call in `-x`/exec mode currently runs unchecked, contradicting permission-spec.md's stated headless fail-closed default. Discovered during this pass; not yet fixed. |
+| T12 | No in-band marking of untrusted tool output (bash output, file reads, `docs_search` results all enter context raw) | **Open — hardening idea** | If adopted, must be one codebase-wide delimiter convention across *all* untrusted tool output, not per-tool (rejected as a one-off during `docs_search` implementation — see web-search-spec.md). Delimiters are a mitigation, not a boundary; the permission prompt remains the control. |
 
 ## Known Defects & Verified-Fixed Items
 
