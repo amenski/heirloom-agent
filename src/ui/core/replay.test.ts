@@ -1,0 +1,76 @@
+import { describe, it, expect } from "vitest";
+import { buildReplayLines } from "./replay.js";
+import { USER_ECHO_TAG } from "../constants.js";
+import type { Message } from "../../types.js";
+
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+describe("buildReplayLines", () => {
+  it("renders a user turn with the echo gutter tag", () => {
+    const msgs: Message[] = [{ role: "user", content: "fix the bug" }];
+    const lines = buildReplayLines(msgs, false);
+    expect(lines).toContain(USER_ECHO_TAG + "fix the bug");
+  });
+
+  it("bullets assistant text", () => {
+    const msgs: Message[] = [{ role: "assistant", content: "Done." }];
+    const lines = buildReplayLines(msgs, false);
+    expect(lines.some((l) => l.startsWith("● Done."))).toBe(true);
+  });
+
+  it("renders a visible tool call and its result", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "c1", name: "run_bash", arguments: { command: "ls" } }],
+      },
+      { role: "tool", toolCallId: "c1", content: "file-a\nfile-b" },
+    ];
+    const lines = buildReplayLines(msgs, false).map(stripAnsi);
+    expect(lines.some((l) => l.startsWith("⏺ Bash"))).toBe(true);
+    expect(lines.some((l) => l.includes("file-a"))).toBe(true);
+  });
+
+  it("suppresses silent (read-only) tool calls AND their results", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "r1", name: "read_file", arguments: { path: "/x" } }],
+      },
+      { role: "tool", toolCallId: "r1", content: "secret file body" },
+    ];
+    const lines = buildReplayLines(msgs, false).map(stripAnsi);
+    expect(lines.some((l) => l.includes("secret file body"))).toBe(false);
+    expect(lines.some((l) => l.includes("Read"))).toBe(false);
+  });
+
+  it("shows a compaction summary dimmed and skips the per-turn system prompt", () => {
+    const msgs: Message[] = [
+      { role: "system", content: "You are a helpful agent. (per-turn prompt)" },
+      { role: "user", content: "[Previous conversation summary]\nDid X and Y." },
+      { role: "user", content: "now do Z" },
+    ];
+    const lines = buildReplayLines(msgs, false);
+    // per-turn system prompt is not surfaced
+    expect(lines.some((l) => l.includes("per-turn prompt"))).toBe(false);
+    // summary is surfaced
+    expect(lines.some((l) => l.includes("Did X and Y."))).toBe(true);
+    // real user turn keeps its gutter
+    expect(lines).toContain(USER_ECHO_TAG + "now do Z");
+  });
+
+  it("marks permission-denied tool results as errors (ANSI red) when color is on", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "c1", name: "run_bash", arguments: { command: "rm -rf /" } }],
+      },
+      { role: "tool", toolCallId: "c1", content: "PERMISSION_DENIED: nope" },
+    ];
+    const lines = buildReplayLines(msgs, true);
+    expect(lines.some((l) => l.includes("\x1b[31m") && l.includes("nope"))).toBe(true);
+  });
+});

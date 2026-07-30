@@ -41,6 +41,9 @@ import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
 import UndoSelector from "./views/UndoSelector.js";
 import McpStatusList from "./views/McpStatusList.js";
+import ResumeChooser from "./views/ResumeChooser.js";
+import { buildReplayLines } from "./core/replay.js";
+import type { Message } from "../types.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown } from "./components/index.js";
@@ -101,6 +104,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [showSessionList, setShowSessionList] = useState(false);
   const [showUndoSelector, setShowUndoSelector] = useState(false);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
+  // Startup resume chooser: null until a resumed session offers the load/compact
+  // choice, then holds the message count for the prompt. Set in the mount effect.
+  const [resumeChoice, setResumeChoice] = useState<{ count: number } | null>(null);
+  const [compactingResume, setCompactingResume] = useState(false);
   const [promptDraft, setPromptDraft] = useState<{ nonce: number; text: string } | null>(null);
   const draftNonceRef = useRef(0);
 
@@ -138,6 +145,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
     if (ctx.initialNotice) {
       setOutputLines((prev) => [...prev, theme.colorEnabled ? `\x1b[2m${ctx.initialNotice}\x1b[0m` : ctx.initialNotice!]);
+    }
+    // A resumed session with prior turns offers a load/compact choice before its
+    // transcript is replayed into the scrollback. The chooser handlers do the
+    // actual replay (see handleResumeLoad / handleResumeCompact).
+    if (ctx.initialMessages && ctx.initialMessages.length > 0) {
+      setResumeChoice({ count: ctx.initialMessages.length });
     }
   }, []);
 
@@ -283,6 +296,48 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setOutputLines((prev) => [...prev, line]);
     }
   }
+
+  // Batched append — one state update for many lines (used by resume replay so a
+  // long transcript doesn't trigger a re-render per line).
+  function pushOutputLines(lines: string[]) {
+    if (lines.length === 0) return;
+    if (rawMode.mode === "raw") {
+      for (const l of lines) process.stdout.write(l + "\n");
+    } else {
+      setOutputLines((prev) => [...prev, ...lines]);
+    }
+  }
+
+  // Resume chooser handlers. "Load" replays the raw transcript; "Compact" runs
+  // the summarizer (persisted as a non-destructive overlay by the host), then
+  // replays the shorter result. Both close the chooser and drop the "N messages"
+  // notice, which the replay supersedes.
+  const replayResumed = useCallback((messages: Message[]) => {
+    const lines = buildReplayLines(messages, theme.colorEnabled);
+    pushOutputLines(lines);
+    setResumeChoice(null);
+  }, [theme.colorEnabled]);
+
+  const handleResumeLoad = useCallback(() => {
+    replayResumed(ctx.initialMessages ?? []);
+  }, [ctx.initialMessages, replayResumed]);
+
+  const handleResumeCompact = useCallback(async () => {
+    if (!ctx.compactResumed) {
+      replayResumed(ctx.initialMessages ?? []);
+      return;
+    }
+    setCompactingResume(true);
+    try {
+      const compacted = await ctx.compactResumed();
+      replayResumed(compacted ?? ctx.initialMessages ?? []);
+    } catch (err) {
+      pushOutput(`Compaction failed: ${(err as Error).message}. Loading full transcript.`);
+      replayResumed(ctx.initialMessages ?? []);
+    } finally {
+      setCompactingResume(false);
+    }
+  }, [ctx.compactResumed, ctx.initialMessages, replayResumed]);
 
   const runAgentTurn = useCallback(
     async (input: string, imageUrls?: string[]) => {
@@ -803,6 +858,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
+    // The startup resume chooser owns input until dismissed (it has its own
+    // useInput); block the main handler while it — or its compaction — is up.
+    if (resumeChoice || compactingResume) return;
+
     if (showHelp) return;
     if (showCommandPalette) return;
     if (showModelDropdown) return;
@@ -923,7 +982,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const modalOpen =
     !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList ||
-    showUndoSelector || showMcpStatus || showModelDropdown || showHelp || showCommandPalette;
+    showUndoSelector || showMcpStatus || showModelDropdown || showHelp || showCommandPalette ||
+    !!resumeChoice || compactingResume;
   modalOpenRef.current = modalOpen;
 
   return (
@@ -1062,7 +1122,23 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && (
+      {resumeChoice && !compactingResume && (
+        <ResumeChooser
+          messageCount={resumeChoice.count}
+          onLoad={handleResumeLoad}
+          onCompact={handleResumeCompact}
+          width={term.columns}
+        />
+      )}
+
+      {compactingResume && (
+        <Box marginY={1}>
+          <Text color="cyan">✳ </Text>
+          <Text dimColor>Compacting resumed session…</Text>
+        </Box>
+      )}
+
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showModelDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}

@@ -127,6 +127,20 @@ export interface AppContext {
   showResumeOnStart?: boolean;
   /** One-time notice (e.g. "Resumed <id>") shown in the scrollback on mount. */
   initialNotice?: string;
+  /**
+   * Prior transcript of a resumed session (from the store), replayed into the
+   * scrollback on mount. Empty/undefined for a fresh session. The model already
+   * sees these via `mutable.conversationHistory`; this is purely for display.
+   */
+  initialMessages?: Message[];
+  /**
+   * Compact the resumed transcript on demand (user picks "Compact" at the
+   * resume chooser). Runs the summarizer, persists a non-destructive compaction
+   * overlay to the session store (raw log is kept), updates the in-memory
+   * history, and returns the compacted messages to replay. Returns null if
+   * there was nothing to compact.
+   */
+  compactResumed?: () => Promise<Message[] | null>;
   restoreCheckpoint?: (hash: string, restoreCode: boolean) => Promise<{ restored: boolean; promptDraft: string }>;
 
   // ── New: Theme & Keybinding support ──

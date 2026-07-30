@@ -75,6 +75,15 @@ export class Compactor {
     return { summary: this.lastSummary, files: [...this.sessionFiles] };
   }
 
+  /**
+   * Summarize an explicit span of messages on demand, bypassing the auto
+   * threshold. Used by the resume chooser when the user opts to compact — the
+   * caller decides what to keep and how to persist the overlay.
+   */
+  async summarizeForResume(messages: Message[]): Promise<string> {
+    return this.summarize(messages, this.lastChangedFiles);
+  }
+
   private async summarize(messages: Message[], changedFiles?: Set<string>): Promise<string> {
     const conversation = messages.map(m => {
       if (m.role === "tool") {
