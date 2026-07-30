@@ -2,11 +2,11 @@ import { createInterface } from "node:readline/promises";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels } from "./providers/presets.js";
+import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
-import { PermissionEngine, type ApprovalMode, type PermissionAction } from "./permissions/index.js";
+import { PermissionEngine, type PermissionScope } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
@@ -16,7 +16,7 @@ import { authWizard, authList, authLogout } from "./auth/wizard.js";
 import { SessionStore } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
-import { loadConfig, type PermissionConfigValue } from "./config/loader.js";
+import { loadConfig } from "./config/loader.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers } from "./mcp/connector.js";
@@ -26,19 +26,23 @@ import { render } from "ink";
 import App from "./ui/App.js";
 import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
+import { resolveTheme, ThemeContextValue, type ThemeDefinition } from "./ui/theme.js";
+import {
+  resolveKeybindings,
+  parseKeyCombo,
+  type KeybindingMap,
+  type KeybindingConfig as KeybindingSystemConfig,
+} from "./ui/keybindings.js";
+import type { WorkflowIntegrationConfig } from "./ui/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Populated once at startup (see main()) so the synchronous `completer` can
-// offer /mode <tab> slug completion without making completer async — readline
-// requires a sync completer callback.
 let knownModeSlugs: string[] = [];
 
 interface CliArgs {
   prompt?: string;
   continue_: boolean;
   sessionId?: string;
-  approveMode?: "edits" | "all";
   mode?: string;
   model?: string;
   debug?: boolean;
@@ -64,7 +68,6 @@ function parseArgs(): CliArgs {
       "  --mode <slug>          Start in the given mode\n" +
       "  --model <provider/model> Override config/mode model\n" +
       "  -p, --print <prompt>   Headless mode: run one task and exit\n" +
-      "  --approve <edits|all>  Set approval mode (for headless runs)\n" +
       "  --debug                Write redacted request/response JSONL\n" +
       "  --help                 Show this help\n" +
       "  --version              Show version\n"
@@ -87,9 +90,6 @@ function parseArgs(): CliArgs {
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === "-p" || args[i] === "--print") && i + 1 < args.length) {
       result.prompt = args[++i];
-    } else if (args[i] === "--approve" && i + 1 < args.length) {
-      const mode = args[++i];
-      if (mode === "edits" || mode === "all") result.approveMode = mode;
     } else if (args[i] === "--mode" && i + 1 < args.length) {
       result.mode = args[++i];
     } else if (args[i] === "--model" && i + 1 < args.length) {
@@ -130,10 +130,10 @@ async function runDoctor(): Promise<void> {
 
   try {
     const configResult = loadConfig();
-    const providers = Object.keys(configResult.config.providers || {});
-    console.log(`  config.yaml       ${providers.length} provider(s): ${providers.join(", ") || "none"}`);
+    const modelName = configResult.config.model || configResult.config.env?.MODEL || "(not set)";
+    console.log(`  settings.json     model: ${modelName}`);
   } catch (e) {
-    console.log(`  config.yaml       ERROR: ${(e as Error).message}`);
+    console.log(`  settings.json     ERROR: ${(e as Error).message}`);
   }
 
   const keySource = process.env.DEEPSEEK_API_KEY ? "DEEPSEEK_API_KEY env var"
@@ -142,7 +142,7 @@ async function runDoctor(): Promise<void> {
     : process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY env var"
     : (() => {
         const names = Object.entries(readCredentialsFile()).filter(([, v]) => v).map(([k]) => k);
-        if (names.length) return `credentials.yaml (${names.length} key(s): ${names.join(", ")})`;
+        if (names.length) return `credentials.json (${names.length} key(s): ${names.join(", ")})`;
         return "none";
       })();
   console.log(`  API key           ${keySource}`);
@@ -164,7 +164,7 @@ async function runDoctor(): Promise<void> {
 }
 
 const SLASH_COMMANDS = [
-  "/help", "/exit", "/clear", "/mode", "/approve", "/compact",
+  "/help", "/exit", "/clear", "/mode", "/compact",
   "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new",
   "/skills", "/skill", "/modes", "/model", "/effort"
 ];
@@ -222,8 +222,6 @@ function truncateContent(content: string, maxLen: number): string {
   return content.slice(0, maxLen) + `\n... (truncated at ${maxLen} chars)`;
 }
 
-// Colors are only ever emitted on an interactive TTY with NO_COLOR unset — piped/headless
-// output must stay byte-for-byte plain (tests and pipelines grep it).
 const colorEnabled = !!process.stdout.isTTY && !process.env.NO_COLOR;
 const ansi = {
   dim: (s: string) => (colorEnabled ? `\x1b[2m${s}\x1b[0m` : s),
@@ -247,9 +245,6 @@ function getProviderLabel(name: string): string {
   return PROVIDER_LABELS[name] ?? name;
 }
 
-// Enumerates every known provider/model combo (built-in preset models + any
-// config-defined models). Shared by the bare `/model` listing and `/model <tab>`
-// completion so both stay in sync.
 function listKnownModels(): ModelEntry[] {
   const entries: ModelEntry[] = [];
   for (const provName of getKnownProviderNames()) {
@@ -291,7 +286,6 @@ async function processAtMentions(input: string): Promise<string> {
       const truncated = truncateContent(content, 4000);
       result = result.replace(match[0], `\n--- ${filePath} ---\n${truncated}\n--- end ${filePath} ---\n`);
     } catch {
-      // File doesn't exist — leave the @mention as-is
     }
   }
 
@@ -320,24 +314,10 @@ async function main() {
     process.stderr.write(`Warning: ${w}\n`);
   }
 
-  if (configResult.config.providers) {
-    setConfigProviders(configResult.config.providers);
-  }
+  const configEnv = configResult.config.env;
 
-  if (configResult.config.mcp) {
-    await connectMCPServers(configResult.config.mcp);
-  }
-
-  function feedPermissions(engine: PermissionEngine, perms: Record<string, PermissionConfigValue>): void {
-    for (const [tool, value] of Object.entries(perms)) {
-      if (typeof value === "string") {
-        engine.addRule({ tool, action: value as PermissionAction });
-      } else if (typeof value === "object") {
-        for (const [pattern, action] of Object.entries(value)) {
-          engine.addRule({ tool, pattern, action: action as PermissionAction });
-        }
-      }
-    }
+  if (configResult.config.mcpServers) {
+    await connectMCPServers(configResult.config.mcpServers);
   }
 
   if (process.argv[2] === "auth") {
@@ -355,6 +335,12 @@ async function main() {
   }
 
   function detectProvider(): string | null {
+    if (configEnv?.BASE_URL) {
+      if (configEnv.BASE_URL.includes("deepseek")) return "deepseek";
+      if (configEnv.BASE_URL.includes("openai")) return "openai";
+      if (configEnv.BASE_URL.includes("openrouter")) return "openrouter";
+      if (configEnv.BASE_URL.includes("groq")) return "groq";
+    }
     const envProviders = [
       { name: "deepseek", key: "DEEPSEEK_API_KEY" },
       { name: "openai", key: "OPENAI_API_KEY" },
@@ -369,39 +355,42 @@ async function main() {
     return null;
   }
 
-  function hasAnyKey(): boolean {
-    if (detectProvider()) return true;
-    return Object.values(readCredentialsFile()).some((v) => v);
-  }
+  const resolvedApiKey = configEnv?.API_KEY || undefined;
+  const resolvedBaseUrl = configEnv?.BASE_URL || undefined;
 
   const detected = detectProvider();
-  let providerName =
-    process.env.HEIRLOOM_PROVIDER ||
-    configResult.config.provider ||
-    detected ||
-    "deepseek";
+  let providerName = configResult.config.provider || detected || "deepseek";
 
-  if (!detected && !configResult.config.provider && !process.env.HEIRLOOM_PROVIDER && !hasAnyKey()) {
-    console.log("No API keys found. Run `heirloom auth` to configure a provider, or set an API key env var.");
-    console.log("Supported keys: DEEPSEEK_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY\n");
-    if (!args.prompt) {
-      process.exit(0);
+  if (!detected && !configResult.config.provider && !resolvedApiKey) {
+    const hasCreds = Object.values(readCredentialsFile()).some((v) => v);
+    if (!hasCreds) {
+      console.log("No API keys found. Set config.env.API_KEY, env var, or run `heirloom auth`.");
+      if (!args.prompt) {
+        process.exit(0);
+      }
     }
   }
-  let activeModel: string | undefined = args.model ?? configResult.config.model ?? undefined;
 
-  /** Returns the current model's capabilities from the preset (or undefined). */
+  let activeModel: string | undefined = args.model ?? configResult.config.model ?? configEnv?.MODEL ?? undefined;
+
+  const thinkingEnabled = configResult.config.thinkingEnabled ?? true;
+  const reasoningEffort = configResult.config.reasoningEffort;
+
   function getActiveModelCaps(): ModelCapabilities | undefined {
     const preset = getPreset(providerName);
     if (!preset) return undefined;
     return preset.models[activeModel ?? preset.defaultModel];
   }
 
-  // Per-model effort knob — resets to the new model's default on /model switch.
-  let activeEffort: string | undefined = getActiveModelCaps()?.effort?.default;
+  let activeEffort: string | undefined = reasoningEffort || getActiveModelCaps()?.effort?.default;
 
   function getProvider() {
-    return createProvider(providerName, activeModel);
+    const opts: ProviderOptions = {
+      modelOverride: activeModel,
+      baseUrl: resolvedBaseUrl,
+      apiKey: resolvedApiKey,
+    };
+    return createProvider(providerName, opts);
   }
 
   function checkCapabilities() {
@@ -418,12 +407,8 @@ async function main() {
   try {
     knownModeSlugs = (await modeLoader.listAll()).map(m => m.slug);
   } catch {
-    // Best-effort — /mode <tab> just won't complete if this fails.
   }
-  const permissions = PermissionEngine.defaults(undefined, !!args.prompt);
-  if (configResult.config.permissions) {
-    feedPermissions(permissions, configResult.config.permissions);
-  }
+  const permissions = new PermissionEngine(configResult.config.permissions, process.cwd());
 
   const contextWindow =
     configResult.config.contextWindow ?? 128000;
@@ -439,7 +424,6 @@ async function main() {
     }
     return _compactor;
   }
-
 
 
 
@@ -491,10 +475,6 @@ async function main() {
     enableDebug(sessionId);
   }
 
-  if (args.approveMode) {
-    permissions.setApprovalMode(args.approveMode);
-  }
-
   let checkpoints = new CheckpointManager(sessionId);
   const diagnostics = new DiagnosticRunner();
   setSessionId(sessionId);
@@ -508,8 +488,6 @@ async function main() {
     conversationHistory: [] as Message[],
     sessionInput: 0,
     sessionOutput: 0,
-    // Tokens of the most recent request — the actual context size, unlike
-    // sessionInput/Output which accumulate across requests (for cost).
     lastContextTokens: 0,
     sessionUserInputs: [] as string[],
     abort: new AbortController(),
@@ -530,7 +508,6 @@ async function main() {
         });
       }
     } catch {
-      // Session logging is best-effort; ignore errors on exit
     }
   }
 
@@ -647,7 +624,6 @@ async function main() {
     }
   }
 
-  // ── Piped path: plain line-by-line, no ANSI, no TUI ──
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     const rl = createInterface({ input: process.stdin });
     let pipedConversationHistory: Message[] = [];
@@ -698,12 +674,10 @@ async function main() {
     return;
   }
 
-  // ── TTY path: Ink renderer ──
-  // Banner (goes to real stdout before Ink takes over)
-  console.log("heirloom — type /exit to quit, /help for help");
+  console.log("heirloom — AI coding assistant");
   if (colorEnabled) {
-    console.log(`  ${ansi.bright("shift+tab")} ${ansi.dim("approve")}  ${ansi.dim("·")}  ${ansi.bright("esc")} ${ansi.dim("abort")}  ${ansi.dim("·")}  ${ansi.bright("/help")}`);
-    console.log(`  ${ansi.orange("\u25CF")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands")}`);
+    console.log(`  ${ansi.bright("shift+tab")} ${ansi.dim("approve")}  ${ansi.dim("·")}  ${ansi.bright("esc")} ${ansi.dim("abort")}  ${ansi.dim("·")}  ${ansi.bright("ctrl+shift+p")} ${ansi.dim("commands")}  ${ansi.dim("·")}  ${ansi.bright("ctrl+shift+/")} ${ansi.dim("help")}`);
+    console.log(`  ${ansi.orange("\u25CF")} ${ansi.orange("Tip")} ${ansi.dim("/help for commands, Ctrl+Shift+P for command palette")}`);
   }
   console.log("");
 
@@ -716,6 +690,14 @@ async function main() {
   process.on("SIGTERM", () => {
     logSessionEnd().finally(() => process.exit(0));
   });
+
+  function crashExit(label: string, err: unknown) {
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stderr.write(`\n${label}: ${(err as Error)?.message ?? err}\n`);
+    logSessionEnd().finally(() => process.exit(1));
+  }
+  process.on("uncaughtException", (err) => crashExit("Fatal error", err));
+  process.on("unhandledRejection", (err) => crashExit("Unhandled rejection", err));
 
   const promptStr = colorEnabled ? `${ansi.blue("\u258C")} ${ansi.blue("\u203A")} ` : "heirloom > ";
 
@@ -732,6 +714,7 @@ async function main() {
     const preset = getPreset(providerName);
     const caps = preset?.models[activeModel ?? preset.defaultModel];
     if (!caps?.pricing) return null;
+    if (shared.sessionInput === 0 && shared.sessionOutput === 0) return null;
     return ((shared.sessionInput * caps.pricing.inputPerM + shared.sessionOutput * caps.pricing.outputPerM) / 1_000_000).toFixed(4);
   }
 
@@ -741,16 +724,18 @@ async function main() {
     const sep = () => T(" │ ", { dimColor: true });
     const segments: import("./ui/types.js").StatusSegment[] = [];
 
-    // mode
     segments.push(dim(activeMode?.name ?? "chat"));
 
-    // model
+    if (permissions.getDefaultMode() === "askAll") {
+      segments.push(T(" ", {}));
+      segments.push(T("\u{1F512}askAll", { color: "yellow", bold: true }));
+    }
+
     segments.push(T(" · ", { dimColor: true }));
     const modelId = activeModel ?? getPreset(providerName)?.defaultModel ?? "unknown";
     const providerLabel = getProviderLabel(providerName);
     segments.push(T(`${providerLabel}/${modelId}`, { bold: true }));
 
-    // cwd
     segments.push(T(" · ", { dimColor: true }));
     let cwd = process.cwd();
     const home = process.env.HOME || process.env.USERPROFILE || "";
@@ -758,37 +743,30 @@ async function main() {
     if (cwd.length > 30) { const parts = cwd.split("/"); cwd = "…/" + parts.slice(-2).join("/"); }
     segments.push(dim(cwd));
 
-    // ctx %
     const ctxPercent = getContextPercent();
     if (ctxPercent !== null) {
       segments.push(sep());
       segments.push(dim("ctx "));
-      const ctxText = `${Math.round(ctxPercent)}%`;
+      const filled = Math.round((Math.min(ctxPercent, 100) / 100) * 8);
+      const bar = "█".repeat(filled) + "░".repeat(8 - filled);
+      const ctxText = `${bar} ${Math.round(ctxPercent)}%`;
       if (ctxPercent >= 95) segments.push(T(ctxText, { color: "red" }));
       else if (ctxPercent >= 80) segments.push(T(ctxText, { color: "yellow" }));
       else segments.push(dim(ctxText));
     }
 
-    // cost
     const costStr = getCostStr();
     if (costStr) {
       segments.push(sep());
       segments.push(dim(`$${costStr}`));
     }
 
-    // effort
     if (activeEffort) {
       segments.push(sep());
       segments.push(T(activeEffort, { bold: true }));
     }
 
     return segments;
-  }
-
-  function cycleApprovalMode(): void {
-    const modes: ApprovalMode[] = ["manual", "edits", "all"];
-    const idx = modes.indexOf(permissions.approvalMode);
-    permissions.setApprovalMode(modes[(idx + 1) % modes.length]);
   }
 
   const handleSlash = async (input: string): Promise<string[]> => {
@@ -808,16 +786,17 @@ async function main() {
     switch (cmd) {
       case "/help": {
         console.log(
-          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /approve [manual|edits|all], /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /model <provider/model>, /cost\n" +
+          "Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /checkpoint, /restore [files|full], /checkpoints, /skills, /skill <name>, /compact, /model <provider/model>, /cost, /effort\n" +
             "Use `heirloom auth` to configure a provider, or set a *_API_KEY env var.",
         );
         return;
       }
       case "/cost": {
         console.log(`Session totals: ${(shared.sessionInput / 1000).toFixed(1)}k in / ${(shared.sessionOutput / 1000).toFixed(1)}k out`);
-        const costStr = getCostStr();
-        if (costStr) {
-          console.log(`Estimated cost: $${costStr}`);
+        const preset = getPreset(providerName);
+        const caps = preset?.models[activeModel ?? preset.defaultModel];
+        if (caps?.pricing) {
+          console.log(`Estimated cost: $${getCostStr() ?? "0.0000"}`);
         } else {
           console.log("Estimated cost: unknown (no pricing data for this model)");
         }
@@ -867,29 +846,6 @@ async function main() {
         }
         return;
       }
-      case "/approve": {
-        const mode = input.slice(8).trim();
-        if (mode === "manual" || mode === "edits" || mode === "all") {
-          permissions.setApprovalMode(mode);
-          if (mode === "all") {
-            console.log(`All edit tool calls will auto-approve within ${process.cwd()}. Deny rules still hold.`);
-          } else {
-            console.log(`Approval mode set to: ${mode}`);
-          }
-        } else if (mode === "") {
-          console.log(`Current approval mode: ${permissions.approvalMode}`);
-          const sessionRules = permissions.getSessionRules();
-          if (sessionRules.length > 0) {
-            console.log("Session rules:");
-            for (const r of sessionRules) {
-              console.log(`  ${r.tool} ${r.pattern || "*"} -> ${r.action}`);
-            }
-          }
-        } else {
-          console.log("Usage: /approve [manual|edits|all]");
-        }
-        return;
-      }
       case "/compact": {
         console.log("Not yet implemented. Compaction runs automatically.");
         return;
@@ -934,7 +890,7 @@ async function main() {
           providerName = provName;
           activeModel = modelName;
           _compactor = undefined;
-          activeEffort = getActiveModelCaps()?.effort?.default;
+          activeEffort = reasoningEffort || getActiveModelCaps()?.effort?.default;
           sessionStore.appendState(sessionId, {
             model: modelName,
             provider: provName,
@@ -1098,13 +1054,50 @@ async function main() {
         sessionStore.appendState(sessionId, { inputTokens: input, outputTokens: output, cumulativeInput: shared.sessionInput, cumulativeOutput: shared.sessionOutput });
         cb.onUsage(input, output);
       },
-      // agent.ts already surfaced the tool via onToolStart; the App's askUser
-      // renders the preview and approval prompt. Re-announcing the tool here
-      // printed every ask-gated call twice more.
       askUser: cb.askUser,
     });
 
     return result;
+  };
+
+  const resolvedTheme = new ThemeContextValue(
+    resolveTheme({
+      mode: configResult.config.theme?.mode ?? "dark",
+      overrides: configResult.config.theme?.overrides,
+    }),
+  );
+
+  let resolvedKeybindings: KeybindingMap | undefined;
+  let resolvedKeybindingConfig: KeybindingSystemConfig | undefined;
+
+  const rawKbConfig = configResult.config.keybindings;
+  if (rawKbConfig && "overrides" in rawKbConfig) {
+    const ext = rawKbConfig as any;
+    const overrides: Record<string, any> = {};
+    if (ext.overrides) {
+      for (const [action, value] of Object.entries(ext.overrides)) {
+        if (typeof value === "string") {
+          const combo = parseKeyCombo(value);
+          if (combo) overrides[action] = [combo];
+        } else if (Array.isArray(value)) {
+          overrides[action] = value.map((v: string) => parseKeyCombo(v)).filter(Boolean);
+        }
+      }
+    }
+    resolvedKeybindingConfig = {
+      overrides,
+      disabled: ext.disabled,
+    };
+  } else if (rawKbConfig && typeof rawKbConfig === "object") {
+    resolvedKeybindingConfig = rawKbConfig as KeybindingSystemConfig;
+  }
+  resolvedKeybindings = resolveKeybindings(resolvedKeybindingConfig);
+
+  const workflowConfig: WorkflowIntegrationConfig = {
+    gitStatus: configResult.config.workflow?.gitStatus ?? true,
+    gitPollInterval: configResult.config.workflow?.gitPollInterval ?? 30000,
+    gitCommands: configResult.config.workflow?.gitCommands ?? true,
+    detectBuildTools: configResult.config.workflow?.detectBuildTools ?? true,
   };
 
   const appCtx = {
@@ -1130,7 +1123,6 @@ async function main() {
     processAtMentions,
     completer,
     buildStatusBar,
-    cycleApprovalMode,
     getPromptStr: () => promptStr,
     getColorEnabled: () => colorEnabled,
     logSessionEnd,
@@ -1138,9 +1130,32 @@ async function main() {
     handleSlash,
     getModelEntries: () => listKnownModels(),
     runAgentTurnCore: runAgentTurnBridge,
+
+    theme: resolvedTheme,
+    keybindings: resolvedKeybindings,
+    keybindingConfig: resolvedKeybindingConfig,
+
+    tabState: undefined,
+
+    workflowConfig,
   };
 
-  const { waitUntilExit } = render(createElement(App, { ctx: appCtx }));
+  const themeConfig = {
+    mode: (configResult.config as any)?.theme?.mode ?? "dark",
+    overrides: (configResult.config as any)?.theme?.overrides,
+  };
+
+  const keybindingConfig = {
+    overrides: (configResult.config as any)?.keybindings,
+  };
+
+  const { waitUntilExit } = render(
+    createElement(App, {
+      ctx: appCtx,
+      themeConfig,
+      keybindingConfig,
+    }),
+  );
   await waitUntilExit();
 }
 void main();
