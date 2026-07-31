@@ -198,6 +198,12 @@ export async function runAgent(
         stopReason = "aborted";
         break;
       }
+      // Provider stream failures (auth, HTTP, network) have deliberate handling
+      // by the caller — headless surfaces them as a non-zero exit, the TUI shows
+      // the error. errorRecovery.handleFatalError is for *unexpected* faults in
+      // the rest of the turn body (tool loop, compaction, diagnostics), not for
+      // these. Tag the error so the outer recovery catch re-throws it untouched.
+      (err as any).__providerStreamError = true;
       throw err;
     }
 
@@ -415,7 +421,7 @@ export async function runAgent(
       options.onCompacted?.(`${before} → ${messages.length} messages`);
     }
     } catch (err) {
-      if (errorRecovery) {
+      if (errorRecovery && !(err as any)?.__providerStreamError) {
         const msg = errorRecovery.handleFatalError(err instanceof Error ? err : new Error(String(err)));
         messages.push({ role: "system", content: msg });
         options.onDiagnostic?.(msg);

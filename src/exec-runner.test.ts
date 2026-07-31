@@ -499,3 +499,81 @@ describe("runExecMode fires the notify hook at the completion boundary", () => {
     expect(input.failReason).toContain("stream exploded");
   });
 });
+
+// Proves the self-reflection / error-recovery subsystems are actually
+// constructed and passed by the headless call site — before wiring they were
+// always undefined, so neither of these behaviors could occur.
+describe("runExecMode wires self-reflection + error-recovery (engagement)", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.DEEPCODE_HOME = HOME_DIR;
+    executeToolSpy.mockClear();
+    createProviderSpy.mockClear();
+    scriptedCall = null;
+  });
+
+  afterEach(() => {
+    delete process.env.DEEPCODE_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("errorReflector: a failing tool result drives a reflection retry turn", async () => {
+    // allowAll so the tool runs; it returns an error the first time. The wired
+    // reflector injects a retry prompt, so the provider is asked for a second
+    // turn (which finishes). Without a reflector the run would stop after the
+    // single failed turn without re-prompting.
+    writeSettings({ provider: "deepseek", permissions: { defaultMode: "allowAll", rules: [] } });
+
+    let providerTurns = 0;
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        providerTurns++;
+        if (providerTurns === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "read_file" };
+          yield { type: "tool_call_delta", id: "c1", arguments: JSON.stringify({ path: "a.txt" }) };
+          yield { type: "done", finishReason: "tool_calls" };
+        } else {
+          yield { type: "text_delta", content: "recovered" };
+          yield { type: "done", finishReason: "stop" };
+        }
+      },
+    });
+    executeToolSpy.mockImplementationOnce(async () => ({ content: "", error: "ENOENT: missing" }));
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    // A second provider turn only happens because the reflector re-prompted
+    // after the failed tool result.
+    expect(providerTurns).toBe(2);
+  });
+
+  it("errorRecovery: malformed tool-call JSON drives a correction retry instead of executing the tool", async () => {
+    writeSettings({ provider: "deepseek", permissions: { defaultMode: "allowAll", rules: [] } });
+
+    let providerTurns = 0;
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        providerTurns++;
+        if (providerTurns === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "read_file" };
+          yield { type: "tool_call_delta", id: "c1", arguments: "{not json" };
+          yield { type: "done", finishReason: "tool_calls" };
+        } else {
+          yield { type: "text_delta", content: "fixed" };
+          yield { type: "done", finishReason: "stop" };
+        }
+      },
+    });
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    // The malformed call is never executed; recovery re-prompts for valid JSON.
+    expect(executeToolSpy).not.toHaveBeenCalled();
+    expect(providerTurns).toBe(2);
+  });
+});
