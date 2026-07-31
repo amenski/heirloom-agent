@@ -146,8 +146,15 @@ export function createProvider(name: string, options?: ProviderOptions): Provide
     );
   }
 
+  // Honor a config-supplied base URL (settings.json env.BASE_URL) for built-in
+  // presets — otherwise the hardcoded preset baseUrl always wins and there is no
+  // way to point a provider at a proxy/gateway (QA B2).
+  const effectivePreset: ProviderPreset = options?.baseUrl
+    ? { ...preset, baseUrl: options.baseUrl }
+    : preset;
+
   return createAISDKProvider(
-    preset,
+    effectivePreset,
     options?.modelOverride ?? preset.defaultModel,
     apiKey,
   );

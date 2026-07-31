@@ -75,6 +75,28 @@ describe("createProvider key resolution", () => {
     const model = aisdkMock.mock.calls[0]?.[1];
     expect(model).toBe("deepseek-v4-pro");
   });
+
+  it("honors an options.baseUrl override for a built-in preset (B2)", async () => {
+    process.env[ENV_KEY] = "sk-env-dummy";
+
+    const { createProvider } = await import("./presets.js");
+    createProvider("deepseek", { baseUrl: "http://127.0.0.1:9" });
+
+    expect(aisdkMock).toHaveBeenCalledTimes(1);
+    const preset = aisdkMock.mock.calls[0]?.[0];
+    expect(preset.baseUrl).toBe("http://127.0.0.1:9");
+  });
+
+  it("falls back to the preset baseUrl when no override is given", async () => {
+    process.env[ENV_KEY] = "sk-env-dummy";
+
+    const { createProvider } = await import("./presets.js");
+    createProvider("deepseek");
+
+    expect(aisdkMock).toHaveBeenCalledTimes(1);
+    const preset = aisdkMock.mock.calls[0]?.[0];
+    expect(preset.baseUrl).toBe("https://api.deepseek.com");
+  });
 });
 
 describe("BUILTIN_PRESETS models map", () => {
