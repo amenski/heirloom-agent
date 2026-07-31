@@ -9,6 +9,24 @@ export interface CheckpointEntry {
   timestamp: string;
 }
 
+// Explicit `-c` overrides applied to every shadow-repo git invocation so the
+// checkpoint machinery never depends on — and can never be subverted by — the
+// ambient global/system git config. Without an explicit identity, `git commit`
+// aborts on any machine lacking a global user.name/user.email (e.g. CI), which
+// silently broke checkpointing. The remaining overrides neutralize hostile or
+// exotic global config that could otherwise block commits (commit.gpgsign),
+// execute arbitrary code (core.hooksPath), or corrupt content (autocrlf).
+const GIT_CONFIG_OVERRIDES = [
+  "-c user.name=heirloom",
+  "-c user.email=heirloom@local",
+  "-c commit.gpgsign=false",
+  "-c tag.gpgsign=false",
+  "-c core.hooksPath=/dev/null",
+  "-c core.autocrlf=false",
+  "-c core.fileMode=false",
+  "-c init.defaultBranch=main",
+].join(" ");
+
 export class CheckpointManager {
   private shadowDir: string;
   private workspaceDir: string;
@@ -29,7 +47,7 @@ export class CheckpointManager {
 
     if (!existsSync(this.shadowDir)) {
       mkdirSync(this.shadowDir, { recursive: true });
-      execSync("git init", { cwd: this.shadowDir, stdio: "pipe" });
+      execSync(`git ${GIT_CONFIG_OVERRIDES} init`, { cwd: this.shadowDir, stdio: "pipe" });
 
       const exclude = [
         ".git",
@@ -62,7 +80,7 @@ export class CheckpointManager {
 
   private git(args: string): string {
     return execSync(
-      `git --work-tree="${this.workspaceDir}" --git-dir="${this.shadowDir}/.git" ${args}`,
+      `git ${GIT_CONFIG_OVERRIDES} --work-tree="${this.workspaceDir}" --git-dir="${this.shadowDir}/.git" ${args}`,
       { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: "pipe" },
     ).trim();
   }

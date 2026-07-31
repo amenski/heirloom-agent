@@ -91,6 +91,42 @@ describe("checkpoint secret handling", () => {
     expect(files).not.toContain(".env");
   });
 
+  it("completes a checkpoint cycle with NO global git identity (self-contained shadow repo)", async () => {
+    // Regression guard: the shadow repo must never depend on the ambient
+    // global/system git config. Scrub identity for the git subprocesses so a
+    // machine without a global user.name/user.email (e.g. CI) is simulated;
+    // the commit must still succeed via the manager's own -c overrides.
+    const prevGlobal = process.env.GIT_CONFIG_GLOBAL;
+    const prevSystem = process.env.GIT_CONFIG_SYSTEM;
+    process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+
+    try {
+      const mgr = await chkptManager();
+
+      // save
+      writeFileSync(join(workspaceDir, "app.ts"), "console.log('changed');\n");
+      const hash = await mgr.save("no-global-identity");
+      expect(hash).toBeTruthy();
+
+      // list sees the commit
+      const entries = mgr.list();
+      expect(entries.length).toBeGreaterThan(0);
+      expect(entries[0]!.hash).toBe(hash);
+
+      // restore round-trips
+      rmSync(join(workspaceDir, "app.ts"));
+      const result = await mgr.restore("files");
+      expect(result.restored).toBe(true);
+      expect(existsSync(join(workspaceDir, "app.ts"))).toBe(true);
+    } finally {
+      if (prevGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = prevGlobal;
+      if (prevSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+      else process.env.GIT_CONFIG_SYSTEM = prevSystem;
+    }
+  });
+
   it("restore does not recreate gitignored .env that was never tracked", async () => {
     const mgr = await chkptManager();
 
