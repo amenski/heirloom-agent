@@ -87,13 +87,14 @@ A positional `query` (a bare prompt with no `-p`) is also accepted.
 - `-l` together with `-r` → error.
 - `-r <id>` where `<id>` fails the session-ID check → `Invalid session ID`.
 
-> **Known defect (verified):** the `-r` validator (`isValidSessionId`,
-> `src/cli-args.ts:5`) requires a v1–5 **UUID**, but the session store generates
-> IDs of the form `<compact-timestamp>-<4hex>` (`src/sessions/store.ts:95`, e.g.
-> `20260731T014800-a3f2`) and stores files as `<id>.jsonl`. No ID the app
-> actually creates passes the `-r` validator, so resume-*by-ID* is currently
-> broken; use `-l` (last) or `-r` with no argument (picker) instead. The stable
-> truth is the store's `<timestamp>-<4hex>` format (see session-spec.md).
+**Session-ID format.** `-r <id>` accepts the IDs the session store actually
+generates. `generateId()` (`src/sessions/store.ts:95`) takes `toISOString()`,
+strips `:` and `.`, slices to 15 chars, and appends `-<4hex>` — so the real
+shape is `YYYY-MM-DDThhmm-<4hex>`, e.g. `2026-07-30T2358-15a3`. The `-r`
+validator (`isValidSessionId`, `src/cli-args.ts:11`) matches exactly this
+pattern (`/^\d{4}-\d{2}-\d{2}T\d{4}-[0-9a-f]{4}$/`), and session files are stored
+as `<id>.jsonl`, so the filename *is* the ID. Resume-by-ID works. (Legacy UUID
+IDs are intentionally not accepted — the app has never generated them.)
 
 ## Headless Mode (`-x -p`)
 
@@ -130,32 +131,30 @@ autocomplete menu offers); routing is split between `src/ui/App.tsx`
 | `/clear` | Clear conversation history | `handleSlashCore` |
 | `/model` | Open the model / thinking / effort selector | App (dropdown) |
 | `/theme` | Switch color theme with live preview | App (dropdown) |
+| `/new` | Start a fresh conversation: drops the model-visible history and wipes the scrollback (`/clear` plus a transcript clear), prints `[started a fresh conversation]` | App |
 | `/resume` | Pick a previous session to continue | App (session list) |
 | `/continue` | Continue the active session (or pick one if empty) | App (session list) |
 | `/undo` | Restore code and/or conversation to a previous point | App (undo selector) |
 | `/mcp` | Show MCP server status and available tools | App (MCP status) |
 | `/permissions` | Show this session's permission-decision history | App (history view) |
+| `/plan` | Toggle the plan posture on/off — the same posture Shift+Tab cycles to; prints `[plan mode on]` / `[plan mode off]` | App |
 | `/raw` | Cycle display mode (`lite` → `normal` → `raw-scrollback`) | App (raw-mode cycle) |
 | `/skills` | List available skills | `handleSlashCore` |
 
 ### Routed but not in the autocomplete registry
 
-These work when typed but do not appear in the `/` menu (handled in
-`handleSlashCore`): `/mode <slug>`, `/modes`, `/skill <name>`, `/cost`,
-`/effort`.
-
-### Registered but NOT routed (known defects — print `Unknown:`)
-
-- `/new` — in the registry and the command palette, but no handler intercepts
-  it, so it falls through to `handleSlashCore`'s `default:` and prints
-  `Unknown: /new`. Advertised as "Start a fresh conversation"; currently a no-op
-  error.
-- `/plan` — in the registry ("Toggle plan mode"), but likewise unrouted →
-  `Unknown: /plan`. Plan posture is reachable only via Shift+Tab cycling in the
-  UI, not via this command.
+These work when typed but do not appear in the `/` menu: `/sessions` (an alias
+for the session list, handled in App alongside `/resume` and `/continue`), and,
+handled in `handleSlashCore`, `/mode <slug>`, `/modes`, `/skill <name>`,
+`/cost`, `/effort`.
 
 Unknown `/command` → `Unknown: <cmd>\nType /help.`, never sent to the LLM. Input
 not starting with `/` is always a user message.
+
+The in-app help screen (`src/ui/HelpOverlay.tsx`) lists the commands above,
+including `/permissions` and `/raw`. It no longer advertises `/checkpoint`,
+`/checkpoints`, `/restore`, or `/compact` — those were removed from the help and
+command palette.
 
 ---
 
