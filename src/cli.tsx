@@ -75,6 +75,8 @@ async function main() {
       prompt: parsed.prompt!,
       projectRoot: process.cwd(),
       resumeSessionId: typeof parsed.resume === "string" ? parsed.resume : undefined,
+      mode: parsed.mode,
+      debug: parsed.debug,
     });
     return;
   }
@@ -631,7 +633,7 @@ async function handleSlashCore(
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
     case "/help": {
-      console.log("Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /checkpoint, /restore, /checkpoints, /skills, /skill <name>, /compact, /model <p/m>, /cost, /effort\nUse `heirloom auth` to configure a provider.");
+      console.log("Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /skills, /skill <name>, /model <p/m>, /cost, /effort\nUse `heirloom auth` to configure a provider.");
       return;
     }
     case "/cost": {
