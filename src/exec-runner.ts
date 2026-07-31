@@ -1,3 +1,4 @@
+import { APICallError, RetryError } from "ai";
 import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
 import { executeTool, registry, setSessionId, setSignal } from "./tools/index.js";
@@ -8,7 +9,29 @@ export interface ExecRunnerOptions {
   prompt: string;
   projectRoot: string;
   resumeSessionId?: string;
+  mode?: string;
+  debug?: boolean;
   input?: ExecInputStream;
+}
+
+// All headless diagnostics go straight to process.stderr as single lines — never
+// through console.error, which the AI SDK also uses for its full-object dump.
+function writeErr(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
+// Turn an AI SDK / provider error into a single concise line: status code and the
+// provider's own message when present, unwrapping the retry wrapper. The full
+// object (stack, request body, headers) is only useful with --debug (B6).
+function conciseProviderError(err: unknown): string {
+  let e = err;
+  if (RetryError.isInstance(e) && e.lastError) e = e.lastError;
+  if (APICallError.isInstance(e)) {
+    const status = e.statusCode ? `HTTP ${e.statusCode}: ` : "";
+    return `${status}${e.message}`;
+  }
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
@@ -19,6 +42,17 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     interrupted = true;
   };
   process.on("SIGINT", handleSigint);
+
+  // The AI SDK's streamText installs a default onError that does
+  // `console.error(error)`, dumping the entire error object (stack, request
+  // body, headers) before the failure surfaces through our own catch (B6). In
+  // headless mode we want a single concise line, so we suppress that dump unless
+  // --debug is set. Our own output uses process.stderr directly, so silencing
+  // console.error does not touch it. Restored in `finally`.
+  const originalConsoleError = console.error;
+  if (!options.debug) {
+    console.error = () => {};
+  }
 
   try {
     const { loadConfig } = await import("./config/loader.js");
@@ -35,13 +69,42 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       activeModel = undefined;
     }
 
-    const provider = createProvider(providerName, {
-      modelOverride: activeModel,
-      baseUrl: resolvedBaseUrl,
-      apiKey: resolvedApiKey,
-    });
+    // Validate the requested mode before touching the provider so a typo fails
+    // with a clear "unknown mode" message instead of silently proceeding or
+    // crashing later (B1/D7). Loaded lazily to avoid the cost when no --mode.
+    if (options.mode) {
+      const { ModeLoader } = await import("./modes/loader.js");
+      const modeLoader = new ModeLoader();
+      const resolved = await modeLoader.load(options.mode, options.projectRoot);
+      if (!resolved) {
+        const available = (await modeLoader.listAll(options.projectRoot)).map((m) => m.slug).sort();
+        writeErr(`Error: unknown mode "${options.mode}", available: ${available.join(", ")}`);
+        return 1;
+      }
+    }
 
-    const prompt = await buildExecPrompt(options.prompt, options.input ?? process.stdin);
+    // createProvider throws for an unknown provider or a missing API key. In
+    // headless mode that must be a clean one/two-line message telling the user
+    // what to do (run `heirloom auth`), not a raw Node stack trace (B1).
+    let provider;
+    try {
+      provider = createProvider(providerName, {
+        modelOverride: activeModel,
+        baseUrl: resolvedBaseUrl,
+        apiKey: resolvedApiKey,
+      });
+    } catch (err) {
+      writeErr(`Error: ${(err as Error).message}`);
+      return 1;
+    }
+
+    let prompt: string;
+    try {
+      prompt = await buildExecPrompt(options.prompt, options.input ?? process.stdin);
+    } catch (err) {
+      writeErr(`Error: ${(err as Error).message}`);
+      return 1;
+    }
     if (interrupted) return 130;
 
     const abortController = new AbortController();
@@ -60,7 +123,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         toolName === "run_bash"
           ? String(args?.command ?? "")
           : String(args?.path ?? args?.filePath ?? args?.query ?? "");
-      process.stderr.write(`permission denied (headless): ${toolName} ${subject}\n`);
+      writeErr(`permission denied (headless): ${toolName} ${subject}`);
       return false;
     };
 
@@ -80,10 +143,14 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       return result.stopReason === "done" ? 0 : 1;
     } catch (err) {
       if (interrupted) return 130;
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
+      if (options.debug) {
+        originalConsoleError(err);
+      }
+      writeErr(`Error: ${conciseProviderError(err)}`);
       return 1;
     }
   } finally {
+    console.error = originalConsoleError;
     process.off("SIGINT", handleSigint);
   }
 }

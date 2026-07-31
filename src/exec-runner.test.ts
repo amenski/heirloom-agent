@@ -23,10 +23,11 @@ const PROJECT_DIR = join(TEST_DIR, "project");
 let scriptedCall: { name: string; args: Record<string, unknown> } | null = null;
 const executeToolSpy = vi.fn(async (_call: ToolCall): Promise<ToolOutput> => ({ content: "ok" }));
 
-vi.mock("./providers/presets.js", () => ({
-  initPresets: () => {},
-  getPreset: () => undefined,
-  createProvider: () => ({
+// The scripted "happy path" provider used by the permission tests: one tool call
+// on turn 1, then finishes on turn 2. Individual tests can swap `providerFactory`
+// to make createProvider throw (B1) or stream an error (B6).
+function scriptedProvider() {
+  return {
     name: "fake",
     async *streamChat(): AsyncGenerator<StreamEvent> {
       if (scriptedCall) {
@@ -40,7 +41,21 @@ vi.mock("./providers/presets.js", () => ({
         yield { type: "done", finishReason: "stop" };
       }
     },
-  }),
+  };
+}
+
+// createProvider is captured (so B2 can assert the config baseUrl reaches it) and
+// delegates to a swappable factory (so B1/B6 can script failures).
+const createProviderSpy = vi.fn();
+let providerFactory: (name: string, options?: unknown) => unknown = () => scriptedProvider();
+
+vi.mock("./providers/presets.js", () => ({
+  initPresets: () => {},
+  getPreset: () => undefined,
+  createProvider: (name: string, options?: unknown) => {
+    createProviderSpy(name, options);
+    return providerFactory(name, options);
+  },
 }));
 
 vi.mock("./tools/index.js", () => ({
@@ -65,16 +80,24 @@ function writeSettings(settings: Record<string, unknown>): void {
   writeFileSync(join(PROJECT_DIR, ".deepcode", "settings.json"), JSON.stringify(settings), "utf-8");
 }
 
-async function run(): Promise<{ code: number; stderr: string }> {
+async function run(opts?: { mode?: string; debug?: boolean }): Promise<{ code: number; stderr: string }> {
   const { runExecMode } = await import("./exec-runner.js");
   const chunks: string[] = [];
+  // console.error routes through process.stderr.write, so spying on write
+  // captures both the exec-runner's own lines and any leaked SDK dumps.
   const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
     chunks.push(String(chunk));
     return true;
   });
   const outSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   try {
-    const code = await runExecMode({ prompt: "go", projectRoot: PROJECT_DIR, input: nonTtyInput() });
+    const code = await runExecMode({
+      prompt: "go",
+      projectRoot: PROJECT_DIR,
+      input: nonTtyInput(),
+      mode: opts?.mode,
+      debug: opts?.debug,
+    });
     return { code, stderr: chunks.join("") };
   } finally {
     writeSpy.mockRestore();
@@ -89,6 +112,8 @@ describe("runExecMode headless permission enforcement (T11)", () => {
     // Isolate from the developer's real ~/.deepcode/settings.json.
     process.env.DEEPCODE_HOME = HOME_DIR;
     executeToolSpy.mockClear();
+    createProviderSpy.mockClear();
+    providerFactory = () => scriptedProvider();
     scriptedCall = null;
   });
 
@@ -148,5 +173,250 @@ describe("runExecMode headless permission enforcement (T11)", () => {
     const notices = stderr.split("\n").filter((l) => l.includes("permission denied (headless)"));
     expect(notices).toHaveLength(1);
     expect(notices[0]).toBe("permission denied (headless): run_bash npm install left-pad");
+  });
+});
+
+// B1 — a brand-new user's first command must never surface a raw Node stack
+// trace. Every failure reachable before the agent runs (missing key, unknown
+// provider, unknown mode) must be one/two clean stderr lines with exit code 1.
+describe("runExecMode first-run failures are clean (B1)", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.DEEPCODE_HOME = HOME_DIR;
+    createProviderSpy.mockClear();
+    providerFactory = () => scriptedProvider();
+    scriptedCall = null;
+  });
+
+  afterEach(() => {
+    delete process.env.DEEPCODE_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("missing provider key exits 1 with a clean one-line message pointing to auth", async () => {
+    writeSettings({ provider: "deepseek" });
+    providerFactory = () => {
+      throw new Error(
+        'Provider "deepseek" requires DEEPSEEK_API_KEY to be set, or run `heirloom auth` to store a key in credentials.yaml',
+      );
+    };
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    const lines = stderr.split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("heirloom auth");
+    expect(stderr).not.toContain("    at "); // no stack frames
+  });
+
+  it("unknown provider exits 1 with a clean message", async () => {
+    writeSettings({ provider: "nope" });
+    providerFactory = () => {
+      throw new Error('Unknown provider: "nope". Known: deepseek, openai');
+    };
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    expect(stderr).toContain('Error: Unknown provider: "nope"');
+    expect(stderr).not.toContain("    at ");
+  });
+
+  it("unknown --mode exits 1 with an 'unknown mode' message listing available modes", async () => {
+    writeSettings({ provider: "deepseek" });
+
+    const { code, stderr } = await run({ mode: "bogusmode" });
+
+    expect(code).toBe(1);
+    expect(stderr).toContain('unknown mode "bogusmode"');
+    expect(stderr).toContain("available:");
+    expect(stderr).toContain("code"); // a real built-in mode
+    expect(stderr).not.toContain("    at ");
+    // The provider gate must not have fired — mode is validated first.
+    expect(createProviderSpy).not.toHaveBeenCalled();
+  });
+});
+
+// B6 — provider/API failures during the run must print one concise line
+// (status + provider message), not the entire AI SDK error object. The full
+// dump (the SDK's default console.error(error)) is only allowed with --debug.
+describe("runExecMode provider failures are concise (B6)", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.DEEPCODE_HOME = HOME_DIR;
+    createProviderSpy.mockClear();
+    providerFactory = () => scriptedProvider();
+    scriptedCall = null;
+    writeSettings({ provider: "deepseek" });
+  });
+
+  afterEach(() => {
+    delete process.env.DEEPCODE_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("extracts status + message from an APICallError and suppresses the object dump", async () => {
+    const { APICallError } = await import("ai");
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        // Simulate the AI SDK's default onError, which dumps the whole object.
+        console.error(
+          new APICallError({
+            message: "Authentication Fails",
+            url: "https://api.deepseek.com/chat/completions",
+            requestBodyValues: { model: "deepseek-v4-pro", secret: "leaked" },
+            statusCode: 401,
+            responseHeaders: { "x-request-id": "abc" },
+            responseBody: '{"error":"Authentication Fails"}',
+            isRetryable: false,
+          }),
+        );
+        throw new APICallError({
+          message: "Authentication Fails",
+          url: "https://api.deepseek.com/chat/completions",
+          requestBodyValues: { model: "deepseek-v4-pro", secret: "leaked" },
+          statusCode: 401,
+          responseHeaders: { "x-request-id": "abc" },
+          responseBody: '{"error":"Authentication Fails"}',
+          isRetryable: false,
+        });
+        yield { type: "done", finishReason: "stop" };
+      },
+    });
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("Error: HTTP 401: Authentication Fails");
+    // None of the internal request detail leaks without --debug.
+    expect(stderr).not.toContain("requestBodyValues");
+    expect(stderr).not.toContain("leaked");
+    expect(stderr).not.toContain("x-request-id");
+  });
+
+  it("unwraps a RetryError to the last provider error", async () => {
+    const { APICallError, RetryError } = await import("ai");
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        const api = new APICallError({
+          message: "Cannot connect to API: bad port",
+          url: "http://127.0.0.1:9/chat/completions",
+          requestBodyValues: {},
+          isRetryable: true,
+        });
+        throw new RetryError({
+          message: "Failed after 4 attempts. Last error: AI_APICallError: Cannot connect to API: bad port",
+          reason: "maxRetriesExceeded",
+          errors: [api],
+        });
+        yield { type: "done", finishReason: "stop" };
+      },
+    });
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("Error: Cannot connect to API: bad port");
+    expect(stderr).not.toContain("Failed after 4 attempts");
+  });
+
+  it("with --debug, the full error object is handed to console.error for diagnosis", async () => {
+    const { APICallError } = await import("ai");
+    const thrown = new APICallError({
+      message: "Authentication Fails",
+      url: "https://api.deepseek.com/chat/completions",
+      requestBodyValues: { model: "deepseek-v4-pro" },
+      statusCode: 401,
+      responseHeaders: {},
+      responseBody: "{}",
+      isRetryable: false,
+    });
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        throw thrown;
+        yield { type: "done", finishReason: "stop" };
+      },
+    });
+    // With --debug, exec-runner leaves console.error live and re-emits the full
+    // error object through it. Spy so we can assert the object (not a string) is
+    // passed for the developer to inspect.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { code, stderr } = await run({ debug: true });
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("Error: HTTP 401: Authentication Fails");
+    expect(errSpy).toHaveBeenCalledWith(thrown);
+    errSpy.mockRestore();
+  });
+
+  it("without --debug, console.error is suppressed so the SDK object dump cannot leak", async () => {
+    const { APICallError } = await import("ai");
+    // A live spy on console.error stands in for the SDK's default onError dump.
+    const errSpy = vi.spyOn(console, "error");
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        // The SDK would dump the whole object here; exec-runner must have
+        // replaced console.error with a no-op, so this reaches nothing.
+        console.error("FULL_SDK_DUMP requestBodyValues secret");
+        throw new APICallError({
+          message: "Authentication Fails",
+          url: "https://api.deepseek.com/chat/completions",
+          requestBodyValues: {},
+          statusCode: 401,
+          responseHeaders: {},
+          responseBody: "{}",
+          isRetryable: false,
+        });
+        yield { type: "done", finishReason: "stop" };
+      },
+    });
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("Error: HTTP 401: Authentication Fails");
+    expect(stderr).not.toContain("FULL_SDK_DUMP");
+    errSpy.mockRestore();
+  });
+});
+
+// B2 — settings.json env.BASE_URL (and API_KEY) must actually reach the
+// built-in provider path. We assert createProvider receives the config values.
+describe("runExecMode honors config BASE_URL / API_KEY (B2)", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.DEEPCODE_HOME = HOME_DIR;
+    createProviderSpy.mockClear();
+    providerFactory = () => scriptedProvider();
+    scriptedCall = null;
+  });
+
+  afterEach(() => {
+    delete process.env.DEEPCODE_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("passes env.BASE_URL and env.API_KEY from settings.json into createProvider", async () => {
+    writeSettings({
+      provider: "deepseek",
+      env: { BASE_URL: "http://127.0.0.1:9", API_KEY: "sk-from-config" },
+    });
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    expect(createProviderSpy).toHaveBeenCalledWith(
+      "deepseek",
+      expect.objectContaining({ baseUrl: "http://127.0.0.1:9", apiKey: "sk-from-config" }),
+    );
   });
 });
