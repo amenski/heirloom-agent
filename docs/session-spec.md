@@ -174,6 +174,87 @@ it via `load()`/`loadEffective()` is entirely unaffected.
 
 ---
 
+## Sessions Index (`sessions-index.json`)
+
+A per-project cache that makes `/sessions` and `--continue` list richly (titles,
+status, activity time) without re-scanning every JSONL on every open. It lives
+alongside the transcripts:
+
+```
+~/.heirloom/sessions/<project-slug>/
+├── 20260728T142301-ab3f.jsonl
+├── 20260728T191045-c81d.jsonl
+└── sessions-index.json          ← the index
+```
+
+**The JSONL files are the source of truth; the index is a rebuildable cache.**
+Nothing is lost if it is deleted or corrupted.
+
+### Format
+
+```json
+{
+  "version": 1,
+  "sessions": [
+    {
+      "id": "20260728T142301-ab3f",
+      "title": "refactor auth to JWT",
+      "createdAt": "2026-07-28T14:23:01Z",
+      "updatedAt": "2026-07-28T14:41:12Z",
+      "status": "completed",
+      "messageCount": 14,
+      "totalUsed": 88123,
+      "budgetMax": 200000
+    }
+  ]
+}
+```
+
+| Field | Source |
+|---|---|
+| `id` | The session's `meta.id` (== filename). |
+| `title` | First **user** message, secret-redacted, truncated to **≤100 chars**. Overwritten by `renameSession` and then preserved across further appends. |
+| `createdAt` | `meta.createdAt`. |
+| `updatedAt` | `at` of the last record on disk (falls back to `createdAt`). |
+| `status` | Derived — see below. |
+| `messageCount` | Count of `message` rows. |
+| `totalUsed` / `budgetMax` | From the **last** `token` row, if any. Absent when the session has no token rows. |
+
+### Status derivation (small, honest vocabulary)
+
+Derived purely from what the JSONL can tell us — no external signal:
+
+| `status` | Condition |
+|---|---|
+| `completed` | The last `message` row is an `assistant` (or `tool`) message — the last turn resolved. |
+| `interrupted` | The transcript ends on a `user` message (turn started, never finished), or has no messages yet. |
+| `failed` | The file has a **torn/incomplete final line** — a write was cut off. |
+
+### Maintenance & corruption tolerance
+
+- **Incremental.** `create()` and every `append()` recompute that one session's
+  entry and merge it into the index, written **atomically** (temp file +
+  `rename`) so a concurrent reader never sees a half-written file. Index-update
+  failures are swallowed — a stale cache is repaired on the next `list()`.
+- **Corruption-tolerant.** If the index is missing or unparseable, it is treated
+  as a cache miss and **rebuilt from the JSONL scan** (`rebuildIndex`). A
+  still-readable index's user-set titles are preserved across a rebuild.
+- **Freshness.** `list()` uses the index when the set of `id`s in it exactly
+  matches the `*.jsonl` files on disk; otherwise it rebuilds. This makes a
+  legacy dir (transcripts, no index) build one **transparently on first list**,
+  and a deleted/added session self-heal.
+- **Rename.** `renameSession(id, title)` sets a custom `title` (redacted +
+  truncated) in the index, rebuilding first if needed. Returns `false` for an
+  unknown session. The custom title survives subsequent appends.
+- **Delete.** `deleteSession` prunes the entry from the index (best-effort).
+
+### Derivation invariant
+
+Both the incremental update and the full rebuild go through the **same**
+`deriveEntry` scan, so the index can never disagree with a from-scratch scan of
+the same files. `list()` returns identical results whether served from a fresh
+index or a forced rebuild (a tested equivalence).
+
 ## What Is Persisted vs. Rebuilt
 
 | Item | Persisted? | Why |
@@ -218,10 +299,11 @@ a `state` record `{"truncateAt": N}`, never by deleting lines.
 | `heirloom` | New session |
 | `heirloom --continue` / `-c` | Resume the most recent session for this cwd |
 | `heirloom --session <id>` | Resume a specific session |
-| `/sessions` | List this project's sessions: id, first-user-message excerpt (60 chars), age, message count |
+| `/sessions` | List this project's sessions from the index: status marker, title, relative activity time, message count. Ctrl+R renames (`renameSession`); Del deletes. |
 | `/new` | Save current, start fresh |
 
-Session titles are the first user message truncated to 60 chars — no LLM call.
+Session titles default to the first user message, secret-redacted and truncated
+to 100 chars — no LLM call — and are user-renamable (stored in the index).
 (Future: LLM-generated titles like opencode, at session end so it's free.)
 
 Retention: keep everything. Sessions are small text files; pruning
