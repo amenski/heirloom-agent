@@ -28,16 +28,17 @@ architectural swings on the roadmap; drop the rest.
 
 | Item | Source | Effort | Why now |
 |---|---|---|---|
-| **`/theme` command** (live preview, Esc-revert, persist) | #132 | S–M | Heirloom has all the theming infra but **no runtime switch**. Clearest feature gap. |
+| ~~**`/theme` command** (live preview, Esc-revert, persist)~~ ✅ **shipped 2026-08-01** | #132 | S–M | Runtime switcher with live preview + persist landed (`341334c`); mirrors the `/model` dropdown. |
 | ~~**Fix `detectSystemTheme` stub**~~ ✅ **shipped 2026-08-01** | #132 | S | COLORFGBG + macOS `AppleInterfaceStyle` detection, injectable + tested; `auto` works. |
-| **Permission audit trail** (JSONL sidecar) | #266 | S | Records every allow/deny/ask + reason. The core of "permission saving." |
-| **Masked key input + `--api-key`/piped stdin** for `auth` | #225 | S | Key is typed in **plaintext** today; wizard can't be scripted. |
-| **`strictMcpConfig`** MCP command allowlist | #263 | S | ~30 lines; real, cheap MCP hardening. |
-| **Token-usage log + in-memory metrics** | #266, #263 | S | Per-turn usage + accept/reject counts in the exit summary. |
-| **Extra theme presets** (dracula, monokai, github, ansi) | #132 | S | Pure data, re-expressed in Heirloom's richer theme shape. |
+| ~~**Permission audit trail** (JSONL sidecar)~~ ✅ **shipped 2026-08-01** | #266 | S | Every allow/deny/ask + reason recorded to the session store (`78f3b01`). Core of "permission saving." |
+| ~~**Masked key input + `--api-key`/piped stdin** for `auth`~~ ✅ **shipped 2026-08-01** | #225 | S | Masked entry, `--api-key`, and piped-stdin all landed (`66e1df6`); key still → `credentials.yaml`, never config. |
+| ~~**`strictMcpConfig`** MCP command allowlist~~ ✅ **shipped 2026-08-01** | #263 | S | Allowlist + settings wiring into `connectMCPServers` (`3d5b6c4`, `21bb982`). |
+| ~~**Token-usage log + in-memory metrics**~~ ✅ **shipped 2026-08-01** (log); metrics counters remain | #266, #263 | S | Per-turn token-usage log landed with the audit trail (`78f3b01`); the accept/reject counters + exit-summary surfacing are the remaining slice — see newly-known. |
+| ~~**Extra theme presets** (dracula, monokai, github, ansi)~~ ✅ **shipped 2026-08-01** (dracula/monokai/github ×2); ansi ×2 pending | #132 | S | dracula, monokai, github-dark, github-light re-expressed in `ThemeDefinition` shape (`c83f07c`); `ansi-light`/`ansi-dark` still to add — see newly-known. |
 | ~~**Gutter/prompt contrast fix**~~ ✅ **shipped 2026-08-01** | local | S | Gutter + permission/ask prompts routed through tuned theme slots (dark 39/33, light 26/27); border-focus bug fixed. Remaining `#229ac3` in menus/PromptInput listed for a follow-up pass. |
 | **Long→short flag map** for destructive rules | local | S | Closes `rm --recursive --force /` gap. See [security-destructive-matching.md](./security-destructive-matching.md). |
 | ~~**`docs_search` tool**~~ ✅ **shipped 2026-08-01** | local | M | Keyless official-API search, live-smoke verified; general web via MCP. Spec: [web-search-spec.md](./web-search-spec.md). |
+| ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** | #266 | M | Recursively-loaded scoped rule sections injected alongside `instructions.md`/`AGENTS.md` (`7290aab`). Promoted from Roadmap. |
 
 > **Local (non-borrow) findings** also tracked in their own docs, with priorities:
 > the two rows above are the do-now items; the input-stutter fix
@@ -51,7 +52,7 @@ architectural swings on the roadmap; drop the rest.
 | Item | Source | Effort | Why later |
 |---|---|---|---|
 | **PermissionProfile ACL model** (path/network/git sandbox) | #263 | L | A *parallel* permission architecture to the current rule engine — needs its own design doc + a reconcile-or-migrate decision. |
-| **Hierarchical project rules** (`.heirloom/rules/**`) | #266 | M | Additive to `instructions.md`/`AGENTS.md`; nice, not urgent. |
+| ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** (`7290aab`) | #266 | M | Additive to `instructions.md`/`AGENTS.md`; landed — promoted to Do-now shipped list. |
 | **Auto error-fix loop + `<error_analysis>`** | #266 | M | Must first audit overlap with existing `errorrecovery/` + `selfreflection/`. |
 | **Lifecycle hooks** (shell on events) | #263 | M | Powerful but another untrusted-exec surface — opt-in + security-spec first. |
 | **`/usage` balance command** (generalized adapter method) | #216 | M | Only worth it provider-agnostic (`getBalance()` on the adapter), else DeepSeek-only special-case. |
@@ -67,6 +68,60 @@ architectural swings on the roadmap; drop the rest.
 | Wholesale cherry-pick of #263 | #263 | Branch has a **literal unresolved Git merge-conflict marker** in `permissions.ts`. Reimplement ideas, don't lift. |
 | `job-queue.ts`, `skill-parser.ts` | #263 | Out of scope for these goals (background exec / skill-frontmatter tied to PermissionProfile). |
 | Vendored `cli.js` blob, Python skill templates, prompt-text | #266/#263 | Noise / go through Heirloom's own system-prompt change protocol. |
+
+---
+
+## ✅ Shipped — the 2026-07-31 → 08-01 wave
+
+The do-now list above is now mostly landed. Recording what shipped, with commit
+handles, so this doc reflects reality rather than intent:
+
+| Shipped item | Date | Commit(s) | Owning spec |
+|---|---|---|---|
+| `docs_search` tool (keyless official-API search; general web via MCP) | 07-31 | `1e33ff7` | [web-search-spec.md](./web-search-spec.md) |
+| Theme foundation: real `detectSystemTheme` + gutter/prompt theme-slot contrast | 07-31 | `4b51424`, `854cd41` | [theme-spec.md](./theme-spec.md) |
+| Theme presets (dracula, monokai, github-dark, github-light) | 07-31 | `c83f07c` | [theme-spec.md](./theme-spec.md) |
+| `/theme` runtime switcher (live preview, Esc-revert, persist) | 08-01 | `341334c` | [theme-spec.md](./theme-spec.md) |
+| Remaining hardcoded accents routed through theme slots (accent sweep) | 07-31 | `37875f0` | [theme-spec.md](./theme-spec.md) |
+| **T11** — permission engine wired into headless exec mode | 07-31 | `9656e75` | [permission-spec.md](./permission-spec.md) |
+| `strictMcpConfig` command allowlist + settings→`connectMCPServers` wiring | 07-31 | `3d5b6c4`, `21bb982` | [security-spec.md](./security-spec.md) |
+| Auth ergonomics: masked key input, `--api-key`, piped-stdin | 07-31 | `66e1df6` | [provider-spec.md](./provider-spec.md) |
+| Credentials fix — unify config read path with auth's `credentials.yaml` | 07-31 | `7840ba5` | [config-spec.md](./config-spec.md) |
+| Hierarchical project rules (`.heirloom/rules/**`, recursive, scoped) | 07-31 | `7290aab` | [rules-spec.md](./rules-spec.md) |
+| Session observability — permission audit trail + per-turn token-usage log | 08-01 | `78f3b01` | [session-spec.md](./session-spec.md) |
+| QA wave B1–B6 + docs alignment (cli-spec / config-spec / README; `/new`+`/plan` routing; resume-by-ID; help/palette advertise only working commands; clean exec errors; `env.BASE_URL` override) | 07-31 | `04da259`, `5bd15e9`, `6e6e57e`, `4fe4275`, `4febc94`, `5ffb588` | cli-spec / config-spec |
+| CI lockfile fix — regenerate against public npm registry | 08-01 | `e72047f` | — |
+
+This closes **Phases 1–3** of the logging plan below (audit trail, token-usage
+log, hierarchical rules) plus the entire `/theme` phasing from the #132 section.
+
+## 🚧 In-flight — the current wave (being built now)
+
+Landing across parallel worktrees as this doc is written; not yet all merged:
+
+| In-flight item | What it is | Notes |
+|---|---|---|
+| **Checkpoint git identity** | Give checkpoint commits a distinct committer identity so they don't pollute `git log`/blame with the user's identity. | `src/checkpoints/`. |
+| **Dist mode-YAML packaging** | Ensure built-in mode YAML files ship in the published `dist/` bundle (currently resolved from source paths). | Packaging fix; touches build + `src/modes/loader.ts`. |
+| **`notify`** | Activate the parsed-but-dead `notify` config key — fire the user's notification script on completion/idle events. | See dead-wiring section; parallel agent owns activation. |
+| **`statusline`** | Wire the built `src/ui/statusline/` module (StatusLineManager + providers) into the TUI. | See dead-wiring section; parallel agent owns activation. |
+| **Sessions index** | A queryable index over the JSONL session store (list/resume ergonomics, observability). | Complements the session-spec observability work. |
+
+## 🆕 Newly-known items (surfaced during the wave)
+
+Small, concrete follow-ons discovered while shipping the above. Not yet scheduled;
+captured so they aren't lost:
+
+| Item | What / why |
+|---|---|
+| **`ThemeableStatic` + input-stall pair** | The two are coupled: moving committed output to Ink `<Static>` (the input-stutter fix, [input-stall-diagnosis.md](./input-stall-diagnosis.md)) and re-mounting `<Static>` on theme change (`ThemeableStatic`, so live `/theme` preview repaints scrollback) touch the same `OutputArea.tsx` surface. Do them together. |
+| **`/usage` command** | Provider-agnostic balance view via a `getBalance()` adapter method (see PR #216 section). Still unbuilt; `/theme` established the bordered-view+Esc pattern it would reuse. |
+| **Exit-summary React view** | Replace the direct-`stdout.write` `src/ui/exit-summary.ts` with a React-rendered view (survives scroll). Now also the natural home for the **telemetry accept/reject counters** (the remaining slice of the token-usage item). |
+| **Audit refinements** | (a) An **allow-by-posture UI row** — surface when a decision was auto-allowed by the active approval posture, not a rule. (b) **Double-row dedup** in the audit view so a single decision doesn't render twice. |
+| **Doctor: `credentials.json` label** | `doctor` diagnostics still reference/label `credentials.json`; the real file is `credentials.yaml`. Correct the label. |
+| **`ansi-light` / `ansi-dark` presets** | The two ANSI presets from #132 not yet ported (dracula/monokai/github ×2 already shipped). Pure data in `ThemeDefinition` shape. |
+| **Plan-mode research read** | Have plan mode read prior research from `.deepcode/docs/research/` so planning is grounded in existing investigation notes. |
+| **CodeArtifact-URL-in-git-history scrub — decision** | A CodeArtifact registry URL leaked into git history (via a lockfile now fixed forward in `e72047f`). Decide whether to history-scrub (rewrite) or leave-and-document; it is a URL, not a secret. Owner decision pending. |
 
 ---
 
@@ -168,7 +223,7 @@ files keyed by session id — decide per phase.
 
 ## Phased plan (each phase independently shippable + verifiable)
 
-### Phase 1 — Permission audit trail  *(highest value, smallest surface)*
+### Phase 1 — Permission audit trail  *(highest value, smallest surface)* — ✅ shipped 2026-08-01 (`78f3b01`)
 - Emit a `permission` record at every decision point in
   `src/permissions/engine.ts` (`resolve` + the `approveForSession` /
   `approveAlways` / deny / one-time paths).
@@ -177,14 +232,14 @@ files keyed by session id — decide per phase.
 - **Verify:** deny, always-allow, session-allow, and one-time each produce one
   correct row with the right `decision` and `winningRule`.
 
-### Phase 2 — Token-usage log
+### Phase 2 — Token-usage log — ✅ shipped 2026-08-01 (`78f3b01`)
 - After each turn in `src/agent.ts`, record `{ turnTokens, totalUsed,
   budgetMax }` (reuse `estimateTokens`).
 - Surface "remaining" in the status bar and/or a query.
 - **Verify:** rows accumulate per turn; remaining math agrees with the value
   compaction already computes.
 
-### Phase 3 — Hierarchical project rules
+### Phase 3 — Hierarchical project rules — ✅ shipped 2026-07-31 (`7290aab`)
 - Loader for `.heirloom/rules/**/*.md`, recursively, scoped by subdirectory
   (mirror the PR's `loadProjectRules`), injected alongside the existing
   `instructions.md` / `AGENTS.md`.
@@ -425,3 +480,80 @@ strictly richer and already integrated. This is the clearest "borrow the
    revert + persist-on-confirm; add `ThemeableStatic` → *verify:* preview
    recolors history, Esc restores prior theme, confirm writes `theme` to
    settings.
+
+---
+
+## Dead wiring — audit findings (2026-07-31)
+
+This repo has a recurring disease: config keys, modules, and whole subsystems
+that are **declared/parsed/plumbed but consumed by nothing**. This section is a
+full sweep. Already found + fixed/being-fixed elsewhere (not re-listed as new):
+`webSearchTool` (deprecated with a warning), `notify` + `statusline` (being
+activated by the in-flight wave above), `setConfigProviders` (dead helper —
+imported into `cli.tsx:9` but never called).
+
+Method: for each candidate, grep past the declaration/parse site for a real
+consumer. "Dead-wired" = the value is set/plumbed but read by nothing (or the
+read is behind a field no caller ever populates).
+
+### (a) `loader.ts` `KNOWN_KEYS` — keys parsed but consumed nowhere
+
+| Key | Declared | Evidence nothing consumes it | Recommend |
+|---|---|---|---|
+| `enabledSkills` | `loader.ts:68,172,519–536` (parsed into `config.enabledSkills`) | No reader anywhere — `grep enabledSkills src` hits only `loader.ts`. `src/skills/` never consults it; every skill loads unconditionally. | **Wire** (skills loader should honor it) or **deprecate**. It's a documented, plausible feature — prefer wire. |
+| `debugLogEnabled` | `loader.ts:71,173,540–545` | Debug logging is gated by the **`--debug` CLI flag** (`cli.tsx:168 enableDebug(sessionId)`), never by this key. Zero readers of `config.debugLogEnabled`. | **Deprecate** — the CLI flag already covers it; the key is a misleading no-op. (Or wire as an alt-enable, but the flag is the real path.) |
+| `telemetryEnabled` | `loader.ts:72,174,549–554` | Zero readers. No telemetry subsystem consults it (`grep -i telemetry src` outside loader = nothing). | **Deprecate** until an actual telemetry consumer exists (pairs with the exit-summary counters in newly-known). |
+| `notify` | `loader.ts:60,170,498–503` | Parse-only today. *(Being activated by the in-flight wave — listed for completeness.)* | **Wire** (in progress). |
+| `webSearchTool` | `loader.ts:64,171,507–515` | Parse-only; already emits a deprecation warning. | **Deprecate** (done). |
+
+Sub-key findings inside otherwise-live keys:
+
+| Sub-key | Declared | Evidence | Recommend |
+|---|---|---|---|
+| `compaction.auto` | `loader.ts:100` (type + parse) | Only `compaction.threshold` is read (`cli.tsx:123` → `Compactor`). `compaction.auto` has no reader — auto-compaction is unconditional. | **Wire** (gate auto-compaction on it) or **deprecate**. |
+| `workflow.*` (`gitStatus`, `gitPollInterval`, `gitCommands`, `detectBuildTools`) | `loader.ts:93–98`; assembled into `workflowConfig` at `cli.tsx:308–312` and set on `appCtx.workflowConfig` (`cli.tsx:432`) | **`workflowConfig` has zero readers.** It's a field on `AppContext` (`ui/types.ts:161`) and in `AppProps`, but `App.tsx` never destructures or reads it; `ctx.workflowConfig` is referenced nowhere. The git poller **hardcodes `30000`** (`App.tsx:259`), ignoring `gitPollInterval`; `gitStatus`/`gitCommands`/`detectBuildTools` gates are never consulted. | **Wire** the whole subtree (make the poller read `gitPollInterval`, honor the on/off gates) or **delete** the config subtree + `workflowConfig` plumbing. Dead end-to-end today. |
+
+Keys confirmed **live** (traced to a real consumer): `env`, `model`,
+`thinkingEnabled`, `reasoningEffort`, `permissions`, `mcpServers`,
+`strictMcpConfig`, `temperature`, `provider`, `theme`, `keybindings`,
+`compaction.threshold`, `contextWindow`.
+
+### (b) Orphan modules / barrel exports (zero product consumers)
+
+| Symbol / module | Where declared | Evidence | Recommend |
+|---|---|---|---|
+| **`Orchestrator`** subsystem | `src/orchestrator/index.ts` (`Orchestrator` class, `OrchestratorOptions`, `new_task` tool def) | **Nothing imports the module.** `new_task` is registered by no tool registry; only non-code hit is a comment in `permissions/smoke.test.ts`. Entire subsystem orphan. | **Delete** or **wire** (register `new_task`). A sub-agent feature that was built and never mounted — decide if it's still wanted. |
+| **`ErrorRecovery`** subsystem | `src/errorrecovery/index.ts` | Only `agent.ts:8` imports it, as `type`, for the optional field `errorRecovery?` (`agent.ts:64`). The field **is** read (159/236/418) but **no caller of `runAgent` ever sets it** (`cli.tsx`, `exec-runner.ts`, `orchestrator`) and there is no `new ErrorRecovery`. Always `undefined`. | **Wire** (instantiate + pass in) or **delete**. The consuming logic exists; only the construction is missing. |
+| **`ErrorReflector`** subsystem | `src/selfreflection/index.ts` | Same shape: `agent.ts:7` `type`-imports it for `errorReflector?` (`:63`); read at 159/336/338/340 but never populated; no `new ErrorReflector`. Always `undefined`. | **Wire** or **delete** (see errorrecovery). |
+| **`RepoMap`** subsystem | `src/repomap/index.ts` (~470 lines) | `type`-imported by `agent.ts:10` + `prompt.ts:3`; `prompt.ts:78` calls `ctx.repomap.getMap(...)` — but no caller ever sets `repomap`, so it is always `undefined` and the ~470-line impl never executes. | **Wire** (construct a `RepoMap` and pass it into the agent ctx) or **delete**. Real feature, inert wiring. |
+| **`src/ui/statusline/`** subsystem | `manager.ts`, `types.ts`, `sanitize.ts`, `index.ts` | Nothing outside the dir imports any of it; the `StatusSegment` used in `cli.tsx` comes from `ui/types.ts`, not here. *(Being activated by the in-flight wave.)* | **Wire** (in progress). |
+| `src/config/validate.ts` — `validateModeYaml` | standalone | Zero importers anywhere; no test. | **Wire** (mode loader should validate) or **delete**. |
+| `src/ui/ChatInput.tsx` — `ChatInput` | standalone component | Zero importers anywhere. Superseded by `PromptInput`/`ChatInput` was likely replaced. | **Delete** (dead component). |
+| `src/ui/hooks/cursor.ts` — `usePromptTerminalCursor`, `visualWidth`, `strWidth`, `cursor*`, `bracketedPaste*`, `getPromptCursorPlacement` | standalone | Nothing imports `hooks/cursor`. (`visualWidth` exists again as a separate local def in `MarkdownTable.tsx` — not this module.) | **Delete** (or dedupe `visualWidth` into it if kept). |
+| `src/ui/core/loading-text.ts` — `buildLoadingText`, `LoadingTextInput` | standalone | Reachable only via the dead `core/index.ts` barrel wildcard; no direct importer. | **Delete**. |
+| **Dead barrels** (re-export shells nothing imports through): `src/ui/core/index.ts`, `src/ui/hooks/index.ts` | barrels | Every underlying module is imported by its **direct path**, never via the barrel; nothing imports `core/index.js` or `hooks/index.js`. | **Delete** the barrels (keep the modules that have direct consumers). |
+| `src/ui/components/index.ts` — partial | barrel | Only `ModelsDropdown` is consumed via the barrel (`App.tsx:51`). `DropdownMenu`/`DropdownMenuItem`, `SkillsDropdown`/`SkillInfo`, `FileMentionMenu`, `MessageView`/`MessageItem` have **no barrel consumer** (the components are imported directly from their own dirs where used). | **Prune** the unused re-exports; keep the `ModelsDropdown` line. |
+| `src/permissions/index.ts` — `RuleOrigin` (type) | barrel re-export of `engine.js` | Only its definition (`rules.ts:11`) + two re-export lines reference it; imported by nothing. | **Delete** the `RuleOrigin` re-export (or drop the type if truly unused). |
+
+Barrels/modules confirmed **live**: `src/tools/index.ts`, `src/checkpoints/index.ts`,
+`src/skills/index.ts`, `src/diagnostics/` (`DiagnosticRunner` instantiated at
+`cli.tsx:171`), and the consumed permissions symbols (`PermissionEngine`,
+`PermissionAction`, `PermissionConfig`, `PermissionRule`, `PatternKind`).
+
+### (c) Documented-but-dead settings (`docs/config-spec.md`)
+
+The example config block (`config-spec.md:80–90`) presents these as functional,
+but per (a) they are consumed nowhere: `enabledSkills` (`:81`),
+`compaction.auto` (`:85`), `workflow.gitCommands`/`gitStatus` (`:87`), `notify`
+(`:88`), `debugLogEnabled` (`:89`), `telemetryEnabled` (`:90`). **Recommend:**
+once each is wired or deprecated per (a), sync `config-spec.md` to match — either
+mark them in the Deprecated-Keys table or document the now-real behavior. Don't
+leave the doc advertising no-ops.
+
+### (d) UI props/state set-but-never-read (spot check)
+
+- **`AppContext.workflowConfig`** — the standout: assembled from four config
+  keys, set on ctx, threaded through `AppProps`, and read by **nothing** (covered
+  in (a)). This is the clearest set-but-never-read case in the UI.
+
+*(Spot check only, per scope — not an exhaustive prop-level sweep.)*
