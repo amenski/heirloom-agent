@@ -3,7 +3,29 @@ import {
   getSlashCommands,
   filterSlashCommands,
   findExactSlashCommand,
+  type SlashCommandKind,
 } from "./slash-commands.js";
+
+// The set of kinds that App.tsx's handleSlashCommand actually routes (either
+// directly, or by delegating to handleSlashCore). This list is the contract:
+// every registered command must map to a kind in here — a registered command
+// with a kind not covered here would fall through to `Unknown:` at runtime.
+const ROUTED_KINDS: ReadonlySet<SlashCommandKind> = new Set<SlashCommandKind>([
+  "model",
+  "theme",
+  "new",
+  "resume",
+  "continue",
+  "undo",
+  "mcp",
+  "permissions",
+  "exit",
+  "help",
+  "clear",
+  "skills",
+  "plan",
+  "raw",
+]);
 
 describe("/theme slash command registration", () => {
   it("registers a /theme command", () => {
@@ -29,5 +51,41 @@ describe("/theme slash command registration", () => {
     const names = getSlashCommands().map((c) => c.name);
     expect(names).toContain("model");
     expect(names).toContain("theme");
+  });
+});
+
+describe("slash command registry routing", () => {
+  it("every registered command maps to a routed kind (no fall-through to Unknown)", () => {
+    for (const cmd of getSlashCommands()) {
+      expect(
+        ROUTED_KINDS.has(cmd.kind),
+        `/${cmd.name} has kind "${cmd.kind}" which is not routed`,
+      ).toBe(true);
+    }
+  });
+
+  it("registers /new with a routed 'new' kind", () => {
+    const cmd = findExactSlashCommand(getSlashCommands(), "/new");
+    expect(cmd?.kind).toBe("new");
+    expect(ROUTED_KINDS.has("new")).toBe(true);
+  });
+
+  it("registers /plan with a routed 'plan' kind", () => {
+    const cmd = findExactSlashCommand(getSlashCommands(), "/plan");
+    expect(cmd?.kind).toBe("plan");
+    expect(ROUTED_KINDS.has("plan")).toBe(true);
+  });
+
+  it("registers /permissions and /raw (present in the /help surface)", () => {
+    const names = getSlashCommands().map((c) => c.name);
+    expect(names).toContain("permissions");
+    expect(names).toContain("raw");
+  });
+
+  it("does not register the removed dead commands", () => {
+    const names = getSlashCommands().map((c) => c.name);
+    for (const dead of ["compact", "checkpoint", "checkpoints", "restore", "approve"]) {
+      expect(names).not.toContain(dead);
+    }
   });
 });
