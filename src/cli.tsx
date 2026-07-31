@@ -33,6 +33,7 @@ import type { ModelCapabilities } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue } from "./ui/theme.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig } from "./ui/types.js";
+import { StatusLineManager } from "./ui/statusline/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
@@ -314,6 +315,13 @@ async function main() {
     detectBuildTools: configResult.config.workflow?.detectBuildTools ?? true,
   };
 
+  // Config-driven status line providers (command/module). Built from settings;
+  // App subscribes and starts/stops the async refresh loop.
+  const statuslineConfig = configResult.config.statusline;
+  const statusLineManager = statuslineConfig
+    ? new StatusLineManager(statuslineConfig)
+    : undefined;
+
   const restartRef: { current: (() => void) | null } = { current: null };
 
   function startApp(): void {
@@ -346,6 +354,7 @@ async function main() {
       processAtMentions,
       completer: (line: string) => completer(line, knownModeSlugs),
       buildStatusBar,
+      statusLineManager,
       getPromptStr: () => (colorEnabled ? `\u001B[34m\u258C\u001B[0m \u001B[34m\u203A\u001B[0m ` : "heirloom > "),
       getColorEnabled: () => colorEnabled,
       logSessionEnd,

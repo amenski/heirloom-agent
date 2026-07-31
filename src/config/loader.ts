@@ -103,6 +103,35 @@ export interface DeepCodeSettings {
   };
   /** Context window override (heirloom extension) */
   contextWindow?: number;
+  /** Status line provider plugins (heirloom extension, deepcode-compatible) */
+  statusline?: StatuslineConfig;
+}
+
+// ── Statusline config (deepcode-compatible) ──
+
+export interface StatuslineCommandProvider {
+  type: "command";
+  id: string;
+  command: string;
+  color?: string;
+  timeoutMs?: number;
+  cwd?: string;
+}
+
+export interface StatuslineModuleProvider {
+  type: "module";
+  id: string;
+  path: string;
+  color?: string;
+}
+
+export type StatuslineProvider = StatuslineCommandProvider | StatuslineModuleProvider;
+
+export interface StatuslineConfig {
+  enabled: boolean;
+  refreshMs: number;
+  separator: string;
+  providers: StatuslineProvider[];
 }
 
 export interface LoadResult {
@@ -181,6 +210,7 @@ const KNOWN_KEYS = new Set([
   "workflow",
   "compaction",
   "contextWindow",
+  "statusline",
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
@@ -404,6 +434,109 @@ function validateMcpServers(
   }
 
   return validated;
+}
+
+function validateStatusline(
+  raw: unknown,
+  source: string,
+  errors: string[],
+): StatuslineConfig | undefined {
+  if (!isObject(raw)) {
+    errors.push(`${source}: statusline must be an object`);
+    return undefined;
+  }
+  const s = raw as Record<string, unknown>;
+
+  // providers (required to do anything; validated first so `enabled` can default)
+  const providers: StatuslineProvider[] = [];
+  if ("providers" in s) {
+    if (!Array.isArray(s.providers)) {
+      errors.push(`${source}: statusline.providers must be an array`);
+    } else {
+      for (const item of s.providers as unknown[]) {
+        if (!isObject(item)) {
+          errors.push(`${source}: statusline.providers contains a non-object entry`);
+          continue;
+        }
+        const p = item as Record<string, unknown>;
+        if (typeof p.id !== "string") {
+          errors.push(`${source}: statusline.providers entry missing string "id"`);
+          continue;
+        }
+        if (typeof p.color !== "undefined" && typeof p.color !== "string") {
+          errors.push(`${source}: statusline.providers.${p.id}.color must be a string`);
+          continue;
+        }
+        if (p.type === "command") {
+          if (typeof p.command !== "string") {
+            errors.push(`${source}: statusline.providers.${p.id}.command is required`);
+            continue;
+          }
+          if (typeof p.timeoutMs !== "undefined" && typeof p.timeoutMs !== "number") {
+            errors.push(`${source}: statusline.providers.${p.id}.timeoutMs must be a number`);
+            continue;
+          }
+          if (typeof p.cwd !== "undefined" && typeof p.cwd !== "string") {
+            errors.push(`${source}: statusline.providers.${p.id}.cwd must be a string`);
+            continue;
+          }
+          providers.push({
+            type: "command",
+            id: p.id,
+            command: p.command,
+            ...(typeof p.color === "string" ? { color: p.color } : {}),
+            ...(typeof p.timeoutMs === "number" ? { timeoutMs: p.timeoutMs } : {}),
+            ...(typeof p.cwd === "string" ? { cwd: p.cwd } : {}),
+          });
+        } else if (p.type === "module") {
+          if (typeof p.path !== "string") {
+            errors.push(`${source}: statusline.providers.${p.id}.path is required`);
+            continue;
+          }
+          providers.push({
+            type: "module",
+            id: p.id,
+            path: p.path,
+            ...(typeof p.color === "string" ? { color: p.color } : {}),
+          });
+        } else {
+          errors.push(`${source}: statusline.providers.${p.id}.type must be "command" or "module"`);
+        }
+      }
+    }
+  }
+
+  // enabled — defaults true when providers exist
+  let enabled = providers.length > 0;
+  if ("enabled" in s) {
+    if (typeof s.enabled === "boolean") {
+      enabled = s.enabled;
+    } else {
+      errors.push(`${source}: statusline.enabled must be a boolean`);
+    }
+  }
+
+  // refreshMs — min 500, default 2000
+  let refreshMs = 2000;
+  if ("refreshMs" in s) {
+    if (typeof s.refreshMs === "number") {
+      refreshMs = Math.max(500, s.refreshMs);
+    } else {
+      errors.push(`${source}: statusline.refreshMs must be a number`);
+    }
+  }
+
+  // separator — default " · "
+  let separator = " · ";
+  if ("separator" in s) {
+    if (typeof s.separator === "string") {
+      separator = s.separator;
+    } else {
+      errors.push(`${source}: statusline.separator must be a string`);
+    }
+  }
+
+  return { enabled, refreshMs, separator, providers };
 }
 
 // ── Main loader ──
@@ -645,6 +778,12 @@ export function loadConfig(projectDir?: string): LoadResult {
     } else {
       errors.push("config.contextWindow: must be a number");
     }
+  }
+
+  // statusline
+  if ("statusline" in merged) {
+    const statusline = validateStatusline(merged.statusline, "config", errors);
+    if (statusline) config.statusline = statusline;
   }
 
   // ── Unknown field warnings ──
