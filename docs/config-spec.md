@@ -130,6 +130,55 @@ only if its `command` passes the launcher allowlist; otherwise it is marked
 failed (visible via `/mcp`) and never spawned. A hardening measure — MCP
 servers run as untrusted child processes.
 
+## `statusline`
+
+Optional. Config-authored provider plugins whose output is appended to the
+status line below the prompt input, refreshed on an interval. Deepcode-compatible
+schema (heirloom extension).
+
+```jsonc
+{
+  "statusline": {
+    "enabled": true,        // default: true when providers[] is non-empty
+    "refreshMs": 2000,      // default 2000; clamped to a minimum of 500
+    "separator": " · ",     // default " · "
+    "providers": [
+      { "type": "command", "id": "git", "command": "git branch --show-current",
+        "color": "cyan", "timeoutMs": 1500, "cwd": "." },
+      { "type": "module", "id": "x", "path": "./.deepcode/plugins/x.mjs",
+        "color": "yellow" }
+    ]
+  }
+}
+```
+
+**Provider types**
+
+- `command` — runs `command` through the shell on each refresh. The **first
+  stdout line** becomes the segment text. `timeoutMs` (default `1500`) bounds
+  each run; on timeout, non-zero exit, or empty output the segment is dropped.
+  `cwd` (default the process cwd) is resolved relative to the process cwd.
+- `module` — imports the local JS/MJS module at `path` (resolved relative to the
+  process cwd) and calls its **default export** (may be async). Its return value
+  is stringified into the segment. A non-callable export or a throwing module
+  drops the segment.
+
+**Shared fields**: `id` (required, string) and `color` (optional Ink color
+string). Named colors `cyan`, `green`, `blue`, `magenta`, `white`, `gray` render
+via ansi256; `red`/`yellow` use the theme's error/warning slots.
+
+**Behavior & safety**
+
+- `enabled` defaults to `true` when at least one provider is configured, `false`
+  otherwise. Set it explicitly to force-disable.
+- The refresh loop runs **outside** the React render; segments are pushed into
+  the UI as they arrive. A provider that throws, times out, or blocks never
+  crashes or stalls the render — it only yields an empty (dropped) segment.
+- Provider output is **sanitized** before rendering: ANSI escapes and control
+  characters are stripped, whitespace collapsed, and length capped (120 chars).
+- Providers are user-config-authored (same trust boundary as `settings.json`).
+  Only enable `command`/`module` providers you would run yourself.
+
 ## Providers and base URL
 
 Provider selection is by **name** (`provider` field), resolving to a built-in

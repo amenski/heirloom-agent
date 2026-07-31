@@ -3,6 +3,7 @@ import type { Message } from "../types.js";
 import type { ModelEntry } from "./ModelSelector.js";
 import type { ThemeContextValue, ThemeDefinition } from "./theme.js";
 import type { KeybindingMap, KeybindingConfig, KeybindingAction } from "./keybindings.js";
+import type { StatusLineManager } from "./statusline/index.js";
 
 // ── State ──
 
@@ -114,6 +115,8 @@ export interface AppContext {
   completer: (line: string) => [string[], string];
 
   buildStatusBar: () => StatusSegment[];
+  /** Config-driven status line providers (command/module). Undefined when no `statusline` config. */
+  statusLineManager?: StatusLineManager;
   getPromptStr: () => string;
   getColorEnabled: () => boolean;
 
