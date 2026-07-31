@@ -17,6 +17,8 @@ import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
+import { ErrorReflector } from "./selfreflection/index.js";
+import { ErrorRecovery } from "./errorrecovery/index.js";
 import { authWizard, authList, authLogout, authSaveKey } from "./auth/wizard.js";
 import { readHiddenLine } from "./auth/hidden-input.js";
 import { SessionStore, type CompactionSummary } from "./sessions/store.js";
@@ -171,6 +173,12 @@ async function main() {
 
   let checkpoints = new CheckpointManager(sessionId);
   const diagnostics = new DiagnosticRunner();
+  // Layered failure handling, constructed once per session so the reflector's
+  // total-retry budget spans the whole conversation. Both engage only on error
+  // paths inside runAgent (failed tool result / malformed tool JSON / fatal
+  // turn exception), so the happy path pays nothing but a per-turn counter reset.
+  const errorReflector = new ErrorReflector();
+  const errorRecovery = new ErrorRecovery();
   setSessionId(sessionId);
   setCheckpointManager(checkpoints);
 
@@ -367,7 +375,7 @@ async function main() {
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -703,7 +711,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -724,6 +732,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     result = await runAgent(processed, {
     provider: getProvider(),
     tools, executeTool, permissions, mode: activeMode, compactor, diagnostics, skills,
+    errorReflector, errorRecovery,
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
     signal: shared.abort.signal, effort: shared.activeEffort,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
