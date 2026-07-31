@@ -105,6 +105,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [statusLine, setStatusLine] = useState<StatusSegment[]>(() =>
     ctx.buildStatusBar(),
   );
+  // Segments from config-driven statusline providers (command/module). These
+  // refresh asynchronously outside render; the manager pushes fresh segments
+  // here via its listener. Appended after the built-in segments in StatusBar.
+  const [statusLineProviderSegments, setStatusLineProviderSegments] = useState<
+    StatusSegment[]
+  >(() => ctx.statusLineManager?.segments ?? []);
   const [askPrompt, setAskPrompt] = useState<{
     resolve: (v: boolean) => void;
     toolName: string;
@@ -195,6 +201,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (ctx.initialMessages && ctx.initialMessages.length > 0) {
       setResumeChoice({ count: ctx.initialMessages.length });
     }
+  }, []);
+
+  // Config-driven statusline providers: subscribe and run the async refresh
+  // loop. Segments are pushed in from outside render; the loop never blocks or
+  // crashes the render (each provider is isolated in the manager).
+  useEffect(() => {
+    const mgr = ctx.statusLineManager;
+    if (!mgr) return;
+    mgr.onUpdate(setStatusLineProviderSegments);
+    mgr.start();
+    return () => mgr.stop();
   }, []);
 
   useEffect(() => {
@@ -1304,7 +1321,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       )}
 
       <StatusBar
-        segments={statusLine}
+        segments={
+          statusLineProviderSegments.length > 0
+            ? [...statusLine, ...statusLineProviderSegments]
+            : statusLine
+        }
         gitStatus={gitStatus}
         showTimer
         sessionStart={sessionStart}

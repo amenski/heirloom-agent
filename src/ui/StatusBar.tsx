@@ -116,6 +116,11 @@ function StatusBar({
   const dim = (s: string) => (theme.colorEnabled ? `\x1b[2m${s}\x1b[0m` : s);
   const fg = (c: number, s: string) => (theme.colorEnabled ? `\x1b[38;5;${c}m${s}\x1b[0m` : s);
 
+  // ansi256 codes for named colors used by config-driven statusline providers.
+  const NAMED_ANSI256: Record<string, number> = {
+    cyan: 51, green: 46, blue: 39, magenta: 201, white: 231, gray: 244, grey: 244,
+  };
+
   // Build the full status string from segments
   const segmentTexts = segments.map((seg) => {
     let text = seg.text;
@@ -125,6 +130,8 @@ function StatusBar({
         text = fg(t.errorFg, text);
       } else if (seg.color === "yellow") {
         text = fg(t.warningFg, text);
+      } else if (seg.color && seg.color in NAMED_ANSI256) {
+        text = fg(NAMED_ANSI256[seg.color], text);
       } else if (seg.bold) {
         text = fg(t.modelFg, text);
       } else if (seg.dimColor) {
