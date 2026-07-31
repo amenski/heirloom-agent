@@ -1,10 +1,15 @@
-import { appendFile, mkdir, readFile, readdir, unlink } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../types.js";
 import { redactSecrets } from "./redact.js";
 
 const KNOWN_VERSION = 1;
+
+/** Filename of the per-project sessions index (a cache over the JSONL files). */
+const INDEX_FILENAME = "sessions-index.json";
+const INDEX_VERSION = 1;
+const TITLE_MAX = 100;
 
 export interface SessionMeta {
   version: 1;
@@ -85,11 +90,50 @@ export interface LoadedSession {
   messages: Message[];
 }
 
+/**
+ * Session lifecycle status, derived honestly from what the JSONL can tell us:
+ *   completed   — the last recorded message is an assistant reply (the last
+ *                 turn resolved cleanly).
+ *   interrupted — the transcript ends on a user message with no assistant
+ *                 reply, i.e. a turn was started but never finished (crash,
+ *                 quit mid-turn, or still in progress).
+ *   failed      — the JSONL has a torn/incomplete final line, i.e. a write was
+ *                 cut off. The one signal of an unclean stop the store can see.
+ * A session with no messages at all is reported as `interrupted`.
+ */
+export type SessionStatus = "completed" | "interrupted" | "failed";
+
+/** One entry in `sessions-index.json`. The index is a cache; JSONL is truth. */
+export interface SessionIndexEntry {
+  id: string;
+  /** First user prompt, secret-redacted, truncated to ≤100 chars. */
+  title: string;
+  createdAt: string;
+  /** Timestamp of the last record on disk (falls back to createdAt). */
+  updatedAt: string;
+  status: SessionStatus;
+  messageCount: number;
+  /** Last observed token totals, if any `token` rows exist. */
+  totalUsed?: number;
+  budgetMax?: number;
+}
+
+interface SessionsIndex {
+  version: number;
+  sessions: SessionIndexEntry[];
+}
+
 export interface SessionListItem {
   id: string;
   firstMessage: string;
   messageCount: number;
   createdAt: string;
+  /** Renamable title (defaults to the first-user-message excerpt). */
+  title: string;
+  updatedAt: string;
+  status: SessionStatus;
+  totalUsed?: number;
+  budgetMax?: number;
 }
 
 function generateId(): string {
@@ -144,6 +188,10 @@ export class SessionStore {
     return join(this.sessionDir, `${sessionId}.jsonl`);
   }
 
+  private get indexPath(): string {
+    return join(this.sessionDir, INDEX_FILENAME);
+  }
+
   async create(
     meta: Omit<SessionMeta, "id" | "createdAt" | "version">,
   ): Promise<string> {
@@ -152,6 +200,7 @@ export class SessionStore {
     await mkdir(this.sessionDir, { recursive: true });
     const record = { type: "meta" as const, version: 1, id, createdAt, ...meta };
     await appendFile(this.filePath(id), JSON.stringify(record) + "\n");
+    await this.updateIndexEntry(id);
     return id;
   }
 
@@ -165,6 +214,7 @@ export class SessionStore {
       at: new Date().toISOString(),
     } as SessionRecord;
     await appendFile(this.filePath(sessionId), JSON.stringify(full) + "\n");
+    await this.updateIndexEntry(sessionId);
   }
 
   async appendMessage(sessionId: string, message: Message): Promise<void> {
@@ -369,10 +419,23 @@ export class SessionStore {
   async deleteSession(sessionId: string): Promise<boolean> {
     try {
       await unlink(this.filePath(sessionId));
-      return true;
     } catch {
       return false;
     }
+    // Prune the index entry too (best-effort; a stale entry is repaired on the
+    // next `list()` rebuild regardless).
+    try {
+      const index = await this.readIndex();
+      if (index) {
+        const next = index.sessions.filter((s) => s.id !== sessionId);
+        if (next.length !== index.sessions.length) {
+          await this.writeIndex({ ...index, sessions: next });
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return true;
   }
 
   async getSummary(sessionId: string): Promise<string | undefined> {
@@ -386,73 +449,254 @@ export class SessionStore {
     return undefined;
   }
 
-  async list(): Promise<SessionListItem[]> {
+  /**
+   * Build an index entry for one session by scanning its JSONL. Returns null if
+   * the file is missing, empty, or has no valid `meta` record. Detects a torn
+   * final line (unclean write) to report `failed` status. This is the single
+   * source of the derivation rules — both incremental updates and full rebuilds
+   * go through it, so the index and a from-scratch scan can never disagree.
+   */
+  private async deriveEntry(sessionId: string): Promise<SessionIndexEntry | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath(sessionId), "utf-8");
+    } catch {
+      return null;
+    }
+
+    const lines = raw.split("\n").filter((l) => l.trim() !== "");
+    if (lines.length === 0) return null;
+
+    let meta: { id: string; createdAt: string } | null = null;
+    let title = "";
+    let messageCount = 0;
+    let lastMessageRole: Message["role"] | null = null;
+    let lastAt = "";
+    let torn = false;
+    let totalUsed: number | undefined;
+    let budgetMax: number | undefined;
+
+    for (let i = 0; i < lines.length; i++) {
+      let rec: SessionRecord;
+      try {
+        rec = JSON.parse(lines[i]);
+      } catch {
+        // A mid-file unparseable line is dropped; a torn final line marks the
+        // session as failed (a write was cut off).
+        if (i === lines.length - 1) torn = true;
+        continue;
+      }
+
+      if (typeof rec.at === "string" && rec.at) lastAt = rec.at;
+
+      if (rec.type === "meta" && !meta) {
+        meta = { id: rec.id as string, createdAt: rec.createdAt as string };
+      } else if (rec.type === "message" && rec.message) {
+        messageCount++;
+        const msg = rec.message as Message;
+        lastMessageRole = msg.role;
+        if (!title && msg.role === "user") {
+          title = redactSecrets(String(msg.content ?? "")).slice(0, TITLE_MAX);
+        }
+      } else if (rec.type === "token") {
+        if (typeof rec.totalUsed === "number") totalUsed = rec.totalUsed;
+        if (typeof rec.budgetMax === "number") budgetMax = rec.budgetMax;
+      }
+    }
+
+    if (!meta) return null;
+
+    const status: SessionStatus = torn
+      ? "failed"
+      : lastMessageRole === "assistant" || lastMessageRole === "tool"
+        ? "completed"
+        : "interrupted";
+
+    return {
+      id: meta.id,
+      title,
+      createdAt: meta.createdAt,
+      updatedAt: lastAt || meta.createdAt,
+      status,
+      messageCount,
+      ...(totalUsed !== undefined ? { totalUsed } : {}),
+      ...(budgetMax !== undefined ? { budgetMax } : {}),
+    };
+  }
+
+  /**
+   * Read the index. Returns null when the file is absent OR unparseable — a
+   * corrupt index is treated as a cache miss so the caller rebuilds from the
+   * JSONL (the source of truth) rather than trusting garbage.
+   */
+  private async readIndex(): Promise<SessionsIndex | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.indexPath, "utf-8");
+    } catch {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as SessionsIndex;
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        !Array.isArray(parsed.sessions)
+      ) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Atomically write the index (temp file + rename) so a reader never sees a half-written file. */
+  private async writeIndex(index: SessionsIndex): Promise<void> {
+    await mkdir(this.sessionDir, { recursive: true });
+    const tmp = `${this.indexPath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+    await writeFile(tmp, JSON.stringify(index, null, 2) + "\n", "utf-8");
+    await rename(tmp, this.indexPath);
+  }
+
+  /**
+   * Rebuild the entire index by scanning every JSONL in the session dir. Used
+   * on first run for a legacy dir and to recover from a corrupt index.
+   */
+  private async rebuildIndex(): Promise<SessionsIndex> {
     let entries: string[];
     try {
       entries = await readdir(this.sessionDir);
     } catch {
-      return [];
+      entries = [];
     }
 
-    const results: SessionListItem[] = [];
-
+    const sessions: SessionIndexEntry[] = [];
     for (const entry of entries) {
       if (!entry.endsWith(".jsonl")) continue;
       const sessionId = entry.replace(/\.jsonl$/, "");
-      const fp = this.filePath(sessionId);
-
-      let raw: string;
-      try {
-        raw = await readFile(fp, "utf-8");
-      } catch {
-        continue;
-      }
-
-      const lines = raw.split("\n").filter((l) => l.trim() !== "");
-      if (lines.length === 0) continue;
-
-      let meta: SessionMeta | null = null;
-      let firstMessage = "";
-      let messageCount = 0;
-
-      for (const line of lines) {
-        let rec: SessionRecord;
-        try {
-          rec = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        if (rec.type === "meta" && !meta) {
-          meta = {
-            version: rec.version as 1,
-            id: rec.id as string,
-            cwd: rec.cwd as string,
-            createdAt: rec.createdAt as string,
-            provider: rec.provider as string,
-            model: rec.model as string,
-            mode: rec.mode as string,
-          };
-        } else if (rec.type === "message") {
-          messageCount++;
-          if (!firstMessage && rec.message) {
-            const msg = rec.message as Message;
-            if (msg.role === "user") {
-              firstMessage = (msg.content || "").slice(0, 60);
-            }
-          }
-        }
-      }
-
-      if (!meta) continue;
-
-      results.push({
-        id: meta.id,
-        firstMessage,
-        messageCount,
-        createdAt: meta.createdAt,
-      });
+      const derived = await this.deriveEntry(sessionId);
+      if (derived) sessions.push(derived);
     }
+
+    // Preserve any user-set titles from a still-readable existing index: a
+    // rebuild is a cache repair, not a reason to discard renames.
+    const existing = await this.readIndex();
+    if (existing) {
+      const titles = new Map(existing.sessions.map((s) => [s.id, s.title]));
+      for (const s of sessions) {
+        const t = titles.get(s.id);
+        if (t && t !== s.title) s.title = t;
+      }
+    }
+
+    const index: SessionsIndex = { version: INDEX_VERSION, sessions };
+    await this.writeIndex(index);
+    return index;
+  }
+
+  /**
+   * Recompute one session's entry and merge it into the index in place. Any
+   * existing (renamed) title is preserved. Failures here are swallowed: the
+   * index is a cache, and a failed update just means the next `list()` repairs
+   * it from the scan.
+   */
+  private async updateIndexEntry(sessionId: string): Promise<void> {
+    try {
+      const derived = await this.deriveEntry(sessionId);
+      if (!derived) return;
+
+      const index = (await this.readIndex()) ?? { version: INDEX_VERSION, sessions: [] };
+      const prev = index.sessions.find((s) => s.id === sessionId);
+      // Keep a title the user explicitly renamed (one that differs from the
+      // first-user-message excerpt we would otherwise derive).
+      if (prev && prev.title && prev.title !== derived.title) {
+        derived.title = prev.title;
+      }
+      index.sessions = [
+        ...index.sessions.filter((s) => s.id !== sessionId),
+        derived,
+      ];
+      await this.writeIndex(index);
+    } catch {
+      // Best-effort cache maintenance; JSONL remains the source of truth.
+    }
+  }
+
+  /** Rename a session by setting a custom title in the index. Rebuilds if the index is missing/corrupt. */
+  async renameSession(id: string, title: string): Promise<boolean> {
+    const derived = await this.deriveEntry(id);
+    if (!derived) return false;
+
+    let index = (await this.readIndex());
+    if (!index) index = await this.rebuildIndex();
+
+    const clean = redactSecrets(title).slice(0, TITLE_MAX);
+    const entry = index.sessions.find((s) => s.id === id);
+    if (entry) {
+      entry.title = clean;
+    } else {
+      index.sessions.push({ ...derived, title: clean });
+    }
+    await this.writeIndex(index);
+    return true;
+  }
+
+  /** The set of session IDs on disk (`*.jsonl` basenames). Empty if the dir is missing. */
+  private async diskSessionIds(): Promise<Set<string>> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.sessionDir);
+    } catch {
+      return new Set();
+    }
+    return new Set(
+      entries
+        .filter((e) => e.endsWith(".jsonl"))
+        .map((e) => e.replace(/\.jsonl$/, "")),
+    );
+  }
+
+  private entryToListItem(e: SessionIndexEntry): SessionListItem {
+    return {
+      id: e.id,
+      // Kept for back-compat with existing search/display: the excerpt is the
+      // derived title (a rename overrides `title` but leaves `firstMessage`).
+      firstMessage: e.title.slice(0, 60),
+      messageCount: e.messageCount,
+      createdAt: e.createdAt,
+      title: e.title,
+      updatedAt: e.updatedAt,
+      status: e.status,
+      ...(e.totalUsed !== undefined ? { totalUsed: e.totalUsed } : {}),
+      ...(e.budgetMax !== undefined ? { budgetMax: e.budgetMax } : {}),
+    };
+  }
+
+  async list(): Promise<SessionListItem[]> {
+    const diskIds = await this.diskSessionIds();
+    if (diskIds.size === 0) return [];
+
+    let index = await this.readIndex();
+
+    // Rebuild when the index is missing/corrupt (legacy dir → transparent
+    // build) or stale — the on-disk `.jsonl` set and the index's session set
+    // must agree, otherwise the cache is out of date.
+    const indexIds = index ? new Set(index.sessions.map((s) => s.id)) : null;
+    const fresh =
+      indexIds !== null &&
+      indexIds.size === diskIds.size &&
+      [...diskIds].every((id) => indexIds.has(id));
+
+    if (!fresh) {
+      index = await this.rebuildIndex();
+    }
+
+    const results = index!.sessions
+      // Only surface sessions whose JSONL still exists (a deleted file may
+      // linger in a stale-but-fresh-enough index between rebuilds).
+      .filter((e) => diskIds.has(e.id))
+      .map((e) => this.entryToListItem(e));
 
     results.sort((a, b) => b.id.localeCompare(a.id));
     return results;
