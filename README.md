@@ -21,22 +21,36 @@ project it was learned from (opencode, RooCode, Aider, SWE-agent).
 
 ## Highlights
 
-- **Any model, chosen in config** — Anthropic, OpenAI, DeepSeek, OpenRouter,
-  Groq, Together, or a local Ollama. Adding a new OpenAI-compatible provider is
-  configuration, not code.
+- **Any model, chosen in config** — built-in presets for DeepSeek, OpenAI,
+  OpenRouter, Groq, and a local Ollama. Adding another OpenAI-compatible
+  provider (endpoint + key) is configuration, not code.
 - **ReAct agent loop** with self-reflection, layered error recovery, and loop
   detection — it streams responses, runs tools, and verifies its own edits.
+  Reflection issues bounded retry nudges on failed tools; error recovery
+  corrects malformed tool-call JSON and degrades gracefully on fatal errors;
+  loop detection breaks out of repeated identical or consecutively-failing calls.
 - **Modes (personas)** — `code`, `ask` (read-only), `architect`, `debug`,
   `orchestrator`. Each mode gates which tools the model can even see.
 - **Permission-first** — pattern rules (`allow` / `ask` / `deny`, last match
   wins) plus a session posture (`askAll` / `allowAll`). `deny` is absolute.
   You at the prompt are the firewall.
+- **Repository map** — a ranked symbol map of the repo, injected into the
+  system prompt once per session under a ~4KB budget, so the model has a
+  grounded picture of the codebase without reading every file.
 - **Safe edits** — specialized edit strategies with stale-file detection: the
   agent cannot blind-overwrite a file it hasn't read.
 - **Resumable sessions** — append-only JSONL, resume by ID or `--last`, with
-  auto-compaction for arbitrarily long conversations.
+  auto-compaction for arbitrarily long conversations. The session index carries
+  titles and lifecycle status (completed / interrupted / failed); rename and
+  pick sessions from `/resume`.
 - **Checkpoints** — shadow-Git snapshots before edits; `/undo` rewinds files
   (or files + conversation).
+- **Auditable by design** — every permission decision is recorded to the
+  session (`/permissions` shows the trail) and per-turn token usage is logged
+  for `/cost`.
+- **Themes & statusline** — `/theme` switches color themes with live preview
+  (named presets included); a config-driven statusline runs your own plugins
+  along the bottom.
 - **MCP support** — connect Model Context Protocol servers via config; their
   tools appear alongside the built-ins (`/mcp` to inspect). General web search
   is a search MCP server of your choosing.
@@ -44,6 +58,8 @@ project it was learned from (opencode, RooCode, Aider, SWE-agent).
   APIs (GitHub, Stack Overflow, npm/PyPI/crates, Wikipedia); no keys, no scraping.
 - **Skills** — reads the cross-tool [Agent Skills](https://agentskills.io)
   format, so skills installed for other agents work here too.
+- **Notify hook** — point the `notify` config key at a script and it runs
+  (fire-and-forget, shell-safe) when a turn completes or fails.
 - **Headless mode** (`-x`) for scripting and pipelines, with fail-closed
   permissions.
 
@@ -103,9 +119,11 @@ heirloom [ask ⚡] >
 | `Shift+Tab` | toggle the approval posture |
 | `/` | open the command menu |
 | `/help` | full command list |
-| `/model` | pick model, thinking mode, and reasoning effort |
+| `/model`, `/effort` | pick model · set reasoning effort |
 | `/new`, `/resume`, `/continue` | session management |
 | `/undo` | rewind code and/or conversation |
+| `/theme` | switch color theme (live preview) |
+| `/permissions` | this session's permission history |
 | `/skills`, `/mcp` | list skills · inspect MCP servers |
 | `Ctrl+D` twice | quit |
 
@@ -177,6 +195,9 @@ directory. The full threat model, including known defects and their status, is
 documented honestly in
 [`docs/security-spec.md`](./docs/security-spec.md). Read it before running with
 `allowAll` on a repo you didn't write.
+
+Heirloom collects **no telemetry** and phones home for nothing — there is no
+telemetry subsystem and no config key that enables one.
 
 ---
 
