@@ -67,9 +67,8 @@ export interface DeepCodeSettings {
   /** Per-skill enable/disable */
   enabledSkills?: Record<string, boolean>;
 
-  // ── Debug / Telemetry ──
+  // ── Debug (deprecated — use the --debug CLI flag) ──
   debugLogEnabled?: boolean;
-  telemetryEnabled?: boolean;
 
   // ── MCP hardening ──
   /** When true, only allowlisted MCP server commands may be spawned (default false) */
@@ -91,9 +90,13 @@ export interface DeepCodeSettings {
   keybindings?: Record<string, unknown>;
   /** Workflow integration (heirloom extension) */
   workflow?: {
+    /** Enable the git-status poller (default true) */
     gitStatus?: boolean;
+    /** Git-status poll interval in ms (default 30000; 0 = on-demand only) */
     gitPollInterval?: number;
+    /** @deprecated ignored — no git-command subsystem consumes it */
     gitCommands?: boolean;
+    /** @deprecated ignored — no build-tool detection subsystem consumes it */
     detectBuildTools?: boolean;
   };
   /** Compaction settings (heirloom extension) */
@@ -200,7 +203,6 @@ const KNOWN_KEYS = new Set([
   "webSearchTool",
   "enabledSkills",
   "debugLogEnabled",
-  "telemetryEnabled",
   "strictMcpConfig",
   "temperature",
   // Heirloom extensions
@@ -670,21 +672,15 @@ export function loadConfig(projectDir?: string): LoadResult {
     }
   }
 
-  // ── debugLogEnabled ──
+  // ── debugLogEnabled (deprecated) ──
   if ("debugLogEnabled" in merged) {
     if (typeof merged.debugLogEnabled === "boolean") {
       config.debugLogEnabled = merged.debugLogEnabled;
+      warnings.push(
+        "debugLogEnabled is deprecated and ignored — use the --debug flag",
+      );
     } else {
       errors.push("config.debugLogEnabled: must be a boolean");
-    }
-  }
-
-  // ── telemetryEnabled ──
-  if ("telemetryEnabled" in merged) {
-    if (typeof merged.telemetryEnabled === "boolean") {
-      config.telemetryEnabled = merged.telemetryEnabled;
-    } else {
-      errors.push("config.telemetryEnabled: must be a boolean");
     }
   }
 
@@ -757,6 +753,17 @@ export function loadConfig(projectDir?: string): LoadResult {
   if ("workflow" in merged) {
     if (isObject(merged.workflow)) {
       config.workflow = merged.workflow as DeepCodeSettings["workflow"];
+      const wf = merged.workflow as Record<string, unknown>;
+      if ("gitCommands" in wf) {
+        warnings.push(
+          "workflow.gitCommands is deprecated and ignored — no git-command subsystem consumes it",
+        );
+      }
+      if ("detectBuildTools" in wf) {
+        warnings.push(
+          "workflow.detectBuildTools is deprecated and ignored — no build-tool detection subsystem consumes it",
+        );
+      }
     } else {
       errors.push("config.workflow: must be an object");
     }

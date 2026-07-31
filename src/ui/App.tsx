@@ -215,6 +215,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   }, []);
 
   useEffect(() => {
+    // Gate + interval come from config (workflow.gitStatus / gitPollInterval).
+    const wf = ctx.workflowConfig;
+    if (wf && wf.gitStatus === false) {
+      setGitStatus(null);
+      return;
+    }
+    const pollInterval = wf?.gitPollInterval ?? 30000;
     let cancelled = false;
     async function refreshGit() {
       try {
@@ -273,12 +280,18 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       }
     }
     refreshGit();
-    const interval = setInterval(refreshGit, 30000);
+    // gitPollInterval of 0 = on-demand only: run once, no recurring poll.
+    if (pollInterval <= 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const interval = setInterval(refreshGit, pollInterval);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [ctx.workflowConfig]);
 
   const activeLineRef = useRef("");
   const firstTokenRef = useRef(false);
