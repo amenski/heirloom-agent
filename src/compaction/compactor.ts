@@ -23,9 +23,13 @@ export class Compactor {
     private provider: Provider,
     private contextWindow: number = 128000,
     private threshold?: number,
+    private auto: boolean = true,
   ) {}
 
   needsCompaction(messages: Message[]): boolean {
+    // `auto: false` (config compaction.auto) disables automatic compaction.
+    // Explicit paths (summarizeForResume, manual /compact) bypass this gate.
+    if (!this.auto) return false;
     return shouldCompact(messages, this.contextWindow, this.threshold);
   }
 

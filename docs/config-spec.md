@@ -34,10 +34,9 @@ warning and is ignored.
     "BASE_URL": "https://api.deepseek.com",// see note under Providers below
     "TEMPERATURE": "0.2",                 // string "0".."2"
     "THINKING_ENABLED": "true",
-    "REASONING_EFFORT": "high",           // "high" | "max"
-    "DEBUG_LOG_ENABLED": "false",
-    "TELEMETRY_ENABLED": "false"
-    // arbitrary extra string keys are preserved
+    "REASONING_EFFORT": "high"            // "high" | "max"
+    // arbitrary extra string keys are preserved, but none of DEBUG_LOG_ENABLED
+    // / TELEMETRY_ENABLED are consumed (see No Telemetry, and Deprecated Keys)
   },
 
   // Thinking / reasoning (top-level; higher priority than the env.* strings)
@@ -77,17 +76,17 @@ warning and is ignored.
     "overrides": {}                        // optional token overrides
   },
 
-  // Per-skill enable/disable
-  "enabledSkills": { "some-skill": true },
+  // Per-skill enable/disable. Absent = enabled (the default). A skill set
+  // false here is not loaded or indexed; others are unaffected.
+  "enabledSkills": { "some-skill": false },
 
   // Misc extensions
   "keybindings": {},                       // object, passed through as-is
-  "compaction": { "auto": true, "threshold": 0.7 },
+  "compaction": { "auto": true, "threshold": 0.7 },  // auto: gate automatic compaction (default true)
   "contextWindow": 128000,                 // fallback context window
-  "workflow": { "gitStatus": true, "gitCommands": true },
-  "notify": "/path/to/notify-script",
-  "debugLogEnabled": false,
-  "telemetryEnabled": false
+  "workflow": { "gitStatus": true, "gitPollInterval": 30000 },
+  "notify": "/path/to/notify-script"
+  // debugLogEnabled — deprecated no-op, see Deprecated Keys
 }
 ```
 
@@ -247,11 +246,51 @@ endorses none.
 }
 ```
 
+## `enabledSkills`
+
+Optional `{ "<skill-name>": boolean }` map. A skill whose name maps to `false`
+is **not loaded or indexed** by the skill loader (`src/skills/index.ts`) — it
+never appears in the skill index and cannot be invoked via `load_skill`. A skill
+that is absent from the map, or mapped to `true`, is enabled — **absent means
+enabled** (the default). Disabling one skill leaves all others unaffected.
+
+## `compaction`
+
+- `compaction.threshold` (number, default `0.7`) — the context-window fraction
+  at which auto-compaction triggers.
+- `compaction.auto` (boolean, default `true`) — gates **automatic** compaction.
+  When `false`, the agent never auto-compacts mid-conversation regardless of
+  `threshold`. Explicit compaction paths are unaffected: the manual `/compact`
+  command and the resume-time compaction offer still summarize on demand.
+
+## `workflow`
+
+Heirloom extension controlling the git-status poller behind the status bar.
+
+- `workflow.gitStatus` (boolean, default `true`) — enables the poller. When
+  `false`, no git status is shown and no git commands are run on an interval.
+- `workflow.gitPollInterval` (number ms, default `30000`) — poll interval. `0`
+  (or negative) means **on-demand only**: the poller refreshes once at startup
+  and then never again on a timer.
+
+## No Telemetry
+
+Heirloom collects **no telemetry** and phones home for nothing. This is a
+deliberate guarantee, not a default that a config key can flip. There is no
+telemetry subsystem in the codebase and no config key enables one — the former
+`telemetryEnabled` key (and the `env.TELEMETRY_ENABLED` string) were never
+consumed and have been removed; `telemetryEnabled` now warns as an unknown
+field. If you set it, nothing happens because there is nothing to enable.
+
 ## Deprecated Keys
 
 | Key | Status | Replacement |
 |-----|--------|-------------|
 | `webSearchTool` (script path) | Parsed but ignored; emits a warning | Add a search MCP server under `mcpServers` |
+| `debugLogEnabled` (boolean) | Parsed but ignored; emits a warning | Use the `--debug` CLI flag |
+| `workflow.gitCommands` (boolean) | Parsed but ignored; emits a warning | None — no git-command subsystem consumes it |
+| `workflow.detectBuildTools` (boolean) | Parsed but ignored; emits a warning | None — no build-tool detection subsystem consumes it |
+| `telemetryEnabled` (boolean) | **Removed** — now an unknown-field warning | None — Heirloom has no telemetry (see No Telemetry) |
 
 ## Environment Variables
 

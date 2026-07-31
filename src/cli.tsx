@@ -122,7 +122,7 @@ async function main() {
 
   let _compactor: Compactor | undefined;
   function getCompactor(): Compactor {
-    if (!_compactor) _compactor = new Compactor(getProvider(), contextWindow, configResult.config.compaction?.threshold);
+    if (!_compactor) _compactor = new Compactor(getProvider(), contextWindow, configResult.config.compaction?.threshold, configResult.config.compaction?.auto ?? true);
     return _compactor;
   }
 
@@ -219,7 +219,7 @@ async function main() {
   }
 
   const skillLoader = new SkillLoader();
-  let skills = await skillLoader.load({ headless: !!parsed.prompt });
+  let skills = await skillLoader.load({ headless: !!parsed.prompt, enabledSkills: configResult.config.enabledSkills });
   const { def: loadSkillDef, handler: loadSkillHandler } = createLoadSkillTool(skills);
   registry.register({ def: loadSkillDef, handler: loadSkillHandler, groups: ["read"], always: true });
 
