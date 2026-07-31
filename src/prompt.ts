@@ -1,6 +1,6 @@
 import type { ModeConfig } from "./modes/loader.js";
 import type { SkillDef } from "./skills/index.js";
-import type { RepoMap } from "./repomap/index.js";
+import { RepoMap } from "./repomap/index.js";
 import type { ToolGroup } from "./tools/types.js";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -11,10 +11,50 @@ export interface PromptContext {
   mode?: ModeConfig;
   workingDir: string;
   skills?: SkillDef[];
-  repomap?: RepoMap;
+  /**
+   * Precomputed repository-map block (already header-less, budget-capped, and
+   * truncation-noted — see buildRepoMap). Injected verbatim into the stable
+   * preamble. A string here means "compute once per session"; it is a snapshot,
+   * not a live RepoMap, so the cached prefix stays byte-stable across turns.
+   */
+  repomap?: string;
   memory?: string;
-  conversation?: string;
   planMode?: boolean;
+}
+
+/** Byte cap for the repository map injected into the stable preamble (~4KB). */
+export const REPOMAP_BYTE_BUDGET = 4 * 1024;
+
+/**
+ * Build the session-stable repository-map snapshot for `workingDir`. Runs the
+ * RepoMap symbol extractor + ranking once, capped at REPOMAP_BYTE_BUDGET, and
+ * appends a truncation note when the full corpus did not fit. Returns null when
+ * the repo yields no map. NEVER throws: any failure (unreadable tree, parser
+ * crash) degrades to null so a broken map can never block or crash startup.
+ *
+ * Note: RepoMap does not yet consult .gitignore (it uses a hardcoded
+ * exclude-dir + dotfile filter); see src/repomap/index.ts.
+ */
+export async function buildRepoMap(workingDir: string): Promise<string | null> {
+  try {
+    const map = new RepoMap(workingDir);
+    // getMap's tokenBudget counts ~4 chars/token, so the byte budget maps to
+    // budget/4 tokens. Empty conversation → a session-stable, un-keyed ranking.
+    const tokenBudget = Math.floor(REPOMAP_BYTE_BUDGET / 4);
+    const capped = await map.getMap("", tokenBudget);
+    if (!capped || capped === "(empty repository)") return null;
+
+    // Detect truncation: re-render uncapped and compare. Cheap — the cache is
+    // warm from the first getMap, so this is symbol formatting only.
+    const full = await map.getMap("", Number.MAX_SAFE_INTEGER);
+    const note =
+      full && full.length > capped.length
+        ? "\n\n*(Repository map truncated: 4KB budget reached.)*"
+        : "";
+    return capped + note;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -53,13 +93,19 @@ export function buildStablePreamble(ctx: PromptContext): string {
 
   if (ctx.memory) sections.push(ctx.memory);
 
+  // Repository map goes last in the cacheable block — after project
+  // instructions and rules — so those higher-priority sections read first.
+  // A session-stable snapshot (see buildRepoMap), so it never breaks caching.
+  if (ctx.repomap) sections.push(`# Repository map\n${ctx.repomap}`);
+
   return sections.join("\n\n");
 }
 
 /**
- * The per-turn part of the system prompt: plan-mode instruction, environment
- * (git/date), and the RepoMap (keyed on the latest user message). Rebuilt
- * every turn — cheap, and must never be baked into the cached stable prefix.
+ * The per-turn part of the system prompt: plan-mode instruction and environment
+ * (git/date). Rebuilt every turn — cheap, and must never be baked into the
+ * cached stable prefix. (The repository map lives in the stable preamble as a
+ * session-stable snapshot; see buildRepoMap.)
  */
 export async function buildVolatileContext(ctx: PromptContext): Promise<string> {
   const sections: string[] = [];
@@ -74,13 +120,6 @@ export async function buildVolatileContext(ctx: PromptContext): Promise<string> 
 
   const env = getEnvironment(ctx.workingDir);
   if (env) sections.push(env);
-
-  if (ctx.repomap && ctx.conversation) {
-    const map = await ctx.repomap.getMap(ctx.conversation, 1024);
-    if (map && map !== "(empty repository)") {
-      sections.push("# Repository map\n" + map);
-    }
-  }
 
   return sections.join("\n\n");
 }

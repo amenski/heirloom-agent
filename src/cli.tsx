@@ -9,6 +9,7 @@ import { runExecMode } from "./exec-runner.js";
 import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
+import { buildRepoMap } from "./prompt.js";
 import { fireNotify } from "./notify.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
@@ -177,6 +178,12 @@ async function main() {
   const memoryStore = new MemoryStore();
   await memoryStore.init();
   const memoryInjection = await memoryStore.getInjection();
+
+  // Repository map: computed once per session (symbol extraction + ranking is
+  // ~150ms cold on this repo, negligible for startup) and injected into the
+  // stable preamble as a byte-stable snapshot. buildRepoMap never throws — a
+  // failure degrades to `undefined`, i.e. no map, never a startup crash.
+  const repomapInjection = (await buildRepoMap(process.cwd())) ?? undefined;
 
   const shared = {
     conversationHistory: [] as Message[],
@@ -367,7 +374,7 @@ async function main() {
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, repomapInjection),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -703,7 +710,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, repomapInjection?: string): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -724,6 +731,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     result = await runAgent(processed, {
     provider: getProvider(),
     tools, executeTool, permissions, mode: activeMode, compactor, diagnostics, skills,
+    repomap: repomapInjection,
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
     signal: shared.abort.signal, effort: shared.activeEffort,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
