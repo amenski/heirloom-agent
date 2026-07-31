@@ -9,6 +9,7 @@ import { runExecMode } from "./exec-runner.js";
 import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
+import { fireNotify } from "./notify.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
@@ -189,6 +190,7 @@ async function main() {
     providerName,
     activeModel: initialModel as string | undefined,
     activeEffort: undefined as string | undefined,
+    debug: parsed.debug as boolean | undefined,
   };
   shared.activeEffort = reasoningEffort || getActiveModelCaps()?.effort?.default;
 
@@ -356,7 +358,7 @@ async function main() {
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -692,7 +694,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -701,7 +703,16 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   const processed = await processAtMentions(input);
   const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
 
-  const result = await runAgent(processed, {
+  // Notify hook: fires from this interactive completion boundary once the
+  // turn's outcome is known (mirrors the headless site in exec-runner.ts).
+  // TITLE is the session's first user prompt prefix. Fire-and-forget — see
+  // src/notify.ts. No-op when `notify` is unconfigured.
+  const notifyStart = Date.now();
+  const notifyTitle = String(shared.sessionUserInputs[0] ?? input).slice(0, 120);
+
+  let result;
+  try {
+    result = await runAgent(processed, {
     provider: getProvider(),
     tools, executeTool, permissions, mode: activeMode, compactor, diagnostics, skills,
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
@@ -721,6 +732,34 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
       cb.onUsage(input, output);
     },
     askUser: cb.askUser,
-  });
+    });
+  } catch (err) {
+    fireNotify(
+      notifyScript,
+      {
+        status: "failed",
+        durationMs: Date.now() - notifyStart,
+        body: "",
+        title: notifyTitle,
+        failReason: err instanceof Error ? err.message : String(err),
+        passthroughEnv: notifyEnv,
+      },
+      { debug: shared.debug },
+    );
+    throw err;
+  }
+
+  const lastReply = result.messages[result.messages.length - 1]?.content ?? "";
+  fireNotify(
+    notifyScript,
+    {
+      status: "completed",
+      durationMs: Date.now() - notifyStart,
+      body: lastReply,
+      title: notifyTitle,
+      passthroughEnv: notifyEnv,
+    },
+    { debug: shared.debug },
+  );
   return result;
 }

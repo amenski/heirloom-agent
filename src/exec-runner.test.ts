@@ -65,6 +65,13 @@ vi.mock("./tools/index.js", () => ({
   setSignal: () => {},
 }));
 
+// The notify hook is mocked so the completion-site tests below can assert
+// whether/how it fires without spawning a real script.
+const fireNotifySpy = vi.fn();
+vi.mock("./notify.js", () => ({
+  fireNotify: (...args: unknown[]) => fireNotifySpy(...args),
+}));
+
 function nonTtyInput(): ExecInputStream {
   // isTTY:false with an empty stream => buildExecPrompt returns the prompt as-is.
   return {
@@ -418,5 +425,77 @@ describe("runExecMode honors config BASE_URL / API_KEY (B2)", () => {
       "deepseek",
       expect.objectContaining({ baseUrl: "http://127.0.0.1:9", apiKey: "sk-from-config" }),
     );
+  });
+});
+
+// Notify hook fires from the headless completion boundary — once on a normal
+// end ("completed"), once with FAIL_REASON on a provider failure ("failed"),
+// and never when `notify` is absent from settings.json.
+describe("runExecMode fires the notify hook at the completion boundary", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.DEEPCODE_HOME = HOME_DIR;
+    createProviderSpy.mockClear();
+    fireNotifySpy.mockClear();
+    providerFactory = () => scriptedProvider();
+    scriptedCall = null;
+  });
+
+  afterEach(() => {
+    delete process.env.DEEPCODE_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("passes an undefined script path when `notify` is absent (fireNotify no-ops on it)", async () => {
+    writeSettings({ provider: "deepseek" });
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    // The completion site always calls fireNotify; the no-op-when-unconfigured
+    // guard lives inside fireNotify (covered in notify.test.ts). Here we assert
+    // the site forwards `undefined` when `notify` is not set.
+    expect(fireNotifySpy).toHaveBeenCalledTimes(1);
+    expect(fireNotifySpy.mock.calls[0][0]).toBeUndefined();
+  });
+
+  it("fires with status 'completed', the config script path, last reply body, and passthrough env", async () => {
+    writeSettings({
+      provider: "deepseek",
+      notify: "/tmp/notify.sh",
+      env: { SLACK_WEBHOOK_URL: "https://hooks.example/x" },
+    });
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    expect(fireNotifySpy).toHaveBeenCalledTimes(1);
+    const [scriptPath, input] = fireNotifySpy.mock.calls[0] as [string, any];
+    expect(scriptPath).toBe("/tmp/notify.sh");
+    expect(input.status).toBe("completed");
+    expect(input.body).toBe("done"); // the scripted provider's last reply text
+    expect(input.title).toBe("go"); // first-prompt prefix
+    expect(input.passthroughEnv).toMatchObject({ SLACK_WEBHOOK_URL: "https://hooks.example/x" });
+  });
+
+  it("fires with status 'failed' and a FAIL_REASON when the provider throws", async () => {
+    writeSettings({ provider: "deepseek", notify: "/tmp/notify.sh" });
+    providerFactory = () => ({
+      name: "fake",
+      // eslint-disable-next-line require-yield
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        throw new Error("stream exploded");
+      },
+    });
+
+    const { code } = await run();
+
+    expect(code).toBe(1);
+    expect(fireNotifySpy).toHaveBeenCalledTimes(1);
+    const [scriptPath, input] = fireNotifySpy.mock.calls[0] as [string, any];
+    expect(scriptPath).toBe("/tmp/notify.sh");
+    expect(input.status).toBe("failed");
+    expect(input.failReason).toContain("stream exploded");
   });
 });
