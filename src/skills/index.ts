@@ -153,8 +153,22 @@ async function scanDir(dir: string): Promise<SkillDef[]> {
   return skills;
 }
 
+/**
+ * A skill is enabled unless the config's `enabledSkills` map explicitly sets it
+ * to `false`. Absent (or a missing map) means enabled — the default.
+ */
+export function isSkillEnabled(
+  name: string,
+  enabledSkills?: Record<string, boolean>,
+): boolean {
+  return enabledSkills?.[name] !== false;
+}
+
 export class SkillLoader {
-  async load(options?: { headless?: boolean }): Promise<SkillDef[]> {
+  async load(options?: {
+    headless?: boolean;
+    enabledSkills?: Record<string, boolean>;
+  }): Promise<SkillDef[]> {
     const allSkills: SkillDef[] = [];
     const seen = new Set<string>();
 
@@ -169,6 +183,11 @@ export class SkillLoader {
       const skills = await scanDir(dir);
       for (const skill of skills) {
         if (!seen.has(skill.name)) {
+          if (!isSkillEnabled(skill.name, options?.enabledSkills)) {
+            // Explicitly disabled via config.enabledSkills — never index it.
+            seen.add(skill.name);
+            continue;
+          }
           const trustResult = checkSkillTrust(skill.sourcePath, skill.name);
 
           if (options?.headless && trustResult.status !== "trusted") {

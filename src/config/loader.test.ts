@@ -335,3 +335,82 @@ describe("loadConfig statusline", () => {
     expect(warnings.some((w) => w.includes('unknown field "statusline"'))).toBe(false);
   });
 });
+
+describe("loadConfig enabledSkills", () => {
+  it("parses a per-skill enable/disable map", () => {
+    writeProjectSettings({ enabledSkills: { foo: false, bar: true } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.enabledSkills).toEqual({ foo: false, bar: true });
+  });
+
+  it("rejects a non-boolean skill value", () => {
+    writeProjectSettings({ enabledSkills: { foo: "off" } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.enabledSkills.foo: must be boolean");
+  });
+
+  it("rejects a non-object enabledSkills", () => {
+    writeProjectSettings({ enabledSkills: "nope" });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.enabledSkills: must be an object");
+  });
+});
+
+describe("loadConfig compaction.auto", () => {
+  it("parses compaction.auto: false alongside threshold", () => {
+    writeProjectSettings({ compaction: { auto: false, threshold: 0.6 } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.compaction).toEqual({ auto: false, threshold: 0.6 });
+  });
+
+  it("parses compaction.auto: true", () => {
+    writeProjectSettings({ compaction: { auto: true } });
+    const { config } = loadConfig(projectDir);
+    expect(config.compaction?.auto).toBe(true);
+  });
+});
+
+describe("loadConfig workflow keys", () => {
+  it("keeps gitStatus / gitPollInterval without warnings", () => {
+    writeProjectSettings({ workflow: { gitStatus: false, gitPollInterval: 5000 } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.workflow).toEqual({ gitStatus: false, gitPollInterval: 5000 });
+  });
+
+  it("deprecates gitCommands with a warning", () => {
+    writeProjectSettings({ workflow: { gitCommands: true } });
+    const { warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("workflow.gitCommands is deprecated"))).toBe(true);
+  });
+
+  it("deprecates detectBuildTools with a warning", () => {
+    writeProjectSettings({ workflow: { detectBuildTools: true } });
+    const { warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("workflow.detectBuildTools is deprecated"))).toBe(true);
+  });
+});
+
+describe("loadConfig debugLogEnabled (deprecated)", () => {
+  it("emits a deprecation warning pointing at the --debug flag", () => {
+    writeProjectSettings({ debugLogEnabled: true });
+    const { warnings } = loadConfig(projectDir);
+    expect(
+      warnings.some((w) => w.includes("debugLogEnabled is deprecated and ignored — use the --debug flag")),
+    ).toBe(true);
+  });
+});
+
+describe("loadConfig telemetryEnabled (deleted key)", () => {
+  it("treats telemetryEnabled as an unknown field", () => {
+    writeProjectSettings({ telemetryEnabled: false });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes('unknown field "telemetryEnabled"'))).toBe(true);
+    expect((config as Record<string, unknown>).telemetryEnabled).toBeUndefined();
+  });
+});
