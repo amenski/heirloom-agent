@@ -4,6 +4,7 @@ import { runAgent } from "./agent.js";
 import { executeTool, registry, setSessionId, setSignal } from "./tools/index.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine } from "./permissions/index.js";
+import { fireNotify } from "./notify.js";
 
 export interface ExecRunnerOptions {
   prompt: string;
@@ -58,6 +59,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     const { loadConfig } = await import("./config/loader.js");
     const configResult = loadConfig(options.projectRoot);
     const configEnv = configResult.config.env;
+    const notifyScript = configResult.config.notify;
 
     const resolvedApiKey = configEnv?.API_KEY || undefined;
     const resolvedBaseUrl = configEnv?.BASE_URL || undefined;
@@ -127,6 +129,11 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       return false;
     };
 
+    // Notify hook fires from this completion boundary (turn outcome is
+    // definitively known here) for headless `-x` runs, mirroring the
+    // interactive site in cli.tsx. Fire-and-forget — see src/notify.ts.
+    const notifyStart = Date.now();
+    const notifyTitle = options.prompt.slice(0, 120);
     try {
       const result = await runAgent(prompt, {
         provider,
@@ -139,14 +146,39 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
 
       if (interrupted) return 130;
 
-      process.stdout.write(result.messages[result.messages.length - 1]?.content ?? "");
+      const lastReply = result.messages[result.messages.length - 1]?.content ?? "";
+      process.stdout.write(lastReply);
+      fireNotify(
+        notifyScript,
+        {
+          status: "completed",
+          durationMs: Date.now() - notifyStart,
+          body: lastReply,
+          title: notifyTitle,
+          passthroughEnv: configEnv,
+        },
+        { debug: options.debug },
+      );
       return result.stopReason === "done" ? 0 : 1;
     } catch (err) {
       if (interrupted) return 130;
       if (options.debug) {
         originalConsoleError(err);
       }
-      writeErr(`Error: ${conciseProviderError(err)}`);
+      const reason = conciseProviderError(err);
+      writeErr(`Error: ${reason}`);
+      fireNotify(
+        notifyScript,
+        {
+          status: "failed",
+          durationMs: Date.now() - notifyStart,
+          body: "",
+          title: notifyTitle,
+          failReason: reason,
+          passthroughEnv: configEnv,
+        },
+        { debug: options.debug },
+      );
       return 1;
     }
   } finally {

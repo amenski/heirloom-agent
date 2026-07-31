@@ -1,0 +1,112 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// child_process.spawn is mocked so fireNotify never launches a real process.
+const spawnSpy = vi.fn();
+vi.mock("node:child_process", () => ({
+  spawn: (...args: unknown[]) => spawnSpy(...args),
+}));
+
+import { buildNotifyEnv, fireNotify, type NotifyInput } from "./notify.js";
+
+function base(overrides: Partial<NotifyInput> = {}): NotifyInput {
+  return {
+    status: "completed",
+    durationMs: 3200,
+    body: "all done",
+    title: "fix the bug",
+    ...overrides,
+  };
+}
+
+describe("buildNotifyEnv", () => {
+  it("shapes a completed turn: STATUS/DURATION(int seconds)/BODY/TITLE, no FAIL_REASON", () => {
+    const env = buildNotifyEnv(base({ durationMs: 3499 }));
+    expect(env.STATUS).toBe("completed");
+    expect(env.DURATION).toBe("3"); // rounded whole seconds, string
+    expect(env.BODY).toBe("all done");
+    expect(env.TITLE).toBe("fix the bug");
+    expect(env.FAIL_REASON).toBeUndefined();
+  });
+
+  it("shapes a failed turn: STATUS=failed and FAIL_REASON present", () => {
+    const env = buildNotifyEnv(base({ status: "failed", body: "", failReason: "HTTP 500: boom" }));
+    expect(env.STATUS).toBe("failed");
+    expect(env.FAIL_REASON).toBe("HTTP 500: boom");
+    expect(env.BODY).toBe("");
+  });
+
+  it("omits FAIL_REASON on failure when the reason is empty", () => {
+    const env = buildNotifyEnv(base({ status: "failed", failReason: "" }));
+    expect(env.STATUS).toBe("failed");
+    expect("FAIL_REASON" in env).toBe(false);
+  });
+
+  it("redacts secrets in BODY via redactSecrets", () => {
+    const env = buildNotifyEnv(base({ body: "key is sk-abcdefghijklmnopqrstuvwxyz012345 done" }));
+    expect(env.BODY).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+    expect(env.BODY).toContain("[redacted-api-key]");
+  });
+
+  it("passes through the user env block but contract vars win over it", () => {
+    const env = buildNotifyEnv(
+      base({ passthroughEnv: { SLACK_WEBHOOK_URL: "https://hooks.example/x", STATUS: "hacked" } }),
+    );
+    expect(env.SLACK_WEBHOOK_URL).toBe("https://hooks.example/x");
+    expect(env.STATUS).toBe("completed"); // our contract var wins
+  });
+
+  it("drops undefined passthrough env values", () => {
+    const env = buildNotifyEnv(base({ passthroughEnv: { A: "1", B: undefined } }));
+    expect(env.A).toBe("1");
+    expect("B" in env).toBe(false);
+  });
+
+  it("clamps negative durations to 0", () => {
+    expect(buildNotifyEnv(base({ durationMs: -50 })).DURATION).toBe("0");
+  });
+});
+
+describe("fireNotify", () => {
+  beforeEach(() => {
+    spawnSpy.mockReset();
+    spawnSpy.mockReturnValue({ on: vi.fn(), unref: vi.fn() });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not spawn when scriptPath is undefined", () => {
+    fireNotify(undefined, base());
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  it("spawns the configured script with argv=[] and the built env", () => {
+    fireNotify("/tmp/notify.sh", base({ passthroughEnv: { SLACK_WEBHOOK_URL: "https://h/x" } }));
+    expect(spawnSpy).toHaveBeenCalledTimes(1);
+    const [cmd, args, opts] = spawnSpy.mock.calls[0] as [string, string[], any];
+    expect(cmd).toBe("/tmp/notify.sh");
+    expect(args).toEqual([]);
+    expect(opts.shell).toBe(false);
+    expect(opts.detached).toBe(true);
+    expect(opts.env.STATUS).toBe("completed");
+    expect(opts.env.SLACK_WEBHOOK_URL).toBe("https://h/x");
+    // process.env is merged in.
+    expect(opts.env.PATH ?? opts.env.Path).toBeDefined();
+  });
+
+  it("never throws when spawn itself throws (fire-and-forget)", () => {
+    spawnSpy.mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    expect(() => fireNotify("/nope", base())).not.toThrow();
+  });
+
+  it("registers an async error handler and unrefs the child", () => {
+    const on = vi.fn();
+    const unref = vi.fn();
+    spawnSpy.mockReturnValue({ on, unref });
+    fireNotify("/tmp/notify.sh", base());
+    expect(on).toHaveBeenCalledWith("error", expect.any(Function));
+    expect(unref).toHaveBeenCalledTimes(1);
+  });
+});

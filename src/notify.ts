@@ -1,0 +1,98 @@
+import { spawn } from "node:child_process";
+import { redactSecrets } from "./sessions/redact.js";
+
+// ── Notify hook ──
+//
+// Activates the `notify` config key (path to a notification script). When a
+// turn/task completes or fails, the configured script is executed
+// fire-and-forget with an injected env contract (see docs/notify-spec.md).
+//
+// SECURITY: `scriptPath` is user-config — it comes from settings.json and
+// carries exactly the same trust level as the rest of that file (it can run
+// arbitrary commands as the user). We never derive it from model output. The
+// script is spawned with shell:false and an explicit argv, so nothing here
+// interpolates untrusted text into a shell line; BODY/TITLE/FAIL_REASON reach
+// the script only as environment variables (already secret-redacted for BODY).
+
+const TITLE_MAX = 120;
+
+export interface NotifyInput {
+  /** "completed" for a normal turn end, "failed" when the turn threw. */
+  status: "completed" | "failed";
+  /** Turn duration in milliseconds; coerced to whole seconds. */
+  durationMs: number;
+  /** Raw text of the last assistant reply (redacted here). */
+  body: string;
+  /** Session title, or the first-prompt prefix when there is no title. */
+  title: string;
+  /** Failure reason text — only meaningful when status is "failed". */
+  failReason?: string;
+  /** User `env` block from settings (e.g. SLACK_WEBHOOK_URL), passed through. */
+  passthroughEnv?: Record<string, string | undefined>;
+}
+
+/**
+ * Pure builder for the notify script's environment. Deterministic and
+ * side-effect free so it can be unit-tested without spawning anything.
+ *
+ * - DURATION is a whole-second integer string.
+ * - STATUS is "completed" | "failed".
+ * - FAIL_REASON is present only on failure (and only when non-empty).
+ * - BODY is the last assistant reply, secret-redacted.
+ * - TITLE is the session title / first-prompt prefix, trimmed to a sane length.
+ * - The user `env` block is spread in first so our contract vars always win.
+ */
+export function buildNotifyEnv(input: NotifyInput): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  // Pass through the user's env block (drop undefined values).
+  for (const [k, v] of Object.entries(input.passthroughEnv ?? {})) {
+    if (typeof v === "string") env[k] = v;
+  }
+
+  env.STATUS = input.status;
+  env.DURATION = String(Math.max(0, Math.round(input.durationMs / 1000)));
+  env.BODY = redactSecrets(input.body ?? "");
+  env.TITLE = (input.title ?? "").slice(0, TITLE_MAX);
+
+  if (input.status === "failed" && input.failReason) {
+    env.FAIL_REASON = input.failReason;
+  }
+
+  return env;
+}
+
+/**
+ * Fire the configured notify script, non-blocking. Never throws, never delays
+ * the caller: a spawn failure or a non-zero exit degrades to at most a single
+ * debug-level stderr line (only when `debug` is set). Detached + unref'd so the
+ * script's lifetime is not tied to ours.
+ */
+export function fireNotify(
+  scriptPath: string | undefined,
+  input: NotifyInput,
+  opts: { debug?: boolean } = {},
+): void {
+  if (!scriptPath) return;
+
+  const notifyEnv = buildNotifyEnv(input);
+
+  try {
+    const child = spawn(scriptPath, [], {
+      env: { ...process.env, ...notifyEnv },
+      stdio: "ignore",
+      detached: true,
+      shell: false,
+    });
+    // Errors (e.g. ENOENT for a bad path) arrive asynchronously on 'error';
+    // swallow them so an unhandled event never crashes the app.
+    child.on("error", (err) => {
+      if (opts.debug) process.stderr.write(`notify: spawn failed: ${err.message}\n`);
+    });
+    child.unref();
+  } catch (err) {
+    if (opts.debug) {
+      process.stderr.write(`notify: spawn failed: ${(err as Error).message}\n`);
+    }
+  }
+}
