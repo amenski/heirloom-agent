@@ -29,6 +29,7 @@ export default function SessionList({ sessionStore, onResume, onClose, width, he
     if (!q) return sessions;
     return sessions.filter(
       (s) =>
+        s.title.toLowerCase().includes(q) ||
         s.firstMessage.toLowerCase().includes(q) ||
         s.id.toLowerCase().includes(q)
     );
@@ -43,6 +44,13 @@ export default function SessionList({ sessionStore, onResume, onClose, width, he
   }, [safeIndex, pageSize, scrollOffset]);
 
   const visible = filtered.slice(scrollOffset, scrollOffset + pageSize);
+
+  // Small, honest status glyphs: completed / interrupted / failed.
+  const STATUS_MARK: Record<string, { glyph: string; color: string }> = {
+    completed: { glyph: "✓", color: "green" },
+    interrupted: { glyph: "…", color: "yellow" },
+    failed: { glyph: "✗", color: "red" },
+  };
 
   function formatDate(iso: string): string {
     try {
@@ -75,9 +83,13 @@ export default function SessionList({ sessionStore, onResume, onClose, width, he
 
     if (renameTarget) {
       if (key.return) {
-        const summary = renameText.trim();
-        if (summary) {
-          sessionStore.appendState(renameTarget, { summary }).then(() => {
+        const title = renameText.trim();
+        const target = renameTarget;
+        if (title) {
+          sessionStore.renameSession(target, title).then(() => {
+            setSessions((prev) =>
+              prev.map((s) => (s.id === target ? { ...s, title } : s)),
+            );
             setRenameTarget(null);
             setRenameText("");
           });
@@ -117,10 +129,8 @@ export default function SessionList({ sessionStore, onResume, onClose, width, he
     if (key.ctrl && (value === "r" || value === "R")) {
       const s = filtered[safeIndex];
       if (s) {
-        sessionStore.getSummary(s.id).then((summary) => {
-          setRenameTarget(s.id);
-          setRenameText(summary ?? "");
-        });
+        setRenameTarget(s.id);
+        setRenameText(s.title ?? "");
       }
       return;
     }
@@ -194,12 +204,16 @@ export default function SessionList({ sessionStore, onResume, onClose, width, he
               {visible.map((s, i) => {
                 const globalIdx = scrollOffset + i;
                 const isSelected = globalIdx === safeIndex;
+                const mark = STATUS_MARK[s.status] ?? STATUS_MARK.interrupted;
                 return (
                   <Box key={s.id}>
                     <Text color={isSelected ? "cyanBright" : undefined} dimColor={!isSelected}>
                       {isSelected ? "> " : "  "}
-                      {formatDate(s.createdAt).padEnd(10)} {String(s.messageCount).padStart(3)}msgs{"  "}
-                      {s.firstMessage || s.id.slice(0, 12)}
+                    </Text>
+                    <Text color={mark.color} dimColor={!isSelected}>{mark.glyph} </Text>
+                    <Text color={isSelected ? "cyanBright" : undefined} dimColor={!isSelected}>
+                      {formatDate(s.updatedAt).padEnd(10)} {String(s.messageCount).padStart(3)}msgs{"  "}
+                      {s.title || s.firstMessage || s.id.slice(0, 12)}
                     </Text>
                   </Box>
                 );
