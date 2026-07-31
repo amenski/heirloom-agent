@@ -7,7 +7,6 @@ import type { DiagnosticRunner } from "./diagnostics/index.js";
 import type { ErrorReflector } from "./selfreflection/index.js";
 import type { ErrorRecovery } from "./errorrecovery/index.js";
 import type { SkillDef } from "./skills/index.js";
-import type { RepoMap } from "./repomap/index.js";
 import type { MemoryStore } from "./memory/store.js";
 import type { SessionStore, CompactionSummary, PermissionDecision } from "./sessions/store.js";
 import { buildStablePreamble, buildVolatileContext, type PromptContext } from "./prompt.js";
@@ -29,7 +28,7 @@ function permissionSubjectText(toolName: string, args: Record<string, unknown>):
 // object references across turns, only reassigned on explicit mode/skill
 // switches). One CLI process runs one agent loop at a time, so a module-level
 // cache is safe here.
-let stableCache: { mode?: ModeConfig; workingDir: string; skills?: SkillDef[]; memory?: string; text: string } | undefined;
+let stableCache: { mode?: ModeConfig; workingDir: string; skills?: SkillDef[]; memory?: string; repomap?: string; text: string } | undefined;
 
 function getStablePreamble(ctx: PromptContext): string {
   if (
@@ -37,12 +36,13 @@ function getStablePreamble(ctx: PromptContext): string {
     stableCache.mode === ctx.mode &&
     stableCache.workingDir === ctx.workingDir &&
     stableCache.skills === ctx.skills &&
-    stableCache.memory === ctx.memory
+    stableCache.memory === ctx.memory &&
+    stableCache.repomap === ctx.repomap
   ) {
     return stableCache.text;
   }
   const text = buildStablePreamble(ctx);
-  stableCache = { mode: ctx.mode, workingDir: ctx.workingDir, skills: ctx.skills, memory: ctx.memory, text };
+  stableCache = { mode: ctx.mode, workingDir: ctx.workingDir, skills: ctx.skills, memory: ctx.memory, repomap: ctx.repomap, text };
   return text;
 }
 
@@ -66,7 +66,8 @@ export interface AgentOptions {
   /** Context-window ceiling used as budgetMax for per-turn token rows. Defaults to 128000, the codebase-wide fallback. */
   contextWindow?: number;
   skills?: SkillDef[];
-  repomap?: RepoMap;
+  /** Precomputed session-stable repository-map snapshot (see buildRepoMap). */
+  repomap?: string;
   memory?: string;
   memoryStore?: MemoryStore;
   sessionStore?: SessionStore;
@@ -101,7 +102,6 @@ export async function runAgent(
     skills: options.skills,
     repomap: options.repomap,
     memory: options.memory,
-    conversation: userMessage,
     planMode: options.planMode,
   };
   const stablePreamble = getStablePreamble(promptCtx);
@@ -400,6 +400,7 @@ export async function runAgent(
           mode: options.mode,
           workingDir: process.cwd(),
           skills: options.skills,
+          repomap: options.repomap,
           memory: options.memory,
         });
         messages.unshift({ role: "system", content: rebuiltPrompt });

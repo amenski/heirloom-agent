@@ -1,6 +1,7 @@
 import { APICallError, RetryError } from "ai";
 import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
+import { buildRepoMap } from "./prompt.js";
 import { executeTool, registry, setSessionId, setSignal } from "./tools/index.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine } from "./permissions/index.js";
@@ -136,6 +137,9 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // interactive site in cli.tsx. Fire-and-forget — see src/notify.ts.
     const notifyStart = Date.now();
     const notifyTitle = options.prompt.slice(0, 120);
+    // Repository map: computed once per headless run, injected into the stable
+    // preamble. Degrades to undefined (no map) on any failure — never crashes.
+    const repomapInjection = (await buildRepoMap(options.projectRoot)) ?? undefined;
     try {
       // Layered failure handling (self-reflection + error recovery). Both
       // engage only on error paths inside runAgent — a failed tool result
@@ -149,6 +153,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         executeTool,
         permissions,
         askUser,
+        repomap: repomapInjection,
         signal: abortController.signal,
         errorReflector: new ErrorReflector(),
         errorRecovery: new ErrorRecovery(),
