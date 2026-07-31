@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { runAgent } from "./agent.js";
 import { PermissionEngine } from "./permissions/index.js";
+import { ErrorReflector } from "./selfreflection/index.js";
+import { ErrorRecovery } from "./errorrecovery/index.js";
 import type { Provider, StreamEvent } from "./providers/types.js";
 import type { Message } from "./types.js";
 
@@ -347,6 +349,172 @@ describe("runAgent", () => {
       const { provider } = makeProvider([textTurn("hi")]);
       // No sessionStore/sessionId — must not throw.
       await runAgent("hi", { provider, tools: [], executeTool: async () => ({ content: "" }) });
+    });
+  });
+
+  describe("errorReflector engagement", () => {
+    const failingToolTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "read" },
+      { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("injects a reflection prompt after a failed tool result when a reflector is passed", async () => {
+      const { provider } = makeProvider([failingToolTurn(), textTurn("recovered")]);
+      const onRetry = vi.fn();
+
+      const result = await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "", error: "ENOENT: no such file" }),
+        errorReflector: new ErrorReflector(),
+        onRetry,
+      });
+
+      // The reflector's formatError message is injected as a user turn.
+      const reflection = result.messages.find(
+        (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("Try a different approach"),
+      );
+      expect(reflection).toBeDefined();
+      expect(reflection?.content).toContain("read");
+      expect(reflection?.content).toContain("ENOENT");
+      expect(onRetry).toHaveBeenCalledWith("retrying");
+    });
+
+    it("does not inject a reflection prompt without a reflector (proves it was inert before wiring)", async () => {
+      const { provider } = makeProvider([failingToolTurn(), textTurn("gave up")]);
+
+      const result = await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "", error: "ENOENT: no such file" }),
+      });
+
+      const reflection = result.messages.find(
+        (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("Try a different approach"),
+      );
+      expect(reflection).toBeUndefined();
+    });
+
+    it("does not retry a permission-denied error", async () => {
+      const { provider } = makeProvider([failingToolTurn(), textTurn("done")]);
+      const onRetry = vi.fn();
+
+      await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "", error: "Permission denied for read" }),
+        errorReflector: new ErrorReflector(),
+        onRetry,
+      });
+
+      expect(onRetry).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("errorRecovery engagement", () => {
+    const malformedToolTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "read" },
+      { type: "tool_call_delta", id: "call_1", arguments: "{not valid json" },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("injects a JSON-correction prompt on malformed tool args when recovery is passed", async () => {
+      const { provider } = makeProvider([malformedToolTurn(), textTurn("fixed")]);
+      const executeTool = vi.fn(async () => ({ content: "should not run" }));
+
+      const result = await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool,
+        errorRecovery: new ErrorRecovery(),
+      });
+
+      // The malformed call is not executed; a correction system message is injected.
+      expect(executeTool).not.toHaveBeenCalled();
+      const correction = result.messages.find(
+        (m) => m.role === "system" && typeof m.content === "string" && m.content.includes("malformed tool arguments"),
+      );
+      expect(correction).toBeDefined();
+    });
+
+    it("without recovery, malformed args are passed through to the tool as _raw (proves it was inert before wiring)", async () => {
+      const { provider } = makeProvider([malformedToolTurn(), textTurn("whatever")]);
+      const executeTool = vi.fn(async (_call: { arguments: Record<string, unknown> }) => ({ content: "ran anyway" }));
+
+      const result = await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool,
+      });
+
+      // No correction message; the raw args reach executeTool.
+      const correction = result.messages.find(
+        (m) => m.role === "system" && typeof m.content === "string" && m.content.includes("malformed tool arguments"),
+      );
+      expect(correction).toBeUndefined();
+      expect(executeTool).toHaveBeenCalled();
+      expect(executeTool.mock.calls[0][0].arguments).toEqual({ _raw: "{not valid json" });
+    });
+
+    // A fault in the turn body *after* the provider stream (here: executeTool
+    // throwing, which is not the captured-error path) is what handleFatalError
+    // is for. Provider stream errors are deliberately NOT swallowed (see the
+    // provider-stream-error test below).
+    const toolCallTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "read" },
+      { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("converts a fatal turn-body exception into a preserved-state system message instead of throwing", async () => {
+      const { provider } = makeProvider([toolCallTurn(), textTurn("unreached")]);
+
+      const result = await runAgent("go", {
+        provider,
+        tools: [],
+        executeTool: async () => {
+          throw new Error("kaboom");
+        },
+        errorRecovery: new ErrorRecovery(),
+      });
+
+      const fatal = result.messages.find(
+        (m) => m.role === "system" && typeof m.content === "string" && m.content.includes("A fatal error occurred: kaboom"),
+      );
+      expect(fatal).toBeDefined();
+    });
+
+    it("without recovery, a fatal turn-body exception propagates (proves it was inert before wiring)", async () => {
+      const { provider } = makeProvider([toolCallTurn(), textTurn("unreached")]);
+
+      await expect(
+        runAgent("go", {
+          provider,
+          tools: [],
+          executeTool: async () => {
+            throw new Error("kaboom");
+          },
+        }),
+      ).rejects.toThrow("kaboom");
+    });
+
+    it("does NOT swallow provider stream errors even with recovery (headless must still surface them)", async () => {
+      const provider: Provider = {
+        name: "boom",
+        async *streamChat() {
+          throw new Error("HTTP 401: auth failed");
+        },
+      };
+
+      await expect(
+        runAgent("go", {
+          provider,
+          tools: [],
+          executeTool: async () => ({ content: "" }),
+          errorRecovery: new ErrorRecovery(),
+        }),
+      ).rejects.toThrow("HTTP 401");
     });
   });
 });
