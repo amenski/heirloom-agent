@@ -241,3 +241,97 @@ describe("loadConfig strictMcpConfig", () => {
     expect(config.strictMcpConfig).toBeUndefined();
   });
 });
+
+describe("loadConfig statusline", () => {
+  it("accepts a well-formed command + module provider config", () => {
+    writeProjectSettings({
+      statusline: {
+        enabled: true,
+        refreshMs: 3000,
+        separator: " | ",
+        providers: [
+          { type: "command", id: "git", command: "git branch --show-current", color: "cyan", timeoutMs: 1500, cwd: "." },
+          { type: "module", id: "x", path: "./.deepcode/plugins/x.mjs", color: "yellow" },
+        ],
+      },
+    });
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.statusline).toEqual({
+      enabled: true,
+      refreshMs: 3000,
+      separator: " | ",
+      providers: [
+        { type: "command", id: "git", command: "git branch --show-current", color: "cyan", timeoutMs: 1500, cwd: "." },
+        { type: "module", id: "x", path: "./.deepcode/plugins/x.mjs", color: "yellow" },
+      ],
+    });
+  });
+
+  it("defaults enabled to true when providers exist", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "command", id: "g", command: "echo hi" }] } });
+    const { config } = loadConfig(projectDir);
+    expect(config.statusline?.enabled).toBe(true);
+  });
+
+  it("defaults enabled to false when there are no providers", () => {
+    writeProjectSettings({ statusline: { providers: [] } });
+    const { config } = loadConfig(projectDir);
+    expect(config.statusline?.enabled).toBe(false);
+  });
+
+  it("defaults refreshMs to 2000 and separator to ' · '", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "command", id: "g", command: "echo hi" }] } });
+    const { config } = loadConfig(projectDir);
+    expect(config.statusline?.refreshMs).toBe(2000);
+    expect(config.statusline?.separator).toBe(" · ");
+  });
+
+  it("clamps refreshMs to a minimum of 500", () => {
+    writeProjectSettings({ statusline: { refreshMs: 100, providers: [{ type: "command", id: "g", command: "echo hi" }] } });
+    const { config } = loadConfig(projectDir);
+    expect(config.statusline?.refreshMs).toBe(500);
+  });
+
+  it("rejects a command provider missing command", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "command", id: "g" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("statusline.providers.g.command is required"))).toBe(true);
+  });
+
+  it("rejects a module provider missing path", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "module", id: "m" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("statusline.providers.m.path is required"))).toBe(true);
+  });
+
+  it("rejects a provider with an unknown type", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "widget", id: "w" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('statusline.providers.w.type must be "command" or "module"'))).toBe(true);
+  });
+
+  it("rejects a provider missing id", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "command", command: "x" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('statusline.providers entry missing string "id"'))).toBe(true);
+  });
+
+  it("rejects providers that isn't an array", () => {
+    writeProjectSettings({ statusline: { providers: "nope" } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("statusline.providers must be an array"))).toBe(true);
+  });
+
+  it("rejects statusline that isn't an object", () => {
+    writeProjectSettings({ statusline: "on" });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("statusline must be an object"))).toBe(true);
+  });
+
+  it("does not warn about statusline being an unknown field", () => {
+    writeProjectSettings({ statusline: { providers: [{ type: "command", id: "g", command: "echo hi" }] } });
+    const { warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes('unknown field "statusline"'))).toBe(false);
+  });
+});
