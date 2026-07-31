@@ -70,7 +70,7 @@ added by yargs):
 | `-r`, `--resume [id]` | Resume a specific session by its ID. Use with no ID (`-r`) to open the session picker. |
 | `-l`, `--last` | Resume the most recent session for the current project directory. |
 | `--model <provider/model>` | Override the configured model (split on the first `/`). |
-| `--mode <slug>` | Start in the given mode. Not validated at the CLI layer — an unknown slug is accepted and silently ignored. |
+| `--mode <slug>` | Start in the given mode. On the headless (`-x`) path an unknown slug is validated and rejected with a clean error (`src/exec-runner.ts`). On the interactive path an unknown slug is not rejected — it silently falls back to the default `code` mode. |
 | `--debug` | Write redacted request/response JSONL. |
 | `-h`, `--help` | Show help and the epilog, exit 0. |
 | `-v`, `--version` | Print version (`1.0.0`), exit 0. |
@@ -105,6 +105,11 @@ completes. `-x` requires `-p`. Errors go to stderr so stdout stays pipeable.
   resolves to `ask` is denied (permission-spec.md). Headless runs need explicit
   `allow` rules.
 - If no provider key is resolvable, the run fails (see Exit Codes).
+- **Clean error output.** Failures (missing key, unknown provider, unknown
+  `--mode`, provider API errors) print a single concise `Error: <message>` line
+  to stderr — a provider API error is reduced to its status code and message,
+  not the full error object. The complete error (stack, request body, headers)
+  is emitted only when `--debug` is passed (`src/exec-runner.ts`).
 
 ## Exit Codes
 

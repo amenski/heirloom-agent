@@ -136,20 +136,19 @@ Provider selection is by **name** (`provider` field), resolving to a built-in
 preset in `src/providers/presets.ts` (`deepseek`, `openai`, `openrouter`,
 `groq`, `ollama`). Each preset carries its own `baseUrl` and `keyEnv`.
 
-`setConfigProviders()` exists in `presets.ts` to register additional providers
-(with a custom `baseUrl`/`apiKeyEnv`), and `createProvider` honors an
-`options.baseUrl` override **only for such config-registered providers**.
+**Overriding the base URL.** Set `env.BASE_URL` in `settings.json` to point a
+built-in provider at a proxy, gateway, or self-hosted endpoint. The value is
+read at launch (`src/cli.tsx`, and `src/exec-runner.ts` for headless) and passed
+to `createProvider` as `options.baseUrl`, which now applies it over the preset's
+hardcoded `baseUrl` for **built-in presets** (`src/providers/presets.ts:149-160`)
+— honored on both the TUI and exec paths. `env.API_KEY` is likewise honored for
+built-in providers (`options.apiKey`, `src/providers/presets.ts:139`).
 
-> **Known limitation (verified):** `setConfigProviders` is imported but never
-> called anywhere in `src/`, and there is no config key that populates it — the
-> `providers` field is *not* recognized by the loader (it warns
-> `config: unknown field "providers"`). Consequently `env.BASE_URL` is read and
-> passed through (`src/cli.tsx:88,112`) but **ignored for the built-in
-> presets**, which use their hardcoded `baseUrl`
-> (`src/providers/presets.ts:132-153`). There is currently no supported way to
-> point a built-in provider at a custom base URL via config. `env.API_KEY`, by
-> contrast, *is* honored for built-in providers (`options.apiKey`,
-> `src/providers/presets.ts:139`).
+`setConfigProviders()` also exists in `presets.ts` to register additional
+providers with a custom `baseUrl`/`apiKeyEnv`; it is not wired to a config key
+today (the `providers` field is not recognized by the loader — it warns
+`config: unknown field "providers"`), so `env.BASE_URL` on a built-in preset is
+the supported way to override the endpoint.
 
 Model references (`--model`, the `model` field) use `provider/model-id`, split on
 the **first** slash only, so model IDs may themselves contain slashes
