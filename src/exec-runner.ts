@@ -4,6 +4,8 @@ import { runAgent } from "./agent.js";
 import { executeTool, registry, setSessionId, setSignal } from "./tools/index.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine } from "./permissions/index.js";
+import { ErrorRecovery } from "./errorrecovery/index.js";
+import { ErrorReflector } from "./selfreflection/index.js";
 import { fireNotify } from "./notify.js";
 
 export interface ExecRunnerOptions {
@@ -135,6 +137,12 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     const notifyStart = Date.now();
     const notifyTitle = options.prompt.slice(0, 120);
     try {
+      // Layered failure handling (self-reflection + error recovery). Both
+      // engage only on error paths inside runAgent — a failed tool result
+      // triggers one reflection retry, malformed tool-call JSON or a fatal
+      // turn exception triggers recovery — so the happy path is unaffected.
+      // Constructed once per headless run so the reflector's total-retry
+      // budget spans the whole session.
       const result = await runAgent(prompt, {
         provider,
         tools: registry.getAllDefs(),
@@ -142,6 +150,8 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         permissions,
         askUser,
         signal: abortController.signal,
+        errorReflector: new ErrorReflector(),
+        errorRecovery: new ErrorRecovery(),
       });
 
       if (interrupted) return 130;
