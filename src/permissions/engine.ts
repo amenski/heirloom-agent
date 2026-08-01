@@ -43,7 +43,7 @@ export class PermissionEngine {
     this.configRules = (config?.rules ?? []).map((r) => ({ ...r, origin: "config" as const }));
     this.defaultMode = config?.defaultMode ?? "askAll";
     this.workingDir = workingDir ?? process.cwd();
-    this.projectConfigDir = join(this.workingDir, ".deepcode");
+    this.projectConfigDir = join(this.workingDir, ".heirloom");
   }
 
   /**
@@ -193,7 +193,7 @@ export class PermissionEngine {
   }
 
   /**
-   * Approves `rule` for this process and persists it to .deepcode/settings.json
+   * Approves `rule` for this process and persists it to .heirloom/settings.json
    * via an atomic write (temp file + rename). A destructive- or
    * guarded-origin match is forced to kind "exact" on the literal subject text.
    */

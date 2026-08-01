@@ -46,14 +46,14 @@ describe("permission system smoke pass", () => {
     const sessionRule = sessionEngine.buildDefaultRule("run_bash", { command });
     sessionEngine.approveForSession(sessionRule);
     expect(sessionEngine.resolve("run_bash", { command }).action).toBe("allow");
-    expect(existsSync(join(workDir, ".deepcode", "settings.json"))).toBe(false);
+    expect(existsSync(join(workDir, ".heirloom", "settings.json"))).toBe(false);
 
     // 3. "always": approveAlways takes effect immediately AND persists to disk.
     const alwaysEngine = new PermissionEngine(undefined, workDir);
     const alwaysRule = alwaysEngine.buildDefaultRule("run_bash", { command });
     alwaysEngine.approveAlways(alwaysRule);
     expect(alwaysEngine.resolve("run_bash", { command }).action).toBe("allow");
-    expect(existsSync(join(workDir, ".deepcode", "settings.json"))).toBe(true);
+    expect(existsSync(join(workDir, ".heirloom", "settings.json"))).toBe(true);
 
     // 4. "no" (deny): a fresh engine with no approval still asks (never denies
     // outright for an ordinary unconfigured call — that's the UI's job to
@@ -79,7 +79,7 @@ describe("permission system smoke pass", () => {
   });
 
   it("inspecting settings.json before/after: absent before any always-approval, present and containing the rule after", () => {
-    const settingsPath = join(workDir, ".deepcode", "settings.json");
+    const settingsPath = join(workDir, ".heirloom", "settings.json");
     expect(existsSync(settingsPath)).toBe(false);
 
     const engine = new PermissionEngine(undefined, workDir);

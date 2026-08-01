@@ -10,8 +10,8 @@
 
 | File | What Changed |
 |------|-------------|
-| `src/config/loader.ts` | YAML→JSON, paths `~/.deepcode/settings.json` + `.deepcode/settings.json`, full Deep Code schema |
-| `src/config/credentials.ts` | YAML→JSON, path `~/.deepcode/credentials.json` |
+| `src/config/loader.ts` | YAML→JSON, paths `~/.heirloom/settings.json` + `.heirloom/settings.json`, full Deep Code schema |
+| `src/config/credentials.ts` | YAML→JSON, path `~/.heirloom/credentials.json` |
 | `src/config/credentials.test.ts` | JSON format tests (was YAML) |
 
 ---
@@ -31,7 +31,7 @@ Replace the current tool+pattern rule engine with Deep Code's 10-scope model.
 | Config | `Record<string, PermissionConfigValue>` | `PermissionConfig { allow, deny, ask, defaultMode }` |
 | Approval modes | `manual` / `edits` / `all` overlay | Removed — scopes replace this |
 | Guards | Built-in (egress commands, secret paths, rm -r) | Removed — user configures via `deny` scopes |
-| Session rules | `addSessionRule()` persists in-memory | `persistAllow(scope)` writes to `.deepcode/settings.json` |
+| Session rules | `addSessionRule()` persists in-memory | `persistAllow(scope)` writes to `.heirloom/settings.json` |
 
 ### Implementation Steps
 
@@ -76,7 +76,7 @@ export class PermissionEngine {
     this.ask = new Set(config?.ask ?? []);
     this.defaultMode = config?.defaultMode ?? "allowAll";
     this.workingDir = workingDir ?? process.cwd();
-    this.projectConfigPath = join(this.workingDir, ".deepcode", "settings.json");
+    this.projectConfigPath = join(this.workingDir, ".heirloom", "settings.json");
   }
 }
 ```
@@ -108,10 +108,10 @@ Path containment: resolve both the path and workingDir with `realpathSync`, then
 
 **1.4 Implement `persistAllow(scopes)`:** (for "Yes, and always allow")
 ```
-1. Read existing .deepcode/settings.json (if exists)
+1. Read existing .heirloom/settings.json (if exists)
 2. Add scopes to permissions.allow array
 3. Remove from permissions.deny and permissions.ask if present
-4. Write back (create .deepcode/ dir if needed)
+4. Write back (create .heirloom/ dir if needed)
 ```
 
 **1.5 Remove all old code:**
@@ -327,14 +327,14 @@ Fix any failing tests.
 
 After all tasks complete, verify:
 
-- [ ] `~/.deepcode/settings.json` is read on startup (create a test file)
-- [ ] `.deepcode/settings.json` overrides user settings
+- [ ] `~/.heirloom/settings.json` is read on startup (create a test file)
+- [ ] `.heirloom/settings.json` overrides user settings
 - [ ] `env.MODEL`, `env.BASE_URL`, `env.API_KEY` are used for API calls
 - [ ] `thinkingEnabled: true` sends `thinking` param to DeepSeek V4
 - [ ] `permissions.allow` / `deny` / `ask` arrays control tool access
 - [ ] `permissions.defaultMode: "askAll"` prompts for every unlisted scope
 - [ ] Permission prompt shows scopes and Y/N/A options
-- [ ] "Yes, and always allow" persists scopes to `.deepcode/settings.json`
+- [ ] "Yes, and always allow" persists scopes to `.heirloom/settings.json`
 - [ ] `mcpServers` connects MCP servers and registers tools
 - [ ] Status bar no longer shows approval modes (manual/edits/all)
 - [ ] `/model` switching still works

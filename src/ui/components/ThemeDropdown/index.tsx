@@ -26,11 +26,11 @@ export function themeChoices(): string[] {
 }
 
 /**
- * Resolve the DEEPCODE_HOME directory (user-level config root), respecting the
- * DEEPCODE_HOME override, matching src/config/loader.ts.
+ * Resolve the HEIRLOOM_HOME directory (user-level config root), respecting the
+ * HEIRLOOM_HOME override, matching src/config/loader.ts.
  */
 export function resolveDeepcodeHome(): string {
-  return process.env.DEEPCODE_HOME || join(homedir(), ".deepcode");
+  return process.env.HEIRLOOM_HOME || join(homedir(), ".heirloom");
 }
 
 /**
@@ -51,7 +51,7 @@ export function resolveThemeOutcome(
  * Persist the chosen theme into the user-level settings.json `theme` block, via
  * an atomic write (temp file + rename), mirroring the permission engine's
  * persist(). Existing settings are preserved; only `theme` is merged. `homeDir`
- * defaults to DEEPCODE_HOME. Never writes project settings.
+ * defaults to HEIRLOOM_HOME. Never writes project settings.
  *
  * "auto" is stored as `theme.mode = "auto"`; a builtin preset name is stored as
  * `theme.mode = <name>` (the loader/resolver accept a preset name in `mode`).

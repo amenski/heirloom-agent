@@ -83,8 +83,8 @@ function nonTtyInput(): ExecInputStream {
 }
 
 function writeSettings(settings: Record<string, unknown>): void {
-  mkdirSync(join(PROJECT_DIR, ".deepcode"), { recursive: true });
-  writeFileSync(join(PROJECT_DIR, ".deepcode", "settings.json"), JSON.stringify(settings), "utf-8");
+  mkdirSync(join(PROJECT_DIR, ".heirloom"), { recursive: true });
+  writeFileSync(join(PROJECT_DIR, ".heirloom", "settings.json"), JSON.stringify(settings), "utf-8");
 }
 
 async function run(opts?: { mode?: string; debug?: boolean }): Promise<{ code: number; stderr: string }> {
@@ -116,8 +116,8 @@ describe("runExecMode headless permission enforcement (T11)", () => {
   beforeEach(() => {
     mkdirSync(PROJECT_DIR, { recursive: true });
     mkdirSync(HOME_DIR, { recursive: true });
-    // Isolate from the developer's real ~/.deepcode/settings.json.
-    process.env.DEEPCODE_HOME = HOME_DIR;
+    // Isolate from the developer's real ~/.heirloom/settings.json.
+    process.env.HEIRLOOM_HOME = HOME_DIR;
     executeToolSpy.mockClear();
     createProviderSpy.mockClear();
     providerFactory = () => scriptedProvider();
@@ -125,7 +125,7 @@ describe("runExecMode headless permission enforcement (T11)", () => {
   });
 
   afterEach(() => {
-    delete process.env.DEEPCODE_HOME;
+    delete process.env.HEIRLOOM_HOME;
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
@@ -190,14 +190,14 @@ describe("runExecMode first-run failures are clean (B1)", () => {
   beforeEach(() => {
     mkdirSync(PROJECT_DIR, { recursive: true });
     mkdirSync(HOME_DIR, { recursive: true });
-    process.env.DEEPCODE_HOME = HOME_DIR;
+    process.env.HEIRLOOM_HOME = HOME_DIR;
     createProviderSpy.mockClear();
     providerFactory = () => scriptedProvider();
     scriptedCall = null;
   });
 
   afterEach(() => {
-    delete process.env.DEEPCODE_HOME;
+    delete process.env.HEIRLOOM_HOME;
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
@@ -253,7 +253,7 @@ describe("runExecMode provider failures are concise (B6)", () => {
   beforeEach(() => {
     mkdirSync(PROJECT_DIR, { recursive: true });
     mkdirSync(HOME_DIR, { recursive: true });
-    process.env.DEEPCODE_HOME = HOME_DIR;
+    process.env.HEIRLOOM_HOME = HOME_DIR;
     createProviderSpy.mockClear();
     providerFactory = () => scriptedProvider();
     scriptedCall = null;
@@ -261,7 +261,7 @@ describe("runExecMode provider failures are concise (B6)", () => {
   });
 
   afterEach(() => {
-    delete process.env.DEEPCODE_HOME;
+    delete process.env.HEIRLOOM_HOME;
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
@@ -401,14 +401,14 @@ describe("runExecMode honors config BASE_URL / API_KEY (B2)", () => {
   beforeEach(() => {
     mkdirSync(PROJECT_DIR, { recursive: true });
     mkdirSync(HOME_DIR, { recursive: true });
-    process.env.DEEPCODE_HOME = HOME_DIR;
+    process.env.HEIRLOOM_HOME = HOME_DIR;
     createProviderSpy.mockClear();
     providerFactory = () => scriptedProvider();
     scriptedCall = null;
   });
 
   afterEach(() => {
-    delete process.env.DEEPCODE_HOME;
+    delete process.env.HEIRLOOM_HOME;
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 

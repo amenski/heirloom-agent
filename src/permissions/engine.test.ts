@@ -298,7 +298,7 @@ describe("PermissionEngine.resolve", () => {
 
     it("approveForSession never writes settings.json", () => {
       engine.approveForSession(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
-      expect(existsSync(join(dir, ".deepcode", "settings.json"))).toBe(false);
+      expect(existsSync(join(dir, ".heirloom", "settings.json"))).toBe(false);
     });
 
     it("a fresh engine instance does not see a session-approved rule", () => {
@@ -327,7 +327,7 @@ describe("PermissionEngine.resolve", () => {
 
     it("approveAlways writes settings.json with the new rules shape", () => {
       engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
-      const settingsPath = join(dir, ".deepcode", "settings.json");
+      const settingsPath = join(dir, ".heirloom", "settings.json");
       expect(existsSync(settingsPath)).toBe(true);
       const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
       expect(written.permissions.rules).toEqual([{ tool: "run_bash", pattern: "npm test", action: "allow" }]);
@@ -335,7 +335,7 @@ describe("PermissionEngine.resolve", () => {
 
     it("a fresh engine instance loaded from the persisted rules resolves the same way", () => {
       engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
-      const settingsPath = join(dir, ".deepcode", "settings.json");
+      const settingsPath = join(dir, ".heirloom", "settings.json");
       const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
       const reloaded = new PermissionEngine(
         { rules: written.permissions.rules.map((r: { tool: string; pattern: string; action: string }) => ({ ...r, kind: "exact", origin: "config" })) },
@@ -346,7 +346,7 @@ describe("PermissionEngine.resolve", () => {
 
     it("preserves unrelated top-level JSON keys already on disk", () => {
       engine.approveAlways(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
-      const settingsPath = join(dir, ".deepcode", "settings.json");
+      const settingsPath = join(dir, ".heirloom", "settings.json");
       const first = JSON.parse(readFileSync(settingsPath, "utf-8"));
       first.someOtherKey = "preserved";
       writeFileSync(settingsPath, JSON.stringify(first, null, 2), "utf-8");

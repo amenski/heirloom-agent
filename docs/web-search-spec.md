@@ -155,7 +155,7 @@ consumes it. Do **not** wire it. Change: keep parsing for compat, emit warning
 ## Tier 2 — general web search via MCP (documentation only)
 
 Heirloom already speaks MCP (`src/mcp/`). General web search = user adds a
-search MCP server of their choosing in `.deepcode/settings.json`:
+search MCP server of their choosing in `.heirloom/settings.json`:
 
 ```jsonc
 {

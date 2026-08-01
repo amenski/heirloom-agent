@@ -139,7 +139,7 @@ genuinely reusable core is five concepts, all in
 | 2 | **Permission audit trail** | Every allow/deny/ask decision recorded with tool, scopes, decision, reason — plus a history query. |
 | 3 | **Token-budget audit** | Per-turn token rows (`turn`, `total`, `max`, `remaining`); "budget left" query. |
 | 4 | **Auto error-fix loop** | On tool failure, inject a "don't move on — fix it" reminder; retry ≤3× then escalate. Bash output gets a grepped `<error_analysis>` header. |
-| 5 | **Hierarchical project rules** | `.deepcode/rules/**/*.md` recursively loaded, injected as scoped rule sections. |
+| 5 | **Hierarchical project rules** | `.heirloom/rules/**/*.md` recursively loaded, injected as scoped rule sections. |
 
 The PR's original design persists all of this to a **SQLite database** (`sql.js`,
 pure-WASM) with tables `session_logs`, `token_budget`, `permission_audit`,
@@ -152,7 +152,7 @@ pure-WASM) with tables `session_logs`, `token_budget`, `permission_audit`,
 | PR concept | Heirloom today | Actual gap |
 |---|---|---|
 | Session log | Append-only **JSONL** per session — `SessionStore`, `~/.heirloom/sessions/<slug>/<id>.jsonl`, records typed `meta \| message \| state \| compaction` (`src/sessions/store.ts`). | Not the *store* — the **queryability** and the *event types* (permission, token). |
-| Permission saving | Approved rules **persist** to `.deepcode/settings.json` via atomic write (`engine.ts: approveAlways → persist`). | No **audit trail**: denies, one-time allows, and the *reason* a decision was made are never recorded. |
+| Permission saving | Approved rules **persist** to `.heirloom/settings.json` via atomic write (`engine.ts: approveAlways → persist`). | No **audit trail**: denies, one-time allows, and the *reason* a decision was made are never recorded. |
 | Token budget | `estimateTokens` / `shouldCompact` drive compaction (`src/compaction/budget.ts`). | Usage is **never recorded** per turn; no history, no "remaining" surfaced. |
 | Auto error-fix | `src/errorrecovery/` + `src/selfreflection/` already exist. | Possible **overlap** — must audit before porting, or we duplicate. |
 | Project rules | Single `.heirloom/instructions.md` / `AGENTS.md`. | No **directory of scoped rules**. Additive. |
@@ -337,7 +337,7 @@ ideas to reimplement**, never as something to cherry-pick wholesale.
 
 Unrelated to session logging. A small (515-line), **clean** PR — no vendored
 blob, no merge markers — adding a `deepcode login` command that saves an API key
-(and a ready-to-use default config) to `~/.deepcode/settings.json`.
+(and a ready-to-use default config) to `~/.heirloom/settings.json`.
 
 ### This is mostly overlap, not gap
 
