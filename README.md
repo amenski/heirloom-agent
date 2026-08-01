@@ -149,8 +149,8 @@ cat error.log | heirloom -x -p "Explain this error"
 
 Settings live in JSON, merged global → project (project wins):
 
-- `~/.deepcode/settings.json` — user-level
-- `./.deepcode/settings.json` — per-project
+- `~/.heirloom/settings.json` — user-level
+- `./.heirloom/settings.json` — per-project
 
 ```jsonc
 {

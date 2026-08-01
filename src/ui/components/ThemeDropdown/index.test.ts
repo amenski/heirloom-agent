@@ -39,13 +39,13 @@ describe("resolveThemeOutcome (revert-on-escape logic)", () => {
 });
 
 describe("resolveDeepcodeHome", () => {
-  const prev = process.env.DEEPCODE_HOME;
+  const prev = process.env.HEIRLOOM_HOME;
   afterEach(() => {
-    if (prev === undefined) delete process.env.DEEPCODE_HOME;
-    else process.env.DEEPCODE_HOME = prev;
+    if (prev === undefined) delete process.env.HEIRLOOM_HOME;
+    else process.env.HEIRLOOM_HOME = prev;
   });
-  it("respects DEEPCODE_HOME", () => {
-    process.env.DEEPCODE_HOME = "/tmp/custom-home";
+  it("respects HEIRLOOM_HOME", () => {
+    process.env.HEIRLOOM_HOME = "/tmp/custom-home";
     expect(resolveDeepcodeHome()).toBe("/tmp/custom-home");
   });
 });

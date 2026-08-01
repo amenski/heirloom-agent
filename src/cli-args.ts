@@ -30,8 +30,8 @@ export interface ParsedCliArgs {
 
 const EPILOG = [
   "Configuration:",
-  "  ~/.deepcode/settings.json    User-level API key, model, base URL",
-  "  ./.deepcode/settings.json    Project-level settings",
+  "  ~/.heirloom/settings.json    User-level API key, model, base URL",
+  "  ./.heirloom/settings.json    Project-level settings",
   "",
   "Inside the TUI:",
   "  enter            Send the prompt",

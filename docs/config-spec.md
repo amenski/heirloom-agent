@@ -3,8 +3,8 @@
 Heirloom config is **JSON**, loaded and merged by `src/config/loader.ts`. Two
 files are read and deep-merged (project wins over global):
 
-- **Global:** `~/.deepcode/settings.json` (or `$DEEPCODE_HOME/settings.json`)
-- **Project:** `./.deepcode/settings.json` (in the current working directory)
+- **Global:** `~/.heirloom/settings.json` (or `$HEIRLOOM_HOME/settings.json`)
+- **Project:** `./.heirloom/settings.json` (in the current working directory)
 
 There is no YAML config file. `config.yaml`, `~/.heirloom/config.yaml`, and a
 `providers:` registry map are **not** read by the loader; the only YAML file
@@ -114,7 +114,7 @@ it to `rules` in memory and emits:
 
 ```
 permissions: migrated N legacy scope(s) to rule-based permissions —
-review .deepcode/settings.json and re-approve as needed
+review .heirloom/settings.json and re-approve as needed
 ```
 
 That warning fires on **every launch** until the file is rewritten to the
@@ -216,8 +216,7 @@ taken from, in order:
 
 The **canonical, recommended** store is `~/.heirloom/credentials.yaml` — a flat
 `provider: key` YAML map at mode `0600`, written by `heirloom auth`
-(`src/config/credentials.ts`). A legacy `~/.deepcode/credentials.json` is read as
-a fallback with a one-time deprecation warning.
+(`src/config/credentials.ts`).
 
 ```yaml
 # ~/.heirloom/credentials.yaml  (managed by `heirloom auth`)
@@ -228,7 +227,7 @@ openrouter: sk-or-...
 `env.API_KEY` inside `settings.json` **works** but is **discouraged**:
 settings.json is meant to be shareable/committable, and a key there can leak
 into version control. Prefer the credentials file or an env var. (Note the split
-homes: config lives under `~/.deepcode`, credentials and sessions under
+homes: config lives under `~/.heirloom`, credentials and sessions under
 `~/.heirloom`.)
 
 ## Web Search
@@ -296,7 +295,7 @@ field. If you set it, nothing happens because there is nothing to enable.
 
 | Variable | Purpose |
 |----------|---------|
-| `DEEPCODE_HOME` | Override the config home (default `~/.deepcode`); the loader reads `settings.json` from here |
+| `HEIRLOOM_HOME` | Override the config home (default `~/.heirloom`); the loader reads `settings.json` from here |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |

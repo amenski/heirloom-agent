@@ -170,7 +170,7 @@ function deepMerge<T extends Record<string, unknown>>(
 }
 
 function resolveHome(): string {
-  return process.env.DEEPCODE_HOME || join(homedir(), ".deepcode");
+  return process.env.HEIRLOOM_HOME || join(homedir(), ".heirloom");
 }
 
 function loadJsonFile(path: string): Record<string, unknown> | null {
@@ -377,7 +377,7 @@ export function migrateLegacyPermissions(raw: unknown): MigrationResult {
 
   if (seenScopes.size > 0) {
     warnings.push(
-      `permissions: migrated ${seenScopes.size} legacy scope(s) to rule-based permissions — review .deepcode/settings.json and re-approve as needed`,
+      `permissions: migrated ${seenScopes.size} legacy scope(s) to rule-based permissions — review .heirloom/settings.json and re-approve as needed`,
     );
   }
 
@@ -549,7 +549,7 @@ export function loadConfig(projectDir?: string): LoadResult {
 
   const globalPath = join(resolveHome(), "settings.json");
   const projDir = projectDir ?? process.cwd();
-  const projectPath = join(projDir, ".deepcode", "settings.json");
+  const projectPath = join(projDir, ".heirloom", "settings.json");
 
   const globalRaw = loadJsonFile(globalPath);
   const projectRaw = loadJsonFile(projectPath);

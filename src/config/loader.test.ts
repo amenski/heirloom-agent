@@ -9,7 +9,7 @@ describe("validatePermissions (rule shape)", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "heirloom-loader-"));
-    mkdirSync(join(dir, ".deepcode"), { recursive: true });
+    mkdirSync(join(dir, ".heirloom"), { recursive: true });
   });
 
   afterEach(() => {
@@ -17,7 +17,7 @@ describe("validatePermissions (rule shape)", () => {
   });
 
   function writeSettings(json: unknown) {
-    writeFileSync(join(dir, ".deepcode", "settings.json"), JSON.stringify(json), "utf-8");
+    writeFileSync(join(dir, ".heirloom", "settings.json"), JSON.stringify(json), "utf-8");
   }
 
   it("accepts a well-formed rules array", () => {
@@ -132,7 +132,7 @@ describe("loadConfig: migration integration, no disk write during load", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "heirloom-loader-migration-"));
-    mkdirSync(join(dir, ".deepcode"), { recursive: true });
+    mkdirSync(join(dir, ".heirloom"), { recursive: true });
   });
 
   afterEach(() => {
@@ -140,7 +140,7 @@ describe("loadConfig: migration integration, no disk write during load", () => {
   });
 
   it("migrates a legacy-shape settings.json in-memory and surfaces a warning", () => {
-    const settingsPath = join(dir, ".deepcode", "settings.json");
+    const settingsPath = join(dir, ".heirloom", "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: ["read-in-cwd"], defaultMode: "askAll" } }), "utf-8");
 
     const { config, warnings } = loadConfig(dir);
@@ -151,7 +151,7 @@ describe("loadConfig: migration integration, no disk write during load", () => {
   });
 
   it("does not write to disk during loadConfig, even when migration occurs", () => {
-    const settingsPath = join(dir, ".deepcode", "settings.json");
+    const settingsPath = join(dir, ".heirloom", "settings.json");
     const original = JSON.stringify({ permissions: { allow: ["read-in-cwd"], defaultMode: "askAll" } });
     writeFileSync(settingsPath, original, "utf-8");
     const statBefore = statSync(settingsPath).mtimeMs;
@@ -165,7 +165,7 @@ describe("loadConfig: migration integration, no disk write during load", () => {
   });
 
   it("is idempotent: loading an already-migrated (new-shape) file does not re-migrate or warn", () => {
-    const settingsPath = join(dir, ".deepcode", "settings.json");
+    const settingsPath = join(dir, ".heirloom", "settings.json");
     writeFileSync(
       settingsPath,
       JSON.stringify({ permissions: { rules: [{ tool: "read_file", pattern: "./**", action: "allow" }] } }),
@@ -180,18 +180,18 @@ describe("loadConfig: migration integration, no disk write during load", () => {
   it("no settings.json is created by loadConfig alone", () => {
     // No settings.json written at all — loadConfig must not create one.
     loadConfig(dir);
-    expect(existsSync(join(dir, ".deepcode", "settings.json"))).toBe(false);
+    expect(existsSync(join(dir, ".heirloom", "settings.json"))).toBe(false);
   });
 });
 
-// Write a project-level .deepcode/settings.json into a fresh temp dir and load it.
-// DEEPCODE_HOME is pointed at an empty dir so no global settings interfere.
+// Write a project-level .heirloom/settings.json into a fresh temp dir and load it.
+// HEIRLOOM_HOME is pointed at an empty dir so no global settings interfere.
 let projectDir: string;
 let homeDir: string;
 let prevHome: string | undefined;
 
 function writeProjectSettings(obj: unknown): void {
-  const dir = join(projectDir, ".deepcode");
+  const dir = join(projectDir, ".heirloom");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "settings.json"), JSON.stringify(obj), "utf-8");
 }
@@ -199,15 +199,15 @@ function writeProjectSettings(obj: unknown): void {
 beforeEach(() => {
   projectDir = mkdtempSync(join(tmpdir(), "loader-proj-"));
   homeDir = mkdtempSync(join(tmpdir(), "loader-home-"));
-  prevHome = process.env.DEEPCODE_HOME;
-  process.env.DEEPCODE_HOME = homeDir;
+  prevHome = process.env.HEIRLOOM_HOME;
+  process.env.HEIRLOOM_HOME = homeDir;
 });
 
 afterEach(() => {
   rmSync(projectDir, { recursive: true, force: true });
   rmSync(homeDir, { recursive: true, force: true });
-  if (prevHome === undefined) delete process.env.DEEPCODE_HOME;
-  else process.env.DEEPCODE_HOME = prevHome;
+  if (prevHome === undefined) delete process.env.HEIRLOOM_HOME;
+  else process.env.HEIRLOOM_HOME = prevHome;
 });
 
 describe("loadConfig strictMcpConfig", () => {

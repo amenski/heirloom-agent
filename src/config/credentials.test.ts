@@ -6,12 +6,10 @@ import { join } from "node:path";
 describe("credentials", () => {
   let dir: string;
   let yamlPath: string;
-  let legacyPath: string;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "heirloom-creds-test-"));
     yamlPath = join(dir, "credentials.yaml");
-    legacyPath = join(dir, "credentials.json");
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -22,7 +20,7 @@ describe("credentials", () => {
   });
 
   async function load() {
-    // Fresh module per test so the one-time legacy-warning latch resets.
+    // Fresh module per test so module-level state resets.
     vi.resetModules();
     return await import("./credentials.js");
   }
@@ -31,73 +29,31 @@ describe("credentials", () => {
     it("returns the key for a present provider", async () => {
       const { getCredential } = await load();
       writeFileSync(yamlPath, "deepseek: sk-test-dummy\nopenrouter: sk-or-test-dummy\n", { mode: 0o600 });
-      expect(getCredential("deepseek", yamlPath, legacyPath)).toBe("sk-test-dummy");
-      expect(getCredential("openrouter", yamlPath, legacyPath)).toBe("sk-or-test-dummy");
+      expect(getCredential("deepseek", yamlPath)).toBe("sk-test-dummy");
+      expect(getCredential("openrouter", yamlPath)).toBe("sk-or-test-dummy");
     });
 
     it("returns undefined for an absent provider", async () => {
       const { getCredential } = await load();
       writeFileSync(yamlPath, "deepseek: sk-test-dummy\n", { mode: 0o600 });
-      expect(getCredential("openai", yamlPath, legacyPath)).toBeUndefined();
+      expect(getCredential("openai", yamlPath)).toBeUndefined();
     });
 
     it("returns undefined when the file does not exist", async () => {
       const { getCredential } = await load();
-      expect(getCredential("deepseek", join(dir, "nope.yaml"), legacyPath)).toBeUndefined();
+      expect(getCredential("deepseek", join(dir, "nope.yaml"))).toBeUndefined();
     });
 
     it("returns undefined for an empty-string value", async () => {
       const { getCredential } = await load();
       writeFileSync(yamlPath, "deepseek:\n", { mode: 0o600 });
-      expect(getCredential("deepseek", yamlPath, legacyPath)).toBeUndefined();
+      expect(getCredential("deepseek", yamlPath)).toBeUndefined();
     });
 
     it("strips surrounding quotes from the value", async () => {
       const { getCredential } = await load();
       writeFileSync(yamlPath, 'deepseek: "sk-quoted"\n', { mode: 0o600 });
-      expect(getCredential("deepseek", yamlPath, legacyPath)).toBe("sk-quoted");
-    });
-  });
-
-  describe("getCredential — legacy JSON fallback", () => {
-    it("falls back to legacy credentials.json when the YAML lacks the key", async () => {
-      const { getCredential } = await load();
-      writeFileSync(legacyPath, JSON.stringify({ deepseek: "sk-legacy" }));
-      expect(getCredential("deepseek", yamlPath, legacyPath)).toBe("sk-legacy");
-    });
-
-    it("prefers the YAML value over the legacy JSON value", async () => {
-      const { getCredential } = await load();
-      writeFileSync(yamlPath, "deepseek: sk-yaml\n", { mode: 0o600 });
-      writeFileSync(legacyPath, JSON.stringify({ deepseek: "sk-legacy" }));
-      expect(getCredential("deepseek", yamlPath, legacyPath)).toBe("sk-yaml");
-    });
-
-    it("emits a one-time deprecation warning on stderr when using the legacy file", async () => {
-      const { getCredential } = await load();
-      const warnSpy = console.warn as unknown as ReturnType<typeof vi.fn>;
-      writeFileSync(legacyPath, JSON.stringify({ deepseek: "sk-legacy", groq: "sk-legacy2" }));
-
-      getCredential("deepseek", yamlPath, legacyPath);
-      getCredential("groq", yamlPath, legacyPath);
-
-      const deprecationWarnings = warnSpy.mock.calls
-        .map((c: unknown[]) => String(c[0]))
-        .filter((m: string) => m.includes("deprecated"));
-      expect(deprecationWarnings.length).toBe(1);
-    });
-
-    it("returns undefined when neither file has the key", async () => {
-      const { getCredential } = await load();
-      writeFileSync(legacyPath, JSON.stringify({ deepseek: "sk-legacy" }));
-      expect(getCredential("openai", yamlPath, legacyPath)).toBeUndefined();
-    });
-
-    it("does not throw on malformed legacy JSON", async () => {
-      const { getCredential } = await load();
-      writeFileSync(legacyPath, "{deepseek: [unterminated\n");
-      expect(() => getCredential("deepseek", yamlPath, legacyPath)).not.toThrow();
-      expect(getCredential("deepseek", yamlPath, legacyPath)).toBeUndefined();
+      expect(getCredential("deepseek", yamlPath)).toBe("sk-quoted");
     });
   });
 

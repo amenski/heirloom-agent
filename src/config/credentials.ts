@@ -13,13 +13,6 @@ export function credsFile(): string {
   return join(credsDir(), "credentials.yaml");
 }
 
-/** Legacy JSON store from earlier versions. Read-only fallback; never written. */
-export function legacyCredsFile(): string {
-  return join(homedir(), ".deepcode", "credentials.json");
-}
-
-let legacyWarned = false;
-
 /**
  * Parse a flat `key: value` YAML map (one entry per line). Quotes around the
  * value are stripped; blank lines and `#` comments are ignored. This is the
@@ -69,51 +62,14 @@ export function readCredentialsFile(
   }
 }
 
-/** Read the legacy JSON store, if present. Never throws; empty map on any error. */
-function readLegacyCredentialsFile(path: string): Record<string, string> {
-  if (!existsSync(path)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8"));
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed)
-    ) {
-      return {};
-    }
-    const result: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === "string") result[key] = value;
-    }
-    return result;
-  } catch {
-    return {};
-  }
-}
-
 /**
- * Look up a single provider's key. Reads the canonical
- * `~/.heirloom/credentials.yaml` first; if the key is absent there and a legacy
- * `~/.deepcode/credentials.json` still exists, falls back to it with a one-time
- * deprecation note on stderr. Returns undefined when absent/empty in both.
+ * Look up a single provider's key from `~/.heirloom/credentials.yaml`.
+ * Returns undefined when absent or empty.
  */
 export function getCredential(
   name: string,
   path: string = credsFile(),
-  legacyPath: string = legacyCredsFile(),
 ): string | undefined {
   const value = readCredentialsFile(path)[name];
-  if (value) return value;
-
-  const legacy = readLegacyCredentialsFile(legacyPath)[name];
-  if (legacy) {
-    if (!legacyWarned) {
-      legacyWarned = true;
-      console.warn(
-        `warning: read "${name}" from legacy ${legacyPath}. This location is deprecated; run \`heirloom auth\` to migrate to ${credsFile()}.`,
-      );
-    }
-    return legacy;
-  }
-  return undefined;
+  return value || undefined;
 }
