@@ -68,3 +68,50 @@ real path (after resolving symlinks) falls **outside** `projectDir` is skipped,
 so a symlink inside `.heirloom/rules/` cannot pull arbitrary files from
 elsewhere on disk into the prompt. Empty and unreadable files (including
 dangling symlinks) are silently skipped.
+
+---
+
+# Plan-mode research notes
+
+A sibling of the rules loader for prior investigation notes. Markdown files are
+recursively loaded from `.heirloom/research/**/*.md` and injected **only in plan
+mode**, so planning is grounded in existing research.
+
+Implemented by `loadProjectResearch(projectDir)` in `src/prompt.ts` (shares the
+walk / symlink-escape / truncation logic with `loadProjectRules`), called from
+`buildVolatileContext` when `planMode` is set — research therefore lands in the
+per-turn volatile context (rebuilt each turn, kept out of the byte-stable
+cached prefix), not the stable preamble.
+
+## Format
+
+Same mechanics as rules, different heading and header:
+
+```
+# Research Notes
+
+### Note: <scope>
+<trimmed file content>
+```
+
+`<scope>` is the path relative to `.heirloom/research/`, `.md` stripped,
+separators normalized to `/` (e.g. `.heirloom/research/api/gateway.md` →
+`api/gateway`). Ordering and trust model match the rules loader (files before
+subdirectories, alphabetical, symlink-escape skip, user-authored content).
+
+## Caps
+
+Total assembled research content is capped at **8 KB** (`MAX_RESEARCH_BYTES`).
+On overflow the same truncate-with-note behavior applies:
+
+```
+*(Research notes truncated: size cap reached.)*
+```
+
+## Why volatile, not stable
+
+Research is a plan-mode-only aid: it must not pollute the cacheable stable
+prefix (which is byte-stable per session and shared with normal conversation),
+and notes edited on disk should appear on the next plan-mode turn without a
+session restart. The volatile context is re-read from disk per turn at the
+interactive bridge (`cli.tsx`), so new notes show up immediately.

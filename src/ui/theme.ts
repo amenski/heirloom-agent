@@ -663,6 +663,136 @@ export const GITHUB_LIGHT_THEME: ThemeDefinition = {
   spinner: 25,
 };
 
+// ── ANSI 16-color presets ──
+// "Dumb-terminal" variants that restrict every slot to the base-16 ANSI
+// palette (codes 0–15). Distinct from the 8-bit presets above: these render
+// faithfully on terminals with only 16-color support, at the cost of
+// fidelity — greys collapse to brightBlack, syntax colors are coarse.
+
+export const ANSI_DARK_THEME: ThemeDefinition = {
+  name: "ansi-dark",
+  type: "dark",
+
+  primary: 4, // blue
+  secondary: 6, // cyan
+  accent: 12, // brightBlue — legible on black
+  error: 1, // red
+  warning: 3, // yellow
+  success: 2, // green
+  info: 14, // brightCyan
+
+  text: 7, // white
+  textDim: 8, // brightBlack (grey substitute)
+  textBright: 15, // brightWhite
+  textInverse: 0, // black
+  link: 14, // brightCyan
+
+  background: 0, // black
+  surface: 0, // black
+  border: 8, // brightBlack
+  selection: 4, // blue
+
+  promptFg: 12, // brightBlue
+  promptBg: undefined,
+
+  statusBar: {
+    text: 7,
+    dim: 8,
+    background: 0,
+    separator: 8,
+    modeFg: 14,
+    modelFg: 15,
+    warningFg: 3,
+    errorFg: 9,
+  },
+
+  syntax: {
+    keyword: 13, // brightMagenta
+    string: 2, // green
+    number: 3, // yellow
+    comment: 8, // brightBlack
+    type: 14, // brightCyan
+    function: 3, // yellow
+    variable: 7, // white
+    constant: 9, // brightRed
+    operator: 6, // cyan
+    punctuation: 8, // brightBlack
+    tag: 1, // red
+    attribute: 3, // yellow
+    regexp: 5, // magenta
+    builtin: 6, // cyan
+    className: 3, // yellow
+    property: 14, // brightCyan
+    boolean: 9, // brightRed
+    nullish: 8, // brightBlack
+    decorator: 13, // brightMagenta
+  },
+
+  spinner: 6, // cyan
+};
+
+export const ANSI_LIGHT_THEME: ThemeDefinition = {
+  name: "ansi-light",
+  type: "light",
+
+  primary: 4, // blue
+  secondary: 6, // cyan
+  accent: 4, // blue — deep accent readable on white
+  error: 1, // red
+  warning: 3, // yellow
+  success: 2, // green
+  info: 6, // cyan
+
+  text: 0, // black
+  textDim: 8, // brightBlack (grey substitute)
+  textBright: 0, // black
+  textInverse: 15, // brightWhite
+  link: 4, // blue
+
+  background: 15, // brightWhite
+  surface: 7, // white
+  border: 8, // brightBlack
+  selection: 14, // brightCyan
+
+  promptFg: 4, // blue
+  promptBg: undefined,
+
+  statusBar: {
+    text: 0,
+    dim: 8,
+    background: 7,
+    separator: 8,
+    modeFg: 4,
+    modelFg: 0,
+    warningFg: 3,
+    errorFg: 1,
+  },
+
+  syntax: {
+    keyword: 5, // magenta
+    string: 4, // blue
+    number: 4, // blue
+    comment: 8, // brightBlack
+    type: 3, // yellow
+    function: 5, // magenta
+    variable: 0, // black
+    constant: 4, // blue
+    operator: 1, // red
+    punctuation: 0, // black
+    tag: 2, // green
+    attribute: 4, // blue
+    regexp: 6, // cyan
+    builtin: 1, // red
+    className: 3, // yellow
+    property: 4, // blue
+    boolean: 4,
+    nullish: 4,
+    decorator: 5, // magenta
+  },
+
+  spinner: 4, // blue
+};
+
 export const BUILTIN_THEMES: Record<string, ThemeDefinition> = {
   dark: DARK_THEME,
   light: LIGHT_THEME,
@@ -671,6 +801,8 @@ export const BUILTIN_THEMES: Record<string, ThemeDefinition> = {
   monokai: MONOKAI_THEME,
   "github-dark": GITHUB_DARK_THEME,
   "github-light": GITHUB_LIGHT_THEME,
+  "ansi-dark": ANSI_DARK_THEME,
+  "ansi-light": ANSI_LIGHT_THEME,
 };
 
 // ── Theme Manager ──

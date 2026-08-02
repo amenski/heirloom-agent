@@ -108,6 +108,7 @@ function normalizeShortFlagCluster(tokens: string[]): string[] {
  */
 const LONG_FLAG_MAP: Record<string, Record<string, string>> = {
   rm: { "--recursive": "-r", "--force": "-f" },
+  git: { "--force": "-f", "--directory": "-d", "--ignored": "-x" },
 };
 
 /**

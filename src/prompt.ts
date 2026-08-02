@@ -19,6 +19,8 @@ export interface PromptContext {
    */
   repomap?: string;
   memory?: string;
+  /** Precomputed research-notes block (see loadProjectResearch). Plan-mode only. */
+  research?: string;
   planMode?: boolean;
 }
 
@@ -116,6 +118,9 @@ export async function buildVolatileContext(ctx: PromptContext): Promise<string> 
       "Instead, analyze the request and produce a detailed plan. " +
       "Your reply must end with a <proposed_plan>...</proposed_plan> block containing the step-by-step plan."
     );
+    if (ctx.research) {
+      sections.push(ctx.research);
+    }
   }
 
   const env = getEnvironment(ctx.workingDir);
@@ -230,23 +235,33 @@ function getProjectInstructions(cwd: string): string {
 /** Max total bytes of assembled rule content injected into the prompt. */
 const MAX_RULES_BYTES = 20 * 1024;
 
+/** Max total bytes of research-note content injected into the plan-mode prompt. */
+export const MAX_RESEARCH_BYTES = 8 * 1024;
+
 /**
- * Recursively load `.heirloom/rules/**\/*.md` and assemble them into a single
- * "# Project Rules" block. Each file becomes a "### Rule: <scope>" section,
- * where <scope> is the file's path relative to the rules dir without the `.md`
- * suffix (e.g. `rules/api/naming.md` → `api/naming`).
+ * Recursively collect `.md` files under `rootDir` and return them as
+ * `<heading>` sections, each headed by `sectionPrefix(scope)` where scope is
+ * the file's path relative to `rootDir` without the `.md` suffix.
  *
  * Ordering is deterministic: within every directory, files are emitted before
  * subdirectories, each group sorted alphabetically. Empty or unreadable files
- * are skipped. Files that resolve (via symlink) outside the project directory
- * are skipped as a safety measure. Total content is capped at MAX_RULES_BYTES
- * and truncated with a note if exceeded. Returns null when the rules dir is
- * absent or yields no usable content. Rule content is treated as
- * user-authored, at the same trust level as `.heirloom/instructions.md`.
+ * are skipped. Files that resolve (via symlink) outside `projectDir` are
+ * skipped as a safety measure. Total content is capped at `byteCap` and
+ * truncated with `truncationNote` if exceeded. Returns null when `rootDir` is
+ * absent or yields no usable content. Content is treated as user-authored, at
+ * the same trust level as `.heirloom/instructions.md`.
+ *
+ * Shared by the project-rules and research loaders — the walk, symlink-escape
+ * check, and byte cap are security-relevant and must not drift between copies.
  */
-export function loadProjectRules(projectDir: string): string | null {
-  const rulesDir = join(projectDir, ".heirloom", "rules");
-  if (!existsSync(rulesDir)) return null;
+function walkMarkdownSections(
+  projectDir: string,
+  rootDir: string,
+  sectionPrefix: (scope: string) => string,
+  byteCap: number,
+  truncationNote: string,
+): string[] | null {
+  if (!existsSync(rootDir)) return null;
 
   // Resolve the project root once so symlink-escape checks are stable even if
   // the project path itself contains symlinks.
@@ -304,12 +319,12 @@ export function loadProjectRules(projectDir: string): string | null {
       }
       if (!content) continue; // empty file — skip
 
-      const scope = relative(rulesDir, fullPath).slice(0, -3).split(sep).join("/");
-      const section = `### Rule: ${scope}\n${content}`;
+      const scope = relative(rootDir, fullPath).slice(0, -3).split(sep).join("/");
+      const section = `${sectionPrefix(scope)}\n${content}`;
       const sectionBytes = Buffer.byteLength(section, "utf-8");
 
-      if (totalBytes + sectionBytes > MAX_RULES_BYTES) {
-        sections.push("*(Project rules truncated: size cap reached.)*");
+      if (totalBytes + sectionBytes > byteCap) {
+        sections.push(truncationNote);
         truncated = true;
         return;
       }
@@ -324,10 +339,51 @@ export function loadProjectRules(projectDir: string): string | null {
     }
   };
 
-  walk(rulesDir);
+  walk(rootDir);
 
   if (sections.length === 0) return null;
+  return sections;
+}
+
+/**
+ * Recursively load `.heirloom/rules/**\/*.md` and assemble them into a single
+ * "# Project Rules" block. Each file becomes a "### Rule: <scope>" section,
+ * where <scope> is the file's path relative to the rules dir without the `.md`
+ * suffix (e.g. `rules/api/naming.md` → `api/naming`).
+ *
+ * Returns null when the rules dir is absent or yields no usable content. Rule
+ * content is treated as user-authored, at the same trust level as
+ * `.heirloom/instructions.md`.
+ */
+export function loadProjectRules(projectDir: string): string | null {
+  const sections = walkMarkdownSections(
+    projectDir,
+    join(projectDir, ".heirloom", "rules"),
+    (scope) => `### Rule: ${scope}`,
+    MAX_RULES_BYTES,
+    "*(Project rules truncated: size cap reached.)*",
+  );
+  if (!sections) return null;
   return `# Project Rules\n${sections.join("\n\n")}`;
+}
+
+/**
+ * Recursively load `.heirloom/research/**\/*.md` and assemble them into a
+ * "# Research Notes" block, each file a "### Note: <scope>" section. Same
+ * walk, symlink-escape, and truncation semantics as `loadProjectRules`, with a
+ * smaller byte cap (research is plan-mode-only context). Returns null when the
+ * research dir is absent or yields no usable content.
+ */
+export function loadProjectResearch(projectDir: string): string | null {
+  const sections = walkMarkdownSections(
+    projectDir,
+    join(projectDir, ".heirloom", "research"),
+    (scope) => `### Note: ${scope}`,
+    MAX_RESEARCH_BYTES,
+    "*(Research notes truncated: size cap reached.)*",
+  );
+  if (!sections) return null;
+  return `# Research Notes\n${sections.join("\n\n")}`;
 }
 
 function getSkillsIndex(skills: SkillDef[]): string {

@@ -9,7 +9,7 @@ import { runExecMode } from "./exec-runner.js";
 import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
-import { buildRepoMap } from "./prompt.js";
+import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { fireNotify } from "./notify.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
@@ -364,6 +364,8 @@ async function main() {
       skillLoader,
       get providerName() { return shared.providerName; },
       get activeModel() { return shared.activeModel; },
+      get activeEffort() { return shared.activeEffort; },
+      effortValues: () => getActiveModelCaps()?.effort?.values ?? [],
       provideAbortController: () => shared.abort,
       renewAbortController: () => { shared.abort = new AbortController(); },
       processAtMentions,
@@ -640,7 +642,7 @@ async function runDoctor(): Promise<void> {
   catch { console.log(`  git               NOT FOUND`); }
   try { const configResult = loadConfig(); console.log(`  settings.json     model: ${configResult.config.model || configResult.config.env?.MODEL || "(not set)"}`); }
   catch (e) { console.log(`  settings.json     ERROR: ${(e as Error).message}`); }
-  const keySource = process.env.DEEPSEEK_API_KEY ? "DEEPSEEK_API_KEY env var" : process.env.OPENAI_API_KEY ? "OPENAI_API_KEY env var" : (() => { const names = Object.entries(readCredentialsFile()).filter(([, v]) => v).map(([k]) => k); return names.length ? `credentials.json (${names.join(", ")})` : "none"; })();
+  const keySource = process.env.DEEPSEEK_API_KEY ? "DEEPSEEK_API_KEY env var" : process.env.OPENAI_API_KEY ? "OPENAI_API_KEY env var" : (() => { const names = Object.entries(readCredentialsFile()).filter(([, v]) => v).map(([k]) => k); return names.length ? `credentials.yaml (${names.join(", ")})` : "none"; })();
   console.log(`  API key           ${keySource}`);
   const configResult = loadConfig();
   const issues = [...configResult.errors, ...configResult.warnings];
@@ -727,6 +729,10 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   const processed = await processAtMentions(input);
   const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
 
+  // Research notes are plan-mode-only context: load them lazily when in plan
+  // mode so the per-turn file walk costs nothing in normal conversation.
+  const researchInjection = planMode ? (loadProjectResearch(process.cwd()) ?? undefined) : undefined;
+
   // Notify hook: fires from this interactive completion boundary once the
   // turn's outcome is known (mirrors the headless site in exec-runner.ts).
   // TITLE is the session's first user prompt prefix. Fire-and-forget — see
@@ -741,6 +747,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     tools, executeTool, permissions, mode: activeMode, compactor, diagnostics, skills,
     errorReflector, errorRecovery,
     repomap: repomapInjection,
+    research: researchInjection,
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
     signal: shared.abort.signal, effort: shared.activeEffort,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,

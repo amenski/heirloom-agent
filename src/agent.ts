@@ -68,6 +68,8 @@ export interface AgentOptions {
   skills?: SkillDef[];
   /** Precomputed session-stable repository-map snapshot (see buildRepoMap). */
   repomap?: string;
+  /** Precomputed research-notes block (see loadProjectResearch). Plan-mode only. */
+  research?: string;
   memory?: string;
   memoryStore?: MemoryStore;
   sessionStore?: SessionStore;
@@ -102,6 +104,7 @@ export async function runAgent(
     skills: options.skills,
     repomap: options.repomap,
     memory: options.memory,
+    research: options.research,
     planMode: options.planMode,
   };
   const stablePreamble = getStablePreamble(promptCtx);

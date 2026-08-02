@@ -237,15 +237,19 @@ real isolation. The research endorses exactly the shape Heirloom already has:
    and recommend running in a container/VM; a future lightweight OS sandbox
    (Seatbelt/bubblewrap) is the step that actually changes the security model.
 
-### The one concrete code change — done
+### The one concrete code change — done (extended for git)
 
-`LONG_FLAG_MAP` in `rules.ts` maps `rm`'s long-form flags (`--recursive`→`-r`,
-`--force`→`-f`) before clustering, closing the last row of the
-[problem table](#the-problem). Scoped to `rm` only for now — none of the
-other builtin rules (`git push --force`, `git reset --hard`,
-`git clean -fdx`, `mkfs`, `dd if=`) combine a short-flag-cluster pattern with
-a commonly-used long-form alternative the way `rm -rf` does, so extending
-the map further is deferred until a real gap surfaces.
+`LONG_FLAG_MAP` in `rules.ts` maps long-form flags to their short equivalents
+before clustering. Originally scoped to `rm` (`--recursive`→`-r`, `--force`→`-f`),
+then extended to `git` (`--force`→`-f`, `--directory`→`-d`, `--ignored`→`-x`) after
+a real gap was confirmed: `git clean --force -dx` escaped `git clean -fdx` because
+`--force` didn't fold, leaving the cluster as just `-dx`. With the fold,
+`git clean --force -dx` and `git clean --force --directory --ignored` both
+normalize to the canonical `git clean -dfx` cluster and match. `git push --force`
+and `git reset --hard` encode flags literally in their seed patterns (no short
+cluster), so `--hard` (no short equivalent) and `--force` (literal pattern, not a
+cluster fold) continue to work unchanged. `--force-with-lease` is a different
+flag entirely and does not match.
 
 ### Bigger, roadmap
 
