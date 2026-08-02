@@ -8,7 +8,7 @@ Every AI agent has amnesia. Close the session, and the "assistant" that knew you
 
 We spent the last few weeks fixing this on our multi-agent setup (four specialized agents: an orchestrator, a coder, a researcher, a reviewer). The result is a memory system that is hierarchical, structured, semantically searchable, and — the part most people skip — *self-updating*.
 
-Everything here is framework-agnostic. Whether you use LangGraph, the OpenAI Agents SDK, a homegrown ReAct loop, or something else entirely, the same five decisions apply.
+Everything here is framework-agnostic. Whether you use LangGraph, the OpenAI Agents SDK, a homegrown ReAct loop, or something else entirely, the same decisions apply — and, deliberately, every one of them lives in files the *operator* owns, not in any assistant's built-in behavior.
 
 ---
 
@@ -55,6 +55,8 @@ memory-vault/
 
 The key organizational decision: **structure by project, not by agent**. When the coder finishes a feature in Project Alpha, the knowledge belongs to the *project's* memory — not buried in the coder's personal log. Any agent (or human) can later open `projects/alpha/MEMORY.md` and know exactly where the project stands. Files cross-link with `[[wikilinks]]` (Obsidian-style), and a `Home.md` hub ties it together. It's a knowledge graph you can read with any text editor — and any agent can ingest it with a simple directory walk.
 
+Reads need a policy too, not just writes. A perfect vault the agent never opens is the quiet failure mode, so we made loading explicit: at task start, an agent loads `Home.md` plus the target project's `MEMORY.md` — everything else is reachable only through search. That's MemGPT's actual lesson: the paging policy (what's *resident* vs. merely *stored*) matters as much as the tiers themselves.
+
 ---
 
 ## 3. Semantic search without selling your data
@@ -78,6 +80,8 @@ memorySearch: {
   cache: { enabled: true }
 }
 ```
+
+(Honesty about the numbers: we didn't tune the 70/30 split or the chunk sizes — they're reasonable starting points, not the result of a sweep. Treat them the same way.)
 
 The indexer chunks each Markdown file, embeds them into a SQLite database, and watches the files for changes. Results come back ranked with scores and exact `file:line` citations.
 
@@ -103,7 +107,29 @@ So we made memory updates a hard rule, enforced at three levels:
 
 3. **Long-term memory files** (`MEMORY.md` per agent) so the rule survives restarts.
 
-This is A-MEM's "memory evolution" made operational: new facts don't just get appended — they *update* the project's canonical knowledge. Status changes. Decisions get recorded. The vault is never a snapshot; it's a living document.
+One thing worth stating plainly: all three levels are **files the operator writes**. The memory policy — what gets remembered, where, in what shape — belongs to whoever runs the agents, not to the assistant. An agent that hardcodes its own memory doctrine is a different (worse) product than an agent that follows yours. Everything in this section is portable config: move it between Claude, Cursor, or a homegrown loop and the policy comes with you.
+
+### Instructions aren't enforcement
+
+Here's the weakness we have to own: "OBLIGATORY" in a prompt is a request, not a guarantee. LLM agents skip mandatory final steps — under context pressure, after an error, or just because. A rule whose enforcement mechanism is *hope* is one distracted agent away from the stale vault it was built to prevent.
+
+The fix is the same move throughout this design: **convert a trusted behavior into a checked artifact.** The vault is plain files in git, so "did the agent update memory?" is a one-line mechanical question:
+
+```bash
+# after a task completes: no memory diff → the task is not done
+git diff --quiet -- projects/<name>/MEMORY.md && echo "REJECT: no memory update"
+```
+
+Wire that into whatever post-task seam your setup has — a hook, an orchestrator step, a wrapper script. The agent no longer has to *remember* to write; the system refuses to accept work until it has. This is where we'd invest first if rebuilding: verification is worth more than any amount of retrieval sophistication.
+
+### Append-only isn't evolution
+
+The second weakness of a mandatory-write rule: obeyed naively, it produces monotonic growth. Every `MEMORY.md` gets longer forever, until the memory files themselves blow the context budget — the exact problem the vault exists to solve, one level up. Two rules keep it a living document instead of a landfill:
+
+- **Supersede, don't append.** Before adding a fact, the writer searches for the facts it contradicts or replaces, and *edits them*. The old claim doesn't need an archive — git history already is one. That's the boring, operational core of A-MEM's evolution loop: no ML required, just a write-time rule plus the retrieval you already built.
+- **A size budget per file.** Give each `MEMORY.md` a ceiling (say, 300 lines). A writer that would exceed it must compact first. The budget is what actually forces evolution: you can't stay under it by appending, only by rewriting.
+
+With those two in place, the claim in this section becomes true rather than aspirational: new facts don't just get appended — they *update* the project's canonical knowledge. Status changes. Decisions get recorded. The vault is never a snapshot; it's a living document.
 
 ---
 
@@ -155,21 +181,36 @@ The honest caveat: at 26 files, even grep finds most things. The embeddings pay 
 
 ## 7. What we'd do next
 
+- **The post-task memory gate** — the `git diff` check from §4, wired into the orchestrator so an unwritten memory update mechanically fails the task. First on the list because it converts the system's weakest link (compliance) into its strongest (verification).
 - **Reflection cron** — a scheduled job that consolidates each agent's daily notes into project `MEMORY.md` at end of day, so curation doesn't depend on a heartbeat.
-- **Memory evolution done properly** — automatically updating old project notes when new facts contradict them (A-MEM's full loop; currently it's rule-driven, not automatic).
-- **Importance scoring** — Generative Agents-style recency × importance × relevance retrieval, instead of plain similarity.
+- **A tiny eval** — ten canonical questions ("what's the status of X?", "why did we choose Y?") run against the vault weekly, any model as grader. It's the only honest answer to "is retrieval actually working?" — and it would have caught the symlink bug (0 indexed files) before it became a war story.
+- **Importance scoring** — Generative Agents-style recency × importance × relevance retrieval, instead of plain similarity. Last on the list deliberately: at personal-vault scale, retrieval sophistication is not where the risk lives. Content trustworthiness is.
+
+---
+
+## 8. Who should build this? An honest sizing guide
+
+Not everyone. The value here is real but it's concentrated, and how much of the machinery you need depends on how you work — which is why every piece above is operator-owned config, not something an assistant should impose as *the* way of working.
+
+**Solo, one assistant, daily coding:** steal the discipline, skip the machinery. One `MEMORY.md` per project, a session log, the write-before-leaving habit, and supersede-don't-append. That's two Markdown files and a rule. Grep will outlive your vault's growth for years; embeddings, taxonomies, and reflection crons are speculative infrastructure at n=1.
+
+**Agent-heavy — several agents running concurrently:** add the coordination layer. Shared per-project memory (each agent reads it at start, writes it at end), the mechanical post-task gate, and supersede-don't-append become near-mandatory — because nobody is watching each agent, a stale or unwritten memory fails silently. This is the regime this article was written from. Still skip the search stack until it hurts.
+
+**The crossover into the full build** — semantic search, provenance fields, evals — comes when any of these turn true: agents run *unattended*; the vault outgrows what one person can hold in their head; or someone other than the writer (teammates, other agents) reads the memory. Each condition removes a human safety net, so a mechanical check has to take its place.
 
 ---
 
 ## TL;DR — the recipe
 
 1. **Structure by project, not by agent.** Canonical `MEMORY.md` per project; raw daily logs per agent. Human-readable Markdown, no proprietary formats.
-2. **Three tiers:** context window (working) → daily notes (episodic) → project memory (semantic).
-3. **Semantic retrieval, fully local.** A 300m embedding model on CPU is enough for a personal vault. Hybrid vector + BM25 for the best of both.
-4. **Make memory updates a hard rule.** Enforced in the global instructions, per-agent workflows, and long-term memory files. A feature isn't done until memory reflects it.
-5. **When a tool misbehaves, read the source.** Our "broken" indexer was correctly refusing symlinks; the fix was one config key.
+2. **Three tiers:** context window (working) → daily notes (episodic) → project memory (semantic). And an explicit *read* policy: what loads at session start, what's search-only.
+3. **Semantic retrieval, fully local.** A 300m embedding model on CPU is enough for a personal vault. Hybrid vector + BM25 for the best of both — but only once grep actually fails you.
+4. **Make memory updates a hard rule — then verify them mechanically.** Instructions ask; a post-task `git diff` check *enforces*. A feature isn't done until memory reflects it, and the system, not the agent, decides whether it does.
+5. **Supersede, don't append — under a size budget.** New facts edit the old ones they replace; git history is the archive. The budget is what forces real evolution instead of a landfill.
+6. **The policy belongs to the operator.** Every rule above lives in files *you* own and can carry between tools. Size the build to how you work: solo → two files and a habit; agent-heavy → add the shared memory and the gate; unattended → add the checks.
+7. **When a tool misbehaves, read the source.** Our "broken" indexer was correctly refusing symlinks; the fix was one config key.
 
-Agents don't have to be amnesiacs. The pieces are all boring, open, and cheap: Markdown files, a folder structure, a small local model, and a rule that says *write it down*.
+Agents don't have to be amnesiacs. The pieces are all boring, open, and cheap: Markdown files, a folder structure, a small local model, a rule that says *write it down* — and a check that notices when nobody did.
 
 ---
 
