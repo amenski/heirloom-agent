@@ -121,12 +121,14 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "continue") { onSubmit({ text: "/continue", command: "continue" }); resetInput(); return; }
     if (item.kind === "undo") { onSubmit({ text: "/undo", command: "undo" }); resetInput(); return; }
     if (item.kind === "mcp") { onSubmit({ text: "/mcp", command: "mcp" }); resetInput(); return; }
+    if (item.kind === "theme") { onSubmit({ text: "/theme" }); resetInput(); return; }
+    if (item.kind === "permissions") { onSubmit({ text: "/permissions" }); resetInput(); return; }
+    if (item.kind === "plan") { onSubmit({ text: "/plan" }); resetInput(); return; }
     if (item.kind === "exit") { onSubmit({ text: "/exit", command: "exit" }); return; }
     if (item.kind === "clear") { const text = "/clear"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "help") { const text = "/help"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "skills") { const text = "/skills"; setBuffer({ text, cursor: text.length }); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
-    if (item.kind === "plan") { onCyclePosture?.(); return; }
     if (item.kind === "raw") { const text = "/raw"; setBuffer({ text, cursor: text.length }); return; }
   }
 
