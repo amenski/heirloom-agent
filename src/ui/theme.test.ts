@@ -66,6 +66,8 @@ describe("extra theme presets", () => {
     { name: "monokai", type: "dark" },
     { name: "github-dark", type: "dark" },
     { name: "github-light", type: "light" },
+    { name: "ansi-dark", type: "dark" },
+    { name: "ansi-light", type: "light" },
   ];
 
   for (const { name, type } of presets) {

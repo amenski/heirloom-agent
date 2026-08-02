@@ -36,7 +36,7 @@ architectural swings on the roadmap; drop the rest.
 | ~~**Token-usage log + in-memory metrics**~~ ✅ **shipped 2026-08-01** (log); metrics counters remain | #266, #263 | S | Per-turn token-usage log landed with the audit trail (`78f3b01`); the accept/reject counters + exit-summary surfacing are the remaining slice — see newly-known. |
 | ~~**Extra theme presets** (dracula, monokai, github, ansi)~~ ✅ **shipped 2026-08-01** (dracula/monokai/github ×2); ansi ×2 pending | #132 | S | dracula, monokai, github-dark, github-light re-expressed in `ThemeDefinition` shape (`c83f07c`); `ansi-light`/`ansi-dark` still to add — see newly-known. |
 | ~~**Gutter/prompt contrast fix**~~ ✅ **shipped 2026-08-01** | local | S | Gutter + permission/ask prompts routed through tuned theme slots (dark 39/33, light 26/27); border-focus bug fixed. Remaining `#229ac3` in menus/PromptInput listed for a follow-up pass. |
-| **Long→short flag map** for destructive rules | local | S | Closes `rm --recursive --force /` gap. See [security-destructive-matching.md](./security-destructive-matching.md). |
+| ~~**Long→short flag map** for destructive rules~~ ✅ **shipped 2026-08-02** | local | S | `rm` map landed in the prior wave; this wave extended it to `git` (`--force`/`--directory`/`--ignored`), closing the `git clean --force -dx` escape. See [security-destructive-matching.md](./security-destructive-matching.md). |
 | ~~**`docs_search` tool**~~ ✅ **shipped 2026-08-01** | local | M | Keyless official-API search, live-smoke verified; general web via MCP. Spec: [web-search-spec.md](./web-search-spec.md). |
 | ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** | #266 | M | Recursively-loaded scoped rule sections injected alongside `instructions.md`/`AGENTS.md` (`7290aab`). Promoted from Roadmap. |
 
@@ -118,10 +118,10 @@ captured so they aren't lost:
 | **`ThemeableStatic` + input-stall pair** | The two are coupled: moving committed output to Ink `<Static>` (the input-stutter fix, [input-stall-diagnosis.md](./input-stall-diagnosis.md)) and re-mounting `<Static>` on theme change (`ThemeableStatic`, so live `/theme` preview repaints scrollback) touch the same `OutputArea.tsx` surface. Do them together. |
 | **`/usage` command** | Provider-agnostic balance view via a `getBalance()` adapter method (see PR #216 section). Still unbuilt; `/theme` established the bordered-view+Esc pattern it would reuse. |
 | **Exit-summary React view** | Replace the direct-`stdout.write` `src/ui/exit-summary.ts` with a React-rendered view (survives scroll). Now also the natural home for the **telemetry accept/reject counters** (the remaining slice of the token-usage item). |
-| **Audit refinements** | (a) An **allow-by-posture UI row** — surface when a decision was auto-allowed by the active approval posture, not a rule. (b) **Double-row dedup** in the audit view so a single decision doesn't render twice. |
-| **Doctor: `credentials.json` label** | `doctor` diagnostics still reference/label `credentials.json`; the real file is `credentials.yaml`. Correct the label. |
-| **`ansi-light` / `ansi-dark` presets** | The two ANSI presets from #132 not yet ported (dracula/monokai/github ×2 already shipped). Pure data in `ThemeDefinition` shape. |
-| **Plan-mode research read** | Have plan mode read prior research from `.deepcode/docs/research/` so planning is grounded in existing investigation notes. |
+| **Audit refinements — remainder** | (a) **allow-by-posture emission** — the canonical decision value still isn't written by `agent.ts` (the audit closure lacks posture visibility; needs plumbing, deferred with the exit-summary wave). Color/label coverage for all canonical values + **double-row dedup** ✅ **shipped 2026-08-02**. |
+| ~~**Doctor: `credentials.json` label**~~ ✅ **shipped 2026-08-02** | `doctor` diagnostics now print `credentials.yaml`, the real file. |
+| ~~**`ansi-light` / `ansi-dark` presets**~~ ✅ **shipped 2026-08-02** | Both ANSI presets (base-16 only, "dumb-terminal" variants of dark/light) added in `ThemeDefinition` shape; `/theme` picker auto-adopts them. |
+| ~~**Plan-mode research read**~~ ✅ **shipped 2026-08-02** | Plan mode now loads `.heirloom/research/**/*.md` (the `.deepcode/docs/research/` path from the original note is stale — the repo renamed its config namespace to `.heirloom`) and injects it into the volatile plan-mode context each turn. |
 | **CodeArtifact-URL-in-git-history scrub — decision** | A CodeArtifact registry URL leaked into git history (via a lockfile now fixed forward in `e72047f`). Decide whether to history-scrub (rewrite) or leave-and-document; it is a URL, not a secret. Owner decision pending. |
 
 ---

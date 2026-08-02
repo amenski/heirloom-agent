@@ -119,10 +119,23 @@ describe("destructive-rule matching: evasion resistance", () => {
     expect(patternMatches(rmRfHome, { tool: "run_bash", text: "rm -fr /home/user/project" })).toBe(false);
   });
 
-  it("long-form flags are not affected by short-flag-cluster normalization (git push --force still requires the literal flag)", () => {
+  it("long-form --force folds to -f for git (--force matched literally by the seed rule)", () => {
     const gitPushForce = BUILTIN_DESTRUCTIVE_RULES.find((r) => r.pattern === "git push --force")!;
     expect(patternMatches(gitPushForce, { tool: "run_bash", text: "git push --force origin main" })).toBe(true);
     expect(patternMatches(gitPushForce, { tool: "run_bash", text: "git push origin main" })).toBe(false);
+  });
+
+  it("git clean with long-form --force -dx folds to the canonical short cluster", () => {
+    expect(patternMatches(gitClean, { tool: "run_bash", text: "git clean --force -dx" })).toBe(true);
+  });
+
+  it("git clean with all long-form flags (--force --directory --ignored) folds to the canonical short cluster", () => {
+    expect(patternMatches(gitClean, { tool: "run_bash", text: "git clean --force --directory --ignored" })).toBe(true);
+  });
+
+  it("git push --force-with-lease does NOT match the --force destructive seed rule (different flag)", () => {
+    const gitPushForce = BUILTIN_DESTRUCTIVE_RULES.find((r) => r.pattern === "git push --force")!;
+    expect(patternMatches(gitPushForce, { tool: "run_bash", text: "git push --force-with-lease origin main" })).toBe(false);
   });
 
   it("ordinary user-authored (non-destructive-origin) prefix rules are NOT hardened — literal order/case still required", () => {

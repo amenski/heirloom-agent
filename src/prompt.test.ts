@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadProjectRules, buildStablePreamble, buildRepoMap, REPOMAP_BYTE_BUDGET } from "./prompt.js";
+import { loadProjectRules, loadProjectResearch, buildVolatileContext, buildStablePreamble, buildRepoMap, REPOMAP_BYTE_BUDGET, MAX_RESEARCH_BYTES } from "./prompt.js";
 
 describe("loadProjectRules", () => {
   let projectDir: string;
@@ -113,6 +113,122 @@ describe("loadProjectRules", () => {
     expect(out).toContain("### Rule: a");
     expect(out).toContain("### Rule: b");
     expect(out).not.toContain("### Rule: c");
+  });
+});
+
+describe("loadProjectResearch", () => {
+  let projectDir: string;
+
+  function researchDir(): string {
+    return join(projectDir, ".heirloom", "research");
+  }
+
+  function writeNote(relPath: string, content: string): void {
+    const full = join(researchDir(), relPath);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, content);
+  }
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), "heirloom-research-"));
+  });
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("returns null when the research dir is absent", () => {
+    expect(loadProjectResearch(projectDir)).toBeNull();
+  });
+
+  it("scopes a nested file by its path relative to the research dir", () => {
+    writeNote("api/design.md", "Use the gateway pattern for external calls.");
+
+    const out = loadProjectResearch(projectDir);
+    expect(out).toContain("# Research Notes");
+    expect(out).toContain("### Note: api/design");
+    expect(out).toContain("Use the gateway pattern for external calls.");
+  });
+
+  it("orders files before subdirectories, alphabetical within each group", () => {
+    writeNote("zeta.md", "Z note.");
+    writeNote("alpha.md", "A note.");
+    writeNote("api/naming.md", "API naming.");
+    writeNote("api/errors.md", "API errors.");
+    writeNote("db/schema.md", "DB schema.");
+
+    const out = loadProjectResearch(projectDir)!;
+    const scopes = [...out.matchAll(/### Note: (\S+)/g)].map((m) => m[1]);
+    expect(scopes).toEqual([
+      "alpha",
+      "zeta",
+      "api/errors",
+      "api/naming",
+      "db/schema",
+    ]);
+  });
+
+  it("skips symlinked files that resolve outside the project directory", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-research-outside-"));
+    const secret = join(outside, "secret.md");
+    writeFileSync(secret, "SHOULD NOT BE INJECTED");
+
+    mkdirSync(researchDir(), { recursive: true });
+    writeNote("legit.md", "Legit note.");
+    symlinkSync(secret, join(researchDir(), "escape.md"));
+
+    const out = loadProjectResearch(projectDir)!;
+    expect(out).toContain("### Note: legit");
+    expect(out).not.toContain("SHOULD NOT BE INJECTED");
+    expect(out).not.toContain("### Note: escape");
+
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("truncates with a note when the size cap is exceeded", () => {
+    // Each note ~5KB; two of them plus the header exceed the 8KB cap.
+    const big = "x".repeat(5 * 1024);
+    writeNote("a.md", big);
+    writeNote("b.md", big);
+
+    const out = loadProjectResearch(projectDir)!;
+    expect(out).toContain("Research notes truncated");
+    // First note fits; the second pushes over and is dropped.
+    expect(out).toContain("### Note: a");
+    expect(out).not.toContain("### Note: b");
+    expect(Buffer.byteLength(out, "utf-8")).toBeLessThanOrEqual(MAX_RESEARCH_BYTES + 256);
+  });
+});
+
+describe("buildVolatileContext — plan-mode research injection", () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), "heirloom-volatile-"));
+  });
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("includes the research block in plan mode when research is provided", async () => {
+    const research = "# Research Notes\n### Note: api\nUse the gateway pattern.";
+    const out = await buildVolatileContext({ workingDir: projectDir, planMode: true, research });
+    expect(out).toContain("You are in planning mode.");
+    expect(out).toContain("# Research Notes");
+    expect(out).toContain("### Note: api");
+  });
+
+  it("omits the research block when not in plan mode", async () => {
+    const research = "# Research Notes\n### Note: api\nUse the gateway pattern.";
+    const out = await buildVolatileContext({ workingDir: projectDir, planMode: false, research });
+    expect(out).not.toContain("# Research Notes");
+  });
+
+  it("omits the research block in plan mode when none is loaded", async () => {
+    const out = await buildVolatileContext({ workingDir: projectDir, planMode: true });
+    expect(out).toContain("You are in planning mode.");
+    expect(out).not.toContain("# Research Notes");
   });
 });
 
