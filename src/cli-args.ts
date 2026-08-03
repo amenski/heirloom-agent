@@ -44,6 +44,7 @@ const EPILOG = [
   "  /                Open the commands menu",
   "  /skills          List available skills",
   "  /model           Select model, thinking mode and effort control",
+  "  /effort          Set reasoning effort (when the model supports it)",
   "  /new             Start a fresh conversation",
   "  /resume          Pick a previous conversation to continue",
   "  /continue        Continue the active conversation, or resume one if empty",

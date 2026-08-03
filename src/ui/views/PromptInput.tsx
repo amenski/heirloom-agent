@@ -130,6 +130,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "help") { onSubmit({ text: item.label }); resetInput(); return; }
     if (item.kind === "skills") { onSubmit({ text: item.label }); resetInput(); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
+    if (item.kind === "effort") { onSubmit({ text: "/effort" }); resetInput(); return; }
     if (item.kind === "raw") { onSubmit({ text: item.label }); resetInput(); return; }
   }
 
