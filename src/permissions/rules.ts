@@ -184,7 +184,11 @@ export function patternMatches(rule: PermissionRule, subject: PermissionSubject)
     case "any":
       return true;
     case "exact":
-      return rule.pattern === subject.text;
+      // Use resolvedPath when available (file tools get it normalized by
+      // PermissionEngine.relativizeSubject) so different spellings of the
+      // same path match the same rule. Falls back to text for tools like
+      // run_bash where resolvedPath is undefined.
+      return rule.pattern === (subject.resolvedPath ?? subject.text);
     case "prefix":
       return rule.origin === "builtin-destructive" || rule.origin === "builtin-guarded"
         ? matchesBuiltinPrefix(rule.pattern, subject.text)
@@ -229,7 +233,8 @@ export function buildSubject(tool: string, args: Record<string, unknown>): Permi
   if (tool === "docs_search") {
     return { tool, text: String(args?.query ?? "") };
   }
-  const path = String(args?.path ?? args?.filePath ?? "");
+  const raw = args?.path ?? args?.filePath;
+  const path = typeof raw === "string" ? raw : "";
   return { tool, text: path, resolvedPath: path || undefined };
 }
 

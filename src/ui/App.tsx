@@ -978,7 +978,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   function handlePermissionDecision(decision: PermissionDecision): void {
     if (!askPrompt) return;
 
-    const subject = String(askPrompt.args?.command ?? askPrompt.args?.path ?? askPrompt.args?.filePath ?? "");
+    const rawSubject = askPrompt.args?.command ?? askPrompt.args?.path ?? askPrompt.args?.filePath;
+    const subject = typeof rawSubject === "string" ? rawSubject : "";
     void ctx.sessionStore.appendPermission(ctx.sessionId, {
       tool: askPrompt.toolName,
       subject,
@@ -992,9 +993,18 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
 
     if (decision === "session" || decision === "always") {
-      const rule = askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args);
+      // When a builtin rule (guarded or destructive) triggered the prompt, use
+      // buildDefaultRule for the specific path/command — NOT the winningRule's
+      // glob/prefix pattern. Otherwise the stored exact-match rule would carry
+      // a pattern like "**/.env*" that never matches a real path (the original
+      // kind is switched to "exact", but the pattern was left as the glob).
+      // buildDefaultRule already sets kind "exact" on the canonical form, so
+      // narrowToExact becomes a safety no-op rather than a bug-fix requirement.
       const isBuiltinOrigin = askPrompt.winningRule?.origin === "builtin-destructive" || askPrompt.winningRule?.origin === "builtin-guarded";
       const matchedBuiltin = isBuiltinOrigin ? askPrompt.winningRule : undefined;
+      const rule = isBuiltinOrigin
+        ? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args)
+        : (askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args));
       if (decision === "session") {
         ctx.permissions.approveForSession(rule, matchedBuiltin);
       } else {

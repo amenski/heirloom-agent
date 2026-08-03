@@ -15,9 +15,16 @@ import { estimateTokens } from "./compaction/budget.js";
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
 function permissionSubjectText(toolName: string, args: Record<string, unknown>): string {
-  if (toolName === "run_bash") return String(args?.command ?? "");
-  if (toolName === "docs_search") return String(args?.query ?? "");
-  return String(args?.path ?? args?.filePath ?? "");
+  if (toolName === "run_bash") {
+    const c = args?.command;
+    return typeof c === "string" ? c : "";
+  }
+  if (toolName === "docs_search") {
+    const q = args?.query;
+    return typeof q === "string" ? q : "";
+  }
+  const raw = args?.path ?? args?.filePath;
+  return typeof raw === "string" ? raw : "";
 }
 
 // Rebuilding the stable preamble is pure string concatenation, but it's still

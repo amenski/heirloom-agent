@@ -1,4 +1,4 @@
-import { join, relative, isAbsolute } from "node:path";
+import { join, relative, isAbsolute, resolve } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { PermissionAction, PermissionRule, PermissionSubject } from "./rules.js";
@@ -39,11 +39,36 @@ export class PermissionEngine {
   private workingDir: string;
   private projectConfigDir: string;
 
+  /** Tools whose exact/glob patterns carry file paths (normalized on load). */
+  private static readonly FILE_TOOLS = new Set([
+    "read_file", "write_to_file", "edit", "list_files", "glob",
+  ]);
+
   constructor(config?: PermissionConfig, workingDir?: string) {
-    this.configRules = (config?.rules ?? []).map((r) => ({ ...r, origin: "config" as const }));
-    this.defaultMode = config?.defaultMode ?? "askAll";
     this.workingDir = workingDir ?? process.cwd();
+    this.configRules = (config?.rules ?? []).map((r) => this.normalizeConfigRule(r));
+    this.defaultMode = config?.defaultMode ?? "askAll";
     this.projectConfigDir = join(this.workingDir, ".heirloom");
+  }
+
+  /**
+   * Normalize exact-match pattern paths in user-authored rules at load time so
+   * they survive a change in path spelling. Does NOT touch glob patterns —
+   * prepending "./" to a glob like "**" / "**\/*.ts" shifts its anchoring and
+   * can break matching (e.g. "./**" won't match a top-level ".env" the way
+   * "**" does). Also guards against the "undefined" string literal that
+   * buildSubject produces for file tools called with neither path nor filePath.
+   */
+  private normalizeConfigRule(r: PermissionRule): PermissionRule {
+    if (
+      r.kind === "exact" &&
+      PermissionEngine.FILE_TOOLS.has(r.tool) &&
+      r.pattern &&
+      r.pattern !== "undefined"
+    ) {
+      return { ...r, origin: "config" as const, pattern: this.normalizePath(r.pattern) };
+    }
+    return { ...r, origin: "config" as const };
   }
 
   /**
@@ -70,14 +95,30 @@ export class PermissionEngine {
    * relative glob pattern can never match one directly. Paths outside
    * workingDir are left as absolute, so they don't spuriously match a
    * "./**"-rooted rule; an absolute glob can still be authored to cover them.
+   *
+   * Relative paths are first resolved against workingDir so that different
+   * spellings of the same path ("src/main.ts", "./src/main.ts") all collapse
+   * to the same canonical form. Without this, an exact-match rule approved
+   * for one spelling would prompt again for another — same file, different
+   * string literal.
    */
   private relativizeSubject(subject: PermissionSubject): PermissionSubject {
-    if (!subject.resolvedPath || !isAbsolute(subject.resolvedPath)) return subject;
+    if (!subject.resolvedPath) return subject;
 
-    const rel = relative(this.workingDir, subject.resolvedPath);
-    if (rel.startsWith("..") || rel === "") return subject;
+    const normalized = this.normalizePath(subject.resolvedPath);
+    return { ...subject, resolvedPath: normalized };
+  }
 
-    return { ...subject, resolvedPath: `./${rel}` };
+  /**
+   * Canonicalize a path to the same form relativizeSubject uses:
+   * - Inside workingDir → "./relative/path"
+   * - Outside workingDir → absolute path
+   */
+  private normalizePath(raw: string): string {
+    const absolute = isAbsolute(raw) ? raw : resolve(this.workingDir, raw);
+    const rel = relative(this.workingDir, absolute);
+    if (rel.startsWith("..") || rel === "") return absolute;
+    return `./${rel}`;
   }
 
   private resolveBash(command: string): InternalResolveResult {
@@ -165,19 +206,23 @@ export class PermissionEngine {
 
   /**
    * Builds the narrowest possible allow rule for a specific call — an exact
-   * match on its literal subject text. Used by the UI layer when the user
-   * approves a call for session/always and no winningRule already exists to
-   * approve (e.g. the call fell through to defaultMode with zero matching
-   * rules), so approval never defaults to something broader than what was
-   * actually asked.
+   * match on its canonical path or literal subject text. Used by the UI layer
+   * when the user approves a call for session/always and no winningRule already
+   * exists to approve (e.g. the call fell through to defaultMode with zero
+   * matching rules), so approval never defaults to something broader than what
+   * was actually asked.
    */
   buildDefaultRule(toolName: string, args?: Record<string, unknown>): PermissionRule {
     const a = args ?? {};
     if (toolName === "run_bash") {
       return { tool: "run_bash", kind: "exact", pattern: String(a.command ?? ""), action: "allow", origin: "config" };
     }
-    const subject = buildSubject(toolName, a);
-    return { tool: toolName, kind: "exact", pattern: subject.text, action: "allow", origin: "config" };
+    const raw = a.path ?? a.filePath;
+    const rawPath = typeof raw === "string" ? raw : "";
+    // Normalize the path the same way relativizeSubject does, so the stored
+    // rule matches future calls regardless of how the LLM spells the path.
+    const pattern = rawPath ? this.normalizePath(rawPath) : rawPath;
+    return { tool: toolName, kind: "exact", pattern, action: "allow", origin: "config" };
   }
 
   /**
