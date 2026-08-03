@@ -110,8 +110,27 @@ describe("isUnresolved: fail-closed detection", () => {
     expect(isUnresolved("find . -exec rm -rf {} \\;")).toBe(true);
   });
 
+  it("flags find -execdir", () => {
+    expect(isUnresolved("find . -execdir rm -rf {} \\;")).toBe(true);
+  });
+
+  it("flags find -ok and -okdir", () => {
+    expect(isUnresolved("find . -ok rm {} \\;")).toBe(true);
+    expect(isUnresolved("find . -okdir rm {} \\;")).toBe(true);
+  });
+
   it("does not flag a bare find without -exec", () => {
     expect(isUnresolved("find . -name '*.ts'")).toBe(false);
+  });
+
+  it("flags sudo as the first token (even without flags)", () => {
+    expect(isUnresolved("sudo rm -rf /")).toBe(true);
+  });
+
+  it("flags sudo with flags (-u, -E, --)", () => {
+    expect(isUnresolved("sudo -u root rm -rf /")).toBe(true);
+    expect(isUnresolved("sudo -E rm -rf /")).toBe(true);
+    expect(isUnresolved("sudo -- rm -rf /")).toBe(true);
   });
 
   it("flags xargs as the first token of a segment", () => {
@@ -165,9 +184,16 @@ describe("buildBashSubject", () => {
     expect(r.wasUnresolved).toBe(false);
   });
 
-  it("strips sudo per segment", () => {
+  it("flags sudo-prefixed segments as unresolved (sudo is privilege escalation)", () => {
     const r = buildBashSubject("sudo npm test");
-    expect(r.segments).toEqual(["npm test"]);
+    expect(r.segments).toEqual(["sudo npm test"]);
+    expect(r.wasUnresolved).toBe(true);
+  });
+
+  it("still strips sudo from a segment that is otherwise resolved", () => {
+    // sudo is caught by isUnresolved first, so stripSudo only matters for
+    // non-sudo segments — but keep the test to verify stripSudo itself.
+    expect(stripSudo("sudo npm test")).toBe("npm test");
   });
 
   it("flags wasUnresolved when any segment is unresolved", () => {
