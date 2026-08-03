@@ -277,6 +277,23 @@ describe("PermissionEngine.resolve", () => {
       expect(result.action).toBe("allow");
       expect(result.winningRule?.kind).toBe("exact");
     });
+
+    it("buildDefaultRule + narrowToExact only allows the specific approved command, not the broader prefix category", () => {
+      // This is the real code path: handlePermissionDecision passes
+      // buildDefaultRule (specific command) + the builtin match (narrowing
+      // signal). The destructive deny should still block a different reset.
+      // Use approveForSession to skip filesystem persistence (this engine
+      // has workingDir "/workspace" which doesn't exist on disk).
+      const destructiveMatch = rule({ tool: "run_bash", kind: "prefix", pattern: "git reset --hard", origin: "builtin-destructive", action: "deny" });
+      engine.approveForSession(
+        engine.buildDefaultRule("run_bash", { command: "git reset --hard HEAD~1" }),
+        destructiveMatch,
+      );
+      // The exact approved command is allowed
+      expect(engine.resolve("run_bash", { command: "git reset --hard HEAD~1" }).action).toBe("allow");
+      // A slightly different command still resolves to deny (not blanket-allowed)
+      expect(engine.resolve("run_bash", { command: "git reset --hard HEAD~2" }).action).toBe("deny");
+    });
   });
 
   describe("session tier: not persisted to disk", () => {
@@ -364,9 +381,15 @@ describe("PermissionEngine.resolve", () => {
       expect(built).toEqual({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow", origin: "config" });
     });
 
-    it("builds an exact-kind rule from a file path for non-bash tools", () => {
+    it("builds an exact-kind rule from a file path, normalized to working-dir-relative form", () => {
       const built = engine.buildDefaultRule("read_file", { path: "/workspace/secret.txt" });
-      expect(built).toEqual({ tool: "read_file", kind: "exact", pattern: "/workspace/secret.txt", action: "allow", origin: "config" });
+      expect(built).toEqual({ tool: "read_file", kind: "exact", pattern: "./secret.txt", action: "allow", origin: "config" });
+    });
+
+    it("normalizes different spellings of the same path to one canonical form", () => {
+      expect(engine.buildDefaultRule("read_file", { path: "src/main.ts" }).pattern).toBe("./src/main.ts");
+      expect(engine.buildDefaultRule("read_file", { path: "./src/main.ts" }).pattern).toBe("./src/main.ts");
+      expect(engine.buildDefaultRule("read_file", { path: "/workspace/src/main.ts" }).pattern).toBe("./src/main.ts");
     });
 
     it("approving the built default rule for session makes the exact same call resolve to allow", () => {
@@ -411,6 +434,56 @@ describe("PermissionEngine.resolve", () => {
     });
   });
 
+  describe("path normalization: different spellings of the same path", () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "heirloom-engine-pathnorm-"));
+      engine = new PermissionEngine(undefined, dir);
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("an exact-match rule approved with one spelling matches the same file via a different spelling", () => {
+      // Approve with an absolute path
+      const absPath = join(dir, "src/main.ts");
+      engine.approveForSession(engine.buildDefaultRule("read_file", { path: absPath }));
+
+      // Same file, different spellings — all should resolve to allow
+      expect(engine.resolve("read_file", { path: absPath }).action).toBe("allow");
+      expect(engine.resolve("read_file", { path: "src/main.ts" }).action).toBe("allow");
+      expect(engine.resolve("read_file", { path: "./src/main.ts" }).action).toBe("allow");
+    });
+
+    it("an exact-match rule approved with a relative spelling matches absolute-path calls", () => {
+      engine.approveForSession(engine.buildDefaultRule("read_file", { path: "./src/main.ts" }));
+
+      const absPath = join(dir, "src/main.ts");
+      expect(engine.resolve("read_file", { path: absPath }).action).toBe("allow");
+      expect(engine.resolve("read_file", { path: "src/main.ts" }).action).toBe("allow");
+    });
+
+    it("normalizes persisted absolute-path rules on load (backward compat)", () => {
+      // Simulate a pre-normalization persisted rule with an absolute pattern
+      const absPath = join(dir, "src/main.ts");
+      const oldRule: PermissionRule = {
+        tool: "read_file", kind: "exact", pattern: absPath, action: "allow", origin: "config",
+      };
+      const reloaded = new PermissionEngine({ rules: [oldRule] }, dir);
+      expect(reloaded.resolve("read_file", { path: "src/main.ts" }).action).toBe("allow");
+      expect(reloaded.resolve("read_file", { path: "./src/main.ts" }).action).toBe("allow");
+    });
+
+    it("does not affect bash exact-match rules (resolvedPath is undefined for run_bash)", () => {
+      engine.approveForSession(engine.buildDefaultRule("run_bash", { command: "npm test" }));
+      expect(engine.resolve("run_bash", { command: "npm test" }).action).toBe("allow");
+      // Only the exact command should match — no path normalization for bash
+      expect(engine.resolve("run_bash", { command: "npm test -- --watch" }).action).toBe("ask");
+    });
+  });
+
   describe("guarded tier: secret-adjacent paths always ask, never silently auto-allow", () => {
     it("reading .env resolves to ask with isGuarded true, even with no config at all", () => {
       const result = engine.resolve("read_file", { path: "/workspace/.env" });
@@ -449,6 +522,24 @@ describe("PermissionEngine.resolve", () => {
         const result = scopedEngine.resolve("read_file", { path: envPath });
         expect(result.action).toBe("allow");
         expect(result.winningRule?.kind).toBe("exact");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("buildDefaultRule + guarded narrowToExact only allows the specific file, not the whole guarded glob category", () => {
+      const dir = mkdtempSync(join(tmpdir(), "heirloom-engine-guarded-scope-"));
+      try {
+        const scopedEngine = new PermissionEngine(undefined, dir);
+        const envPath = join(dir, ".env");
+        const nestedEnvPath = join(dir, "subdir", ".env");
+        const guardedMatch: PermissionRule = { tool: "read_file", kind: "glob", pattern: "**/.env*", action: "ask", origin: "builtin-guarded" };
+        // Approve always on the root .env using buildDefaultRule (the real code path)
+        scopedEngine.approveAlways(scopedEngine.buildDefaultRule("read_file", { path: envPath }), guardedMatch);
+        // The exact approved file is allowed
+        expect(scopedEngine.resolve("read_file", { path: envPath }).action).toBe("allow");
+        // A different .env in a subdirectory still resolves to ask (not blanket-allowed)
+        expect(scopedEngine.resolve("read_file", { path: nestedEnvPath }).action).toBe("ask");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
