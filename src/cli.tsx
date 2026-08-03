@@ -206,6 +206,10 @@ async function main() {
     providerName,
     activeModel: initialModel as string | undefined,
     activeEffort: undefined as string | undefined,
+    // Live mode: /mode and the /modes picker mutate this so the running agent
+    // (runAgentTurnBridge reads shared.activeMode) picks up the switch mid-
+    // session. A plain closure var here would stay stale until restart.
+    activeMode: undefined as ModeConfig | undefined,
     debug: parsed.debug as boolean | undefined,
   };
   shared.activeEffort = reasoningEffort || getActiveModelCaps()?.effort?.default;
@@ -238,16 +242,15 @@ async function main() {
   const { def: loadSkillDef, handler: loadSkillHandler } = createLoadSkillTool(skills);
   registry.register({ def: loadSkillDef, handler: loadSkillHandler, groups: ["read"], always: true });
 
-  let activeMode: ModeConfig | undefined;
   if (parsed.mode) {
     const mode = await modeLoader.load(parsed.mode);
-    if (mode) { activeMode = mode; await sessionStore.appendState(sessionId, { mode: parsed.mode }); }
+    if (mode) { shared.activeMode = mode; await sessionStore.appendState(sessionId, { mode: parsed.mode }); }
   }
 
   // Shown inside the app's scrollback after mount — printing to stdout here
   // would get garbled by Ink's first render.
   const initialNotice = sessionLoaded
-    ? `Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${activeMode?.slug || "code"}`
+    ? `Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${shared.activeMode?.slug || "code"}`
     : undefined;
 
   let knownModeSlugs: string[] = [];
@@ -350,7 +353,6 @@ async function main() {
       mutable: shared,
       getProvider,
       sessionId,
-      activeMode,
       permissions,
       toolRegistry: registry,
       compactor: getCompactor(),
@@ -364,6 +366,7 @@ async function main() {
       skillLoader,
       get providerName() { return shared.providerName; },
       get activeModel() { return shared.activeModel; },
+      get activeMode() { return shared.activeMode; },
       get activeEffort() { return shared.activeEffort; },
       effortValues: () => getActiveModelCaps()?.effort?.values ?? [],
       provideAbortController: () => shared.abort,
@@ -380,11 +383,11 @@ async function main() {
         const lines: string[] = [];
         const origLog = console.log;
         console.log = (...args) => lines.push(args.map(String).join(" "));
-        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, activeMode, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort); } finally { console.log = origLog; }
+        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort); } finally { console.log = origLog; }
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, activeMode, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -655,7 +658,7 @@ async function handleSlashCore(
   configResult: any, modeLoader: ModeLoader, permissions: PermissionEngine, sessionStore: SessionStore,
   sessionId: string, checkpoints: CheckpointManager, memoryStore: MemoryStore, memoryInjection: string | null | undefined,
   getCompactor: () => Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], skillLoader: SkillLoader,
-  shared: any, activeMode: ModeConfig | undefined, getActiveModelCaps: () => ModelCapabilities | undefined,
+  shared: any, getActiveModelCaps: () => ModelCapabilities | undefined,
   getCostStr: () => string | null, colorEnabled: boolean, reasoningEffort: string | undefined,
 ): Promise<void> {
   const cmd = input.trim().split(/\s+/)[0];
@@ -685,7 +688,7 @@ async function handleSlashCore(
     case "/mode": {
       const slug = input.slice(6).trim();
       const mode = await modeLoader.load(slug);
-      if (mode) { activeMode = mode; await sessionStore.appendState(sessionId, { mode: slug }); console.log(`Switched to ${mode.name} mode.`); }
+      if (mode) { shared.activeMode = mode; await sessionStore.appendState(sessionId, { mode: slug }); console.log(`Switched to ${mode.name} mode.`); }
       else console.log(`Unknown mode: ${slug}.`);
       return;
     }
@@ -720,14 +723,14 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, activeMode: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
   }
   shared.sessionUserInputs.push(input);
   const processed = await processAtMentions(input);
-  const tools = activeMode?.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs();
+  const tools = shared.activeMode?.groups ? registry.getByMode(shared.activeMode.groups) : registry.getAllDefs();
 
   // Research notes are plan-mode-only context: load them lazily when in plan
   // mode so the per-turn file walk costs nothing in normal conversation.
@@ -744,7 +747,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   try {
     result = await runAgent(processed, {
     provider: getProvider(),
-    tools, executeTool, permissions, mode: activeMode, compactor, diagnostics, skills,
+    tools, executeTool, permissions, mode: shared.activeMode, compactor, diagnostics, skills,
     errorReflector, errorRecovery,
     repomap: repomapInjection,
     research: researchInjection,
