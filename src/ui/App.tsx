@@ -43,6 +43,7 @@ import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
 import SkillList from "./views/SkillList.js";
+import ModeList from "./views/ModeList.js";
 import UndoSelector from "./views/UndoSelector.js";
 import McpStatusList from "./views/McpStatusList.js";
 import PermissionHistoryList from "./views/PermissionHistoryList.js";
@@ -160,6 +161,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   } | null>(null);
   const [showSessionList, setShowSessionList] = useState(false);
   const [showSkillList, setShowSkillList] = useState(false);
+  const [showModeList, setShowModeList] = useState(false);
   const [showUndoSelector, setShowUndoSelector] = useState(false);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const [showPermissionHistory, setShowPermissionHistory] = useState(false);
@@ -870,6 +872,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowSkillList(true);
       return;
     }
+    if (trimmed === "/modes") {
+      setShowModeList(true);
+      return;
+    }
     if (trimmed === "/undo") {
       setShowUndoSelector(true);
       return;
@@ -1160,6 +1166,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
+    if (showModeList) {
+      return;
+    }
+
     if (showUndoSelector) {
       return;
     }
@@ -1260,7 +1270,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const term = useTerminalInfo();
 
   const modalOpen =
-    !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList || showSkillList ||
+    !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
     showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   modalOpenRef.current = modalOpen;
@@ -1391,6 +1401,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showModeList && (
+        <ModeList
+          modeLoader={ctx.modeLoader}
+          currentSlug={ctx.activeMode?.slug}
+          onSelect={(slug) => {
+            setShowModeList(false);
+            handleSlashCommand(`/mode ${slug}`);
+          }}
+          onClose={() => setShowModeList(false)}
+          width={term.columns}
+        />
+      )}
+
       {showUndoSelector && (
         <UndoSelector
           checkpoints={(ctx.checkpoints?.list() as any[]) ?? []}
@@ -1515,7 +1538,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showSkillList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}
