@@ -129,7 +129,7 @@ export interface AppContext {
   handleSlash: (input: string) => Promise<string[]>;
   getModelEntries: () => ModelEntry[];
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
-  resumeSession?: (sessionId: string) => Promise<boolean>;
+  resumeSession?: (sessionId: string) => Promise<Message[] | null>;
   showResumeOnStart?: boolean;
   /** One-time notice (e.g. "Resumed <id>") shown in the scrollback on mount. */
   initialNotice?: string;

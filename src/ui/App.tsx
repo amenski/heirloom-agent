@@ -1340,10 +1340,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           sessionStore={ctx.sessionStore}
           onResume={async (sessionId) => {
             if (ctx.resumeSession) {
-              const ok = await ctx.resumeSession(sessionId);
-              if (ok) {
+              const messages = await ctx.resumeSession(sessionId);
+              if (messages) {
                 setShowSessionList(false);
-                setOutputLines([]);
+                const lines = buildReplayLines(messages, theme.colorEnabled);
+                setOutputLines(lines);
               }
             }
           }}
