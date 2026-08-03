@@ -1,12 +1,39 @@
 # Input stall while the agent is working — diagnosis
 
-Status: **diagnosis + fix options, not yet implemented.**
+Status: **diagnosis + fix options. Fix D (committed/active render split) and the
+input-loss mechanisms below are implemented (2026-08-03); the `<Static>` refactor
+(fix A) is still the open follow-on.**
 
 ## Symptom
 
 While the model is streaming a response, typing into the prompt stutters — the
 CLI "freezes" for some milliseconds per keystroke, then catches up. Gets worse
 the longer the conversation.
+
+## Related bug: Enter keys dropped around modal open/close
+
+A distinct but adjacent bug (found during live pty verification 2026-08-03):
+`\r` (Enter) presses were intermittently **dropped entirely** right after a
+menu/dropdown open/close — the buffer kept its text and "later Enters work."
+Two code-verified mechanisms, both fixed:
+
+1. **stdin-listener churn race.** `PromptInput` unmounts whenever a modal is
+   open, so its per-mount `data` listener was removed/re-added on every
+   open/close. On Node sockets the last-attached of `data`/`readable` governs
+   stream mode; a keypress in that transition went to Ink's permanent
+   `readable` drain and was dropped. **Fix:** `useTerminalInput` now attaches
+   ONE listener for the process lifetime and hands ownership to Ink by toggling
+   `pause()`/`resume()` in a layout effect (settles before paint).
+2. **Slash-menu Enter trap.** The menu branch consumed Enter as a "selection";
+   for kinds with no handler case (`clear`/`help`/`skills`/`raw`) it replaced
+   the buffer and submitted nothing, and args were discarded. **Fix:** Enter
+   always submits the buffer (Tab completes from the menu); exact matches route
+   only for bare commands, args are preserved (`/permissions history`,
+   `/raw normal`).
+
+Verification: 10/10 + 5/5 + 30/30 pty-driven transition loops clean; a residual
+loss only appears under heavy scrollback + a sub-100 ms Esc→Enter gap, which is
+the render contention below (the `<Static>` fix), not the race.
 
 ## It is not a blocked thread
 
