@@ -165,6 +165,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // choice, then holds the message count for the prompt. Set in the mount effect.
   const [resumeChoice, setResumeChoice] = useState<{ count: number } | null>(null);
   const [compactingResume, setCompactingResume] = useState(false);
+  // Messages from an in-app /resume pick, awaiting the load/compact choice. Null
+  // when the chooser is driven by the startup path (which uses ctx.initialMessages).
+  const pendingResumeRef = useRef<Message[] | null>(null);
   const [promptDraft, setPromptDraft] = useState<{ nonce: number; text: string } | null>(null);
   const draftNonceRef = useRef(0);
 
@@ -423,28 +426,37 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     const lines = buildReplayLines(messages, theme.colorEnabled);
     pushOutputLines(lines);
     setResumeChoice(null);
+    pendingResumeRef.current = null;
   }, [theme.colorEnabled]);
 
+  // The chooser is fed either by an in-app /resume pick (pendingResumeRef) or by
+  // the startup path (ctx.initialMessages). Compaction operates on shared history
+  // in both cases, so this fallback only matters for the "Load entirely" branch.
+  const resumeSource = useCallback(
+    () => pendingResumeRef.current ?? ctx.initialMessages ?? [],
+    [ctx.initialMessages],
+  );
+
   const handleResumeLoad = useCallback(() => {
-    replayResumed(ctx.initialMessages ?? []);
-  }, [ctx.initialMessages, replayResumed]);
+    replayResumed(resumeSource());
+  }, [resumeSource, replayResumed]);
 
   const handleResumeCompact = useCallback(async () => {
     if (!ctx.compactResumed) {
-      replayResumed(ctx.initialMessages ?? []);
+      replayResumed(resumeSource());
       return;
     }
     setCompactingResume(true);
     try {
       const compacted = await ctx.compactResumed();
-      replayResumed(compacted ?? ctx.initialMessages ?? []);
+      replayResumed(compacted ?? resumeSource());
     } catch (err) {
       pushOutput(`Compaction failed: ${(err as Error).message}. Loading full transcript.`);
-      replayResumed(ctx.initialMessages ?? []);
+      replayResumed(resumeSource());
     } finally {
       setCompactingResume(false);
     }
-  }, [ctx.compactResumed, ctx.initialMessages, replayResumed]);
+  }, [ctx.compactResumed, resumeSource, replayResumed]);
 
   const runAgentTurn = useCallback(
     async (input: string, imageUrls?: string[]) => {
@@ -1343,8 +1355,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               const messages = await ctx.resumeSession(sessionId);
               if (messages) {
                 setShowSessionList(false);
-                const lines = buildReplayLines(messages, theme.colorEnabled);
-                setOutputLines(lines);
+                setOutputLines([]);
+                // Route into the same load/compact chooser the startup path uses.
+                pendingResumeRef.current = messages;
+                setResumeChoice({ count: messages.length });
               }
             }
           }}
