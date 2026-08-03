@@ -25,7 +25,7 @@ const ModelsDropdown: React.FC<Props> = ({
 
   const availableModels = React.useMemo(() => {
     const preset = getPreset(providerName);
-    if (!preset) return [currentModel ?? "deepseek-v4-pro"];
+    if (!preset) return [currentModel ?? "deepseek-v4-flash"];
     return Object.keys(preset.models);
   }, [providerName, currentModel]);
 
@@ -42,7 +42,7 @@ const ModelsDropdown: React.FC<Props> = ({
   }, [activeIndex, open, availableModels.length]);
 
   function selectItem(): void {
-    const model = availableModels[activeIndex] ?? currentModel ?? "deepseek-v4-pro";
+    const model = availableModels[activeIndex] ?? currentModel ?? "deepseek-v4-flash";
     onSelect(providerName, model);
     onClose();
   }
