@@ -16,7 +16,20 @@ export default defineConfig({
     opts.treeShaking = false;
   },
   banner: {
-    js: "#!/usr/bin/env node",
+    // Bundled CJS deps (e.g. typescript's getNodeSystem) assume the CJS
+    // globals require/__filename/__dirname at load time. In an ESM output
+    // these are undefined, so esbuild's shim throws "Dynamic require of ..."
+    // and __filename/__dirname are ReferenceErrors. Recreate all three from
+    // import.meta.url (already present in the ESM bundle; see src/cli.tsx).
+    js: [
+      "#!/usr/bin/env node",
+      "import { createRequire as __createRequire } from 'module';",
+      "import { fileURLToPath as __fileURLToPath } from 'url';",
+      "import { dirname as __pathDirname } from 'path';",
+      "const require = __createRequire(import.meta.url);",
+      "const __filename = __fileURLToPath(import.meta.url);",
+      "const __dirname = __pathDirname(__filename);",
+    ].join("\n"),
   },
   // tsup bundles JS/TS only; the builtin mode YAMLs are assets the ModeLoader
   // resolves relative to the compiled module (dist/cli.js -> dist/builtin/).
