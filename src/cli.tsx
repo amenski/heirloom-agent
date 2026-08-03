@@ -343,7 +343,7 @@ async function main() {
     let restarting = false;
     const appInitialPrompt = initialPrompt;
     initialPrompt = undefined;
-    const appResumeSessionId = typeof resumeSessionId === "string" ? resumeSessionId : undefined;
+    const showResumeChooserOnStart = resumeSessionId === true;
     resumeSessionId = undefined;
 
     const appCtx = {
@@ -391,9 +391,9 @@ async function main() {
           shared.conversationHistory = loaded.messages;
           sessionId = id;
           setSessionId(id);
-          return true;
+          return loaded.messages;
         } catch {
-          return false;
+          return null;
         }
       },
       restoreCheckpoint: async (hash: string, restoreCode: boolean) => {
@@ -416,7 +416,7 @@ async function main() {
         const msgMatch = found?.message.match(/\]\s+(.+)/);
         return { restored: true, promptDraft: msgMatch ? msgMatch[1] : "" };
       },
-      showResumeOnStart: resumeSessionId === true,
+      showResumeOnStart: showResumeChooserOnStart,
       initialNotice,
       initialMessages: sessionLoaded ? sessionMessages : undefined,
       compactResumed: async (): Promise<Message[] | null> => {
