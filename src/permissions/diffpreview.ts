@@ -1,25 +1,27 @@
 import { readFileSync, existsSync } from "node:fs";
 
 function computePreviewDiff(toolName: string, args: Record<string, unknown>): string | null {
-  const path = String(args.path || args.filePath || "");
+  const rawPath = args.path ?? args.filePath;
+  const path = typeof rawPath === "string" ? rawPath : "";
   if (!path || !existsSync(path)) return null;
 
   const original = readFileSync(path, "utf-8");
   let preview = "";
 
   if (toolName === "edit") {
-    const oldStr = String(args.oldString || "");
-    const newStr = String(args.newString || "");
+    const oldStr = typeof args.oldString === "string" ? args.oldString : "";
+    const newStr = typeof args.newString === "string" ? args.newString : "";
     preview = generateUnifiedDiff(path, original, oldStr, newStr);
   } else if (toolName === "write_to_file" || toolName === "write") {
-    const content = String(args.content || "");
+    const content = typeof args.content === "string" ? args.content : "";
     preview = generateFullDiff(path, original, content);
   } else if (toolName === "search_replace") {
-    const search = String(args.search || "");
-    const replace = String(args.replace || "");
+    const search = typeof args.search === "string" ? args.search : "";
+    const replace = typeof args.replace === "string" ? args.replace : "";
     preview = generateReplacePreview(path, original, search, replace);
   } else if (toolName === "apply_diff" || toolName === "apply_patch") {
-    const diffContent = String(args.diff || args.patch || "");
+    const rawDiff = args.diff ?? args.patch;
+    const diffContent = typeof rawDiff === "string" ? rawDiff : "";
     const lines = diffContent.split("\n");
     preview = lines.slice(0, 10).join("\n");
     if (lines.length > 10) preview += `\n(+${lines.length - 10} more lines)`;

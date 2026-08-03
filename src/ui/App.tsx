@@ -9,6 +9,7 @@ import { Box, Text, useInput, useApp } from "ink";
 import { previewEdit } from "../permissions/diffpreview.js";
 import type { AppContext, StatusSegment, GitStatus } from "./types.js";
 import type { PermissionRule } from "../permissions/index.js";
+import { extractToolSubject } from "../permissions/rules.js";
 import type { KeybindingConfig } from "./keybindings.js";
 
 import {
@@ -34,7 +35,8 @@ import CommandPalette, {
 import OutputArea from "./OutputArea.js";
 import Spinner from "./Spinner.js";
 import StatusBar from "./StatusBar.js";
-import PermissionPrompt, { DestructiveConfirmPrompt, type PermissionDecision } from "./PermissionPrompt.js";
+import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
+import { explainToolAction } from "./explain-action.js";
 import WelcomeScreen from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
@@ -116,8 +118,21 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     toolName: string;
     args: Record<string, unknown>;
     winningRule?: PermissionRule;
+    /** The rule buildDefaultRule would create — used to show the approval scope. */
+    defaultRule?: PermissionRule;
+    /** Recursive folder-glob rule offered when a sibling read is already approved. */
+    folderRule?: PermissionRule;
+    /** True once the user picked session/always and is choosing file-vs-folder scope. */
+    scopeStage?: boolean;
+    /** The session/always decision carried into the scope stage. */
+    scopeDecision?: "session" | "always";
+    /** Ctrl+E AI explanation state — informational only, never gates the decision. */
+    explain?: { status: "loading" | "done" | "error"; text: string };
     cursor: number;
   } | null>(null);
+  // AbortController for an in-flight Ctrl+E explanation stream, so a new
+  // request or prompt teardown cancels the previous one.
+  const explainAbortRef = useRef<AbortController | null>(null);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showThemeDropdown, setShowThemeDropdown] = useState(false);
   const [showEffortSelector, setShowEffortSelector] = useState(false);
@@ -643,7 +658,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           }
 
           return new Promise<boolean>((resolve) => {
-            setAskPrompt({ resolve, toolName, args, winningRule, cursor: 0 });
+            const defaultRule = ctx.permissions.buildDefaultRule(toolName, args);
+            const folderRule = ctx.permissions.folderReadRule(toolName, args);
+            setAskPrompt({ resolve, toolName, args, winningRule, defaultRule, folderRule, cursor: 0 });
           });
         },
       };
@@ -965,6 +982,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   );
 
   function resolveAskPrompt(allowed: boolean): void {
+    // Cancel any in-flight Ctrl+E explanation — its prompt is going away.
+    explainAbortRef.current?.abort();
+    explainAbortRef.current = null;
     setAskPrompt((prev) => {
       if (!prev) return null;
       const { resolve } = prev;
@@ -973,6 +993,50 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     });
     setBusy(true);
     startSpinner();
+  }
+
+  /**
+   * Ctrl+E handler: stream an AI explanation of the pending action into the
+   * prompt. Purely informational — it never changes the allow/ask/deny
+   * decision or the options; the deterministic engine already decided this is
+   * an "ask". The model describes the action, it never gates it.
+   */
+  function requestExplanation(): void {
+    if (!askPrompt) return;
+    // Already loaded or loading — don't refire.
+    if (askPrompt.explain?.status === "loading" || askPrompt.explain?.status === "done") return;
+
+    const { toolName, args } = askPrompt;
+    const subject = extractToolSubject(toolName, args);
+    const controller = new AbortController();
+    explainAbortRef.current?.abort();
+    explainAbortRef.current = controller;
+
+    setAskPrompt((prev) => prev ? { ...prev, explain: { status: "loading", text: "" } } : null);
+
+    void (async () => {
+      try {
+        let acc = "";
+        for await (const chunk of explainToolAction(ctx.getProvider(), toolName, subject, controller.signal)) {
+          acc += chunk;
+          setAskPrompt((prev) =>
+            prev && prev.explain ? { ...prev, explain: { status: "loading", text: acc } } : prev,
+          );
+        }
+        setAskPrompt((prev) =>
+          prev && prev.explain ? { ...prev, explain: { status: "done", text: acc } } : prev,
+        );
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setAskPrompt((prev) =>
+          prev && prev.explain
+            ? { ...prev, explain: { status: "error", text: "Couldn't generate an explanation." } }
+            : prev,
+        );
+      } finally {
+        if (explainAbortRef.current === controller) explainAbortRef.current = null;
+      }
+    })();
   }
 
   function handlePermissionDecision(decision: PermissionDecision): void {
@@ -992,26 +1056,53 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
-    if (decision === "session" || decision === "always") {
-      // When a builtin rule (guarded or destructive) triggered the prompt, use
-      // buildDefaultRule for the specific path/command — NOT the winningRule's
-      // glob/prefix pattern. Otherwise the stored exact-match rule would carry
-      // a pattern like "**/.env*" that never matches a real path (the original
-      // kind is switched to "exact", but the pattern was left as the glob).
-      // buildDefaultRule already sets kind "exact" on the canonical form, so
-      // narrowToExact becomes a safety no-op rather than a bug-fix requirement.
-      const isBuiltinOrigin = askPrompt.winningRule?.origin === "builtin-destructive" || askPrompt.winningRule?.origin === "builtin-guarded";
-      const matchedBuiltin = isBuiltinOrigin ? askPrompt.winningRule : undefined;
-      const rule = isBuiltinOrigin
-        ? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args)
-        : (askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args));
-      if (decision === "session") {
-        ctx.permissions.approveForSession(rule, matchedBuiltin);
-      } else {
-        ctx.permissions.approveAlways(rule, matchedBuiltin);
-      }
+    // A read in a folder that already has a sibling exact approval: defer to a
+    // second prompt asking whether to grant just this file or the whole folder.
+    if ((decision === "session" || decision === "always") && askPrompt.folderRule) {
+      setAskPrompt((prev) => prev ? { ...prev, scopeStage: true, scopeDecision: decision, cursor: 0 } : null);
+      return;
     }
 
+    if (decision === "session" || decision === "always") {
+      approveAskPrompt(decision, null);
+    }
+
+    resolveAskPrompt(true);
+  }
+
+  /**
+   * Approves the pending askPrompt for `decision`. When `scopedRule` is
+   * provided (the whole-folder glob chosen at the scope stage) it is stored
+   * instead of the exact default rule.
+   */
+  function approveAskPrompt(decision: "session" | "always", scopedRule: PermissionRule | null): void {
+    if (!askPrompt) return;
+    // When a builtin rule (guarded or destructive) triggered the prompt, use
+    // buildDefaultRule for the specific path/command — NOT the winningRule's
+    // glob/prefix pattern. Otherwise the stored exact-match rule would carry
+    // a pattern like "**/.env*" that never matches a real path (the original
+    // kind is switched to "exact", but the pattern was left as the glob).
+    // buildDefaultRule already sets kind "exact" on the canonical form, so
+    // narrowToExact becomes a safety no-op rather than a bug-fix requirement.
+    const isBuiltinOrigin = askPrompt.winningRule?.origin === "builtin-destructive" || askPrompt.winningRule?.origin === "builtin-guarded";
+    const matchedBuiltin = isBuiltinOrigin ? askPrompt.winningRule : undefined;
+    const rule = scopedRule
+      ? scopedRule
+      : isBuiltinOrigin
+        ? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args)
+        : (askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args));
+    if (decision === "session") {
+      ctx.permissions.approveForSession(rule, matchedBuiltin);
+    } else {
+      ctx.permissions.approveAlways(rule, matchedBuiltin);
+    }
+  }
+
+  /** Stage-two handler: user chose file-vs-folder scope for a read approval. */
+  function handleScopeDecision(scope: "file" | "folder"): void {
+    if (!askPrompt || !askPrompt.scopeDecision) return;
+    const scopedRule = scope === "folder" ? (askPrompt.folderRule ?? null) : null;
+    approveAskPrompt(askPrompt.scopeDecision, scopedRule);
     resolveAskPrompt(true);
   }
 
@@ -1065,10 +1156,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
     if (askPrompt) {
       const lower = value.toLowerCase();
+      // Stage two (file-vs-folder scope) has two options; the main prompt has four.
+      const scopeChoices: ("file" | "folder")[] = ["file", "folder"];
       const decisions: PermissionDecision[] = ["once", "session", "always", "deny"];
+      const optionCount = askPrompt.scopeStage ? scopeChoices.length : decisions.length;
 
       if (key.escape) {
         resolveAskPrompt(false);
+        return;
+      }
+
+      // Ctrl+E: request an AI explanation of the pending action (informational).
+      if (key.ctrl && (key.name === "e" || value === "\x05")) {
+        requestExplanation();
         return;
       }
 
@@ -1077,7 +1177,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         return;
       }
       if (key.downArrow) {
-        setAskPrompt((prev) => prev ? { ...prev, cursor: Math.min(decisions.length - 1, prev.cursor + 1) } : null);
+        setAskPrompt((prev) => prev ? { ...prev, cursor: Math.min(optionCount - 1, prev.cursor + 1) } : null);
+        return;
+      }
+
+      if (askPrompt.scopeStage) {
+        if (lower === "1" || lower === "2") {
+          handleScopeDecision(scopeChoices[Number(lower) - 1]);
+          return;
+        }
+        if (key.return) {
+          handleScopeDecision(scopeChoices[askPrompt.cursor]);
+          return;
+        }
         return;
       }
 
@@ -1170,12 +1282,21 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {askPrompt && (askPrompt.winningRule?.origin === "builtin-destructive" ? (
+      {askPrompt && askPrompt.scopeStage ? (
+        <ScopeChoicePrompt
+          folderPattern={askPrompt.folderRule?.pattern ?? ""}
+          cursor={askPrompt.cursor}
+          onChoose={handleScopeDecision}
+          onCancel={() => resolveAskPrompt(false)}
+        />
+      ) : askPrompt && (askPrompt.winningRule?.origin === "builtin-destructive" ? (
         <DestructiveConfirmPrompt
           request={{
             toolName: askPrompt.toolName,
-            command: String(askPrompt.args?.command ?? askPrompt.args?.path ?? ""),
+            command: extractToolSubject(askPrompt.toolName, askPrompt.args),
             winningRule: askPrompt.winningRule,
+            defaultRule: askPrompt.defaultRule,
+            explain: askPrompt.explain,
           }}
           cursor={askPrompt.cursor}
           onChoose={handlePermissionDecision}
@@ -1185,8 +1306,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         <PermissionPrompt
           request={{
             toolName: askPrompt.toolName,
-            command: String(askPrompt.args?.command ?? askPrompt.args?.path ?? ""),
+            command: extractToolSubject(askPrompt.toolName, askPrompt.args),
             winningRule: askPrompt.winningRule,
+            defaultRule: askPrompt.defaultRule,
+            explain: askPrompt.explain,
           }}
           cursor={askPrompt.cursor}
           onChoose={handlePermissionDecision}

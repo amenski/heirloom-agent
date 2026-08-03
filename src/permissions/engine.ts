@@ -1,11 +1,12 @@
-import { join, relative, isAbsolute, resolve } from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { join, relative, isAbsolute, resolve, dirname } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { PermissionAction, PermissionRule, PermissionSubject } from "./rules.js";
 import { buildSubject, patternMatches, specificity, serializeRulePattern } from "./rules.js";
 import { buildBashSubject } from "./bash-normalize.js";
 import { BUILTIN_DESTRUCTIVE_RULES } from "./destructive.js";
 import { BUILTIN_GUARDED_RULES } from "./guarded.js";
+import { BUILTIN_ALLOW_RULES } from "./builtin-allow.js";
 
 export type { PermissionAction, PermissionRule, PatternKind, RuleOrigin } from "./rules.js";
 
@@ -42,6 +43,11 @@ export class PermissionEngine {
   /** Tools whose exact/glob patterns carry file paths (normalized on load). */
   private static readonly FILE_TOOLS = new Set([
     "read_file", "write_to_file", "edit", "list_files", "glob",
+  ]);
+
+  /** Read-only file tools eligible for the "grant whole folder" broadening offer. */
+  private static readonly READ_TOOLS = new Set([
+    "read_file", "list_files", "glob",
   ]);
 
   constructor(config?: PermissionConfig, workingDir?: string) {
@@ -117,7 +123,8 @@ export class PermissionEngine {
   private normalizePath(raw: string): string {
     const absolute = isAbsolute(raw) ? raw : resolve(this.workingDir, raw);
     const rel = relative(this.workingDir, absolute);
-    if (rel.startsWith("..") || rel === "") return absolute;
+    if (rel.startsWith("..")) return absolute;
+    if (rel === "") return "./";
     return `./${rel}`;
   }
 
@@ -151,6 +158,16 @@ export class PermissionEngine {
     const matches = allRules.filter((r) => patternMatches(r, subject));
 
     if (matches.length === 0) {
+      // Fallback: reads inside the working tree are free. Applied ONLY here,
+      // when nothing else matched — a guarded secret-path rule (e.g. .env)
+      // would have produced a match above, so it always pre-empts this and
+      // still surfaces a prompt. See builtin-allow.ts for why these aren't
+      // pooled with the specificity-ranked rules.
+      const builtinAllow = BUILTIN_ALLOW_RULES.find((r) => patternMatches(r, subject));
+      if (builtinAllow) {
+        return { action: "allow", winningRule: builtinAllow, wasUnresolved: false };
+      }
+
       // Only user-configured rules count toward "this tool is recognized" —
       // builtin destructive/guarded rules exist for every install regardless
       // of user intent, so they can't be what makes an unconfigured tool "known."
@@ -219,10 +236,90 @@ export class PermissionEngine {
     }
     const raw = a.path ?? a.filePath;
     const rawPath = typeof raw === "string" ? raw : "";
+    if (!rawPath) {
+      return { tool: toolName, kind: "exact", pattern: "", action: "allow", origin: "config" };
+    }
     // Normalize the path the same way relativizeSubject does, so the stored
     // rule matches future calls regardless of how the LLM spells the path.
-    const pattern = rawPath ? this.normalizePath(rawPath) : rawPath;
-    return { tool: toolName, kind: "exact", pattern, action: "allow", origin: "config" };
+    const normalized = this.normalizePath(rawPath);
+    return this.buildPathRule(toolName, normalized);
+  }
+
+  /**
+   * Builds an allow rule for a file path. Broadens to a directory-scope glob
+   * so one approval covers related files, not just the exact path the LLM
+   * happened to spell:
+   *   - External paths        → parent-directory glob (one level)
+   *   - Internal directories   → recursive glob (./dir/**)
+   *   - Internal files         → exact match
+   */
+  private buildPathRule(toolName: string, normalized: string): PermissionRule {
+    // External path (doesn't start with "./") → parent directory non-recursive glob
+    if (!normalized.startsWith("./")) {
+      return {
+        tool: toolName,
+        kind: "glob",
+        pattern: join(dirname(normalized), "*"),
+        action: "allow",
+        origin: "config",
+      };
+    }
+
+    // Internal: if the path exists and is a directory → recursive glob
+    const absolute = resolve(this.workingDir, normalized.slice(2));
+    try {
+      if (existsSync(absolute) && statSync(absolute).isDirectory()) {
+        return {
+          tool: toolName,
+          kind: "glob",
+          pattern: `${normalized}/**`,
+          action: "allow",
+          origin: "config",
+        };
+      }
+    } catch {
+      // Path doesn't exist or is inaccessible — fall through to exact match
+    }
+
+    // Internal file or non-existent path → exact match
+    return { tool: toolName, kind: "exact", pattern: normalized, action: "allow", origin: "config" };
+  }
+
+  /**
+   * For a read tool call, returns a recursive-glob allow rule covering the
+   * file's parent folder — but ONLY when at least one exact read approval
+   * already exists for a *different* file in that same folder. This is the
+   * "second read in a folder" signal: the first read gets an exact rule with
+   * no offer, and only when the user is clearly working within one folder does
+   * the UI offer to broaden. Returns undefined when the tool isn't a read
+   * tool, the path is external, or no sibling exact approval exists yet.
+   */
+  folderReadRule(toolName: string, args?: Record<string, unknown>): PermissionRule | undefined {
+    if (!PermissionEngine.READ_TOOLS.has(toolName)) return undefined;
+
+    const raw = args?.path ?? args?.filePath;
+    if (typeof raw !== "string" || !raw) return undefined;
+    const normalized = this.normalizePath(raw);
+    // External paths keep their existing parent-dir behavior; no folder offer.
+    if (!normalized.startsWith("./")) return undefined;
+
+    const folder = dirname(normalized);
+    const folderGlob = `${folder}/**`;
+
+    // Look for an already-approved exact read rule for a *different* file in
+    // this same folder, across config + session rules the user has granted.
+    const userRules = [...this.configRules, ...this.sessionRules];
+    const hasSibling = userRules.some(
+      (r) =>
+        r.tool === toolName &&
+        r.action === "allow" &&
+        r.kind === "exact" &&
+        r.pattern !== normalized &&
+        dirname(r.pattern) === folder,
+    );
+    if (!hasSibling) return undefined;
+
+    return { tool: toolName, kind: "glob", pattern: folderGlob, action: "allow", origin: "config" };
   }
 
   /**
@@ -249,6 +346,13 @@ export class PermissionEngine {
     this.persist();
   }
 
+  /**
+   * Safety net: forces kind "exact" for builtin-origin approvals so a future
+   * code change that passes a broader rule can't accidentally blanket-approve
+   * a whole destructive or guarded category. Currently a no-op in practice —
+   * handlePermissionDecision already passes buildDefaultRule (always kind
+   * "exact") for builtin-triggered prompts — but kept as defense-in-depth.
+   */
   private narrowToExact(rule: PermissionRule, matchedBuiltin: PermissionRule): PermissionRule {
     if (matchedBuiltin.origin !== "builtin-destructive" && matchedBuiltin.origin !== "builtin-guarded") return rule;
     return { ...rule, kind: "exact" };

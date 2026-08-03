@@ -226,16 +226,26 @@ export function specificity(rule: PermissionRule): number {
   }
 }
 
-export function buildSubject(tool: string, args: Record<string, unknown>): PermissionSubject {
-  if (tool === "run_bash") {
-    return { tool, text: String(args?.command ?? "") };
+/** One canonical subject-text extraction shared by audit, UI, and matching. */
+export function extractToolSubject(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === "run_bash") {
+    const c = args?.command;
+    return typeof c === "string" ? c : "";
   }
-  if (tool === "docs_search") {
-    return { tool, text: String(args?.query ?? "") };
+  if (toolName === "docs_search") {
+    const q = args?.query;
+    return typeof q === "string" ? q : "";
   }
   const raw = args?.path ?? args?.filePath;
-  const path = typeof raw === "string" ? raw : "";
-  return { tool, text: path, resolvedPath: path || undefined };
+  return typeof raw === "string" ? raw : "";
+}
+
+export function buildSubject(tool: string, args: Record<string, unknown>): PermissionSubject {
+  if (tool === "run_bash" || tool === "docs_search") {
+    return { tool, text: extractToolSubject(tool, args) };
+  }
+  const text = extractToolSubject(tool, args);
+  return { tool, text, resolvedPath: text || undefined };
 }
 
 const PREFIX_SUFFIX = ":*";

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PermissionEngine, type PermissionRule } from "./engine.js";
@@ -20,8 +20,12 @@ describe("PermissionEngine.resolve", () => {
       expect(engine.resolve("unknown_tool", {}).action).toBe("ask");
     });
 
-    it("asks for a plain read_file call by default (no rules configured)", () => {
-      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("ask");
+    it("allows a plain in-repo read_file call by default (reads inside the working tree are free)", () => {
+      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("allow");
+    });
+
+    it("still asks for a read_file call outside the working tree by default", () => {
+      expect(engine.resolve("read_file", { path: "/etc/passwd" }).action).toBe("ask");
     });
 
     it("asks for run_bash by default", () => {
@@ -29,10 +33,42 @@ describe("PermissionEngine.resolve", () => {
     });
   });
 
+  describe("builtin-allow: free read-only access inside the working tree", () => {
+    it("allows read_file, list_files, glob, and search inside the repo with no config", () => {
+      expect(engine.resolve("read_file", { path: "/workspace/src/a.ts" }).action).toBe("allow");
+      expect(engine.resolve("list_files", { path: "/workspace/src" }).action).toBe("allow");
+      expect(engine.resolve("glob", { path: "**/*.ts" }).action).toBe("allow");
+      expect(engine.resolve("search", { path: "TODO" }).action).toBe("allow");
+    });
+
+    it("does not extend the free-read fallback to write_to_file or edit", () => {
+      expect(engine.resolve("write_to_file", { path: "/workspace/src/a.ts" }).action).toBe("ask");
+      expect(engine.resolve("edit", { path: "/workspace/src/a.ts" }).action).toBe("ask");
+    });
+
+    it("still asks for reads outside the working tree", () => {
+      expect(engine.resolve("read_file", { path: "/etc/passwd" }).action).toBe("ask");
+      expect(engine.resolve("list_files", { path: "/etc" }).action).toBe("ask");
+    });
+
+    it("a user deny rule still overrides the free-read fallback (real match pre-empts it)", () => {
+      engine = new PermissionEngine(
+        { rules: [{ tool: "read_file", kind: "glob", pattern: "./secret/**", action: "deny", origin: "config" }] },
+        "/workspace",
+      );
+      expect(engine.resolve("read_file", { path: "/workspace/secret/x.ts" }).action).toBe("deny");
+      // other in-repo reads remain free
+      expect(engine.resolve("read_file", { path: "/workspace/src/a.ts" }).action).toBe("allow");
+    });
+  });
+
   describe("explicit config precedence", () => {
-    it("honors an explicit empty rules array verbatim (asks for everything)", () => {
+    it("honors an explicit empty rules array verbatim (asks for everything except the free in-repo reads)", () => {
       engine = new PermissionEngine({ rules: [] }, "/workspace");
-      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("ask");
+      // An empty config still asks for state-changing tools...
+      expect(engine.resolve("run_bash", { command: "git status" }).action).toBe("ask");
+      // ...but in-repo reads remain free via the builtin-allow fallback.
+      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("allow");
     });
 
     it("an allow rule for a specific tool makes that call resolve to allow", () => {
@@ -177,12 +213,16 @@ describe("PermissionEngine.resolve", () => {
       expect(result.action).toBe("allow");
     });
 
-    it("strips a leading sudo before matching", () => {
+    it("flags sudo as unresolved-ask (privilege escalation always prompts)", () => {
       engine = new PermissionEngine(
         { rules: [rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" })] },
         "/workspace",
       );
-      expect(engine.resolve("run_bash", { command: "sudo npm test" }).action).toBe("allow");
+      // sudo is now detected by isUnresolved before stripSudo, so even a
+      // harmless sudo npm test prompts — privilege escalation is always ask.
+      const result = engine.resolve("run_bash", { command: "sudo npm test" });
+      expect(result.action).toBe("ask");
+      expect(result.wasUnresolved).toBe(true);
     });
   });
 
@@ -325,6 +365,51 @@ describe("PermissionEngine.resolve", () => {
     });
   });
 
+  describe("folderReadRule: offer whole-folder only on a second read", () => {
+    it("returns undefined for a non-read tool", () => {
+      engine.approveForSession(rule({ tool: "write_to_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
+      expect(engine.folderReadRule("write_to_file", { path: "./src/b.ts" })).toBeUndefined();
+    });
+
+    it("returns undefined when no sibling read is approved yet (first read)", () => {
+      expect(engine.folderReadRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
+    });
+
+    it("returns a recursive folder glob once a sibling exact read is approved", () => {
+      engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
+      const folderRule = engine.folderReadRule("read_file", { path: "./src/b.ts" });
+      expect(folderRule).toEqual({
+        tool: "read_file",
+        kind: "glob",
+        pattern: "./src/**",
+        action: "allow",
+        origin: "config",
+      });
+    });
+
+    it("does not offer the folder when the only prior approval is the same file", () => {
+      engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
+      expect(engine.folderReadRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
+    });
+
+    it("does not offer the folder for a sibling approval in a different folder", () => {
+      engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./lib/a.ts", action: "allow" }));
+      expect(engine.folderReadRule("read_file", { path: "./src/b.ts" })).toBeUndefined();
+    });
+
+    it("returns undefined for an external path", () => {
+      engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "/etc/a.conf", action: "allow" }));
+      expect(engine.folderReadRule("read_file", { path: "/etc/b.conf" })).toBeUndefined();
+    });
+
+    it("normalizes the incoming path spelling before comparing folders", () => {
+      engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
+      // "src/b.ts" (no leading ./) must normalize to the same folder as "./src/a.ts"
+      const folderRule = engine.folderReadRule("read_file", { path: "src/b.ts" });
+      expect(folderRule?.pattern).toBe("./src/**");
+    });
+  });
+
   describe("always tier: atomic persistence", () => {
     let dir: string;
 
@@ -403,6 +488,52 @@ describe("PermissionEngine.resolve", () => {
       engine.approveForSession(built);
       expect(engine.resolve("run_bash", { command: "npm test -- --watch" }).action).toBe("ask");
     });
+
+    it("broadens an external path to a parent-directory glob", () => {
+      const built = engine.buildDefaultRule("read_file", { path: "/etc/nginx/nginx.conf" });
+      expect(built.kind).toBe("glob");
+      expect(built.pattern).toBe("/etc/nginx/*");
+    });
+
+    it("broadens an existing internal directory to a recursive glob", () => {
+      const dir = mkdtempSync(join(tmpdir(), "heirloom-buildrule-dir-"));
+      try {
+        // Create a subdirectory inside the working dir so it's internal
+        const subdir = join(dir, "packages");
+        mkdirSync(subdir);
+        const scopedEngine = new PermissionEngine(undefined, dir);
+        const built = scopedEngine.buildDefaultRule("read_file", { path: subdir });
+        expect(built.kind).toBe("glob");
+        expect(built.pattern).toBe("./packages/**");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps an internal non-existent path as exact match (file, not directory)", () => {
+      const built = engine.buildDefaultRule("read_file", { path: "src/nonexistent.ts" });
+      expect(built.kind).toBe("exact");
+      expect(built.pattern).toBe("./src/nonexistent.ts");
+    });
+
+    it("guarded narrowing still forces exact even when buildDefaultRule broadens to glob", () => {
+      const dir = mkdtempSync(join(tmpdir(), "heirloom-buildrule-guarded-dir-"));
+      try {
+        // Create a subdirectory so buildDefaultRule would broaden to glob
+        const subdir = join(dir, "config");
+        mkdirSync(subdir);
+        const envPath = join(subdir, ".env");
+        const scopedEngine = new PermissionEngine(undefined, dir);
+        const guardedMatch: PermissionRule = { tool: "read_file", kind: "glob", pattern: "**/.env*", action: "ask", origin: "builtin-guarded" };
+        // buildDefaultRule broadens the subdir to glob, but narrowing forces exact on the .env path
+        scopedEngine.approveAlways(scopedEngine.buildDefaultRule("read_file", { path: envPath }), guardedMatch);
+        const result = scopedEngine.resolve("read_file", { path: envPath });
+        expect(result.action).toBe("allow");
+        expect(result.winningRule?.kind).toBe("exact");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("glob rules against absolute paths (relativize-to-workingDir)", () => {
@@ -425,12 +556,15 @@ describe("PermissionEngine.resolve", () => {
     });
 
     it("a narrower './src/**' glob rule matches only paths under that subdirectory", () => {
+      // Uses write_to_file, not read_file: in-repo reads are free via the
+      // builtin-allow fallback, which would mask a narrow read glob's scoping.
+      // write_to_file has no such fallback, so it isolates the glob semantics.
       engine = new PermissionEngine(
-        { rules: [{ tool: "read_file", kind: "glob", pattern: "./src/**", action: "allow", origin: "config" }] },
+        { rules: [{ tool: "write_to_file", kind: "glob", pattern: "./src/**", action: "allow", origin: "config" }] },
         "/workspace",
       );
-      expect(engine.resolve("read_file", { path: "/workspace/src/main.ts" }).action).toBe("allow");
-      expect(engine.resolve("read_file", { path: "/workspace/docs/readme.md" }).action).toBe("ask");
+      expect(engine.resolve("write_to_file", { path: "/workspace/src/main.ts" }).action).toBe("allow");
+      expect(engine.resolve("write_to_file", { path: "/workspace/docs/readme.md" }).action).toBe("ask");
     });
   });
 
@@ -498,6 +632,17 @@ describe("PermissionEngine.resolve", () => {
 
     it("defaultMode allowAll does NOT silently allow a guarded path — ask still wins over the fallback", () => {
       engine = new PermissionEngine({ defaultMode: "allowAll", rules: [{ tool: "read_file", kind: "any", pattern: "", action: "allow", origin: "config" }] }, "/workspace");
+      const result = engine.resolve("read_file", { path: "/workspace/.env" });
+      expect(result.action).toBe("ask");
+      expect(result.isGuarded).toBe(true);
+    });
+
+    it("the free in-repo read fallback does NOT allow a guarded path — .env still asks with no config at all", () => {
+      // Regression guard for builtin-allow: the "./**" read fallback must be
+      // pre-empted by the guarded .env match. If builtin-allow were ever
+      // pooled with the specificity-ranked rules, its "./**" (specificity 51)
+      // would out-rank the guarded "**/.env*" ask (specificity 6) and silently
+      // allow reading secrets. This test fails loudly if that happens.
       const result = engine.resolve("read_file", { path: "/workspace/.env" });
       expect(result.action).toBe("ask");
       expect(result.isGuarded).toBe(true);

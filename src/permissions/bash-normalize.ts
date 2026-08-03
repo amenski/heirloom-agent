@@ -129,6 +129,8 @@ const COMMAND_CARRYING_FIRST_TOKENS = new Set([
   "xargs",
 ]);
 
+const FIND_EXEC_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
 /**
  * Detects segments containing a construct bash-normalize can't safely
  * resolve to a real subject: inline command substitution, process
@@ -157,7 +159,8 @@ export function isUnresolved(segment: string): boolean {
   if (!/^[A-Za-z0-9_./~-]/.test(first)) return true;
 
   if (COMMAND_CARRYING_FIRST_TOKENS.has(first)) return true;
-  if (first === "find" && tokens.includes("-exec")) return true;
+  if (/^sudo\b/.test(first)) return true;
+  if (first === "find" && tokens.some((t) => FIND_EXEC_ACTIONS.has(t))) return true;
   if ((first === "sh" || first === "bash") && !WRAPPER_RE.test(segment.trim())) return true;
 
   return false;
@@ -177,8 +180,11 @@ export function buildBashSubject(command: string): BashSubjectResult {
   }
 
   const rawSegments = splitCompound(text);
-  const segments = rawSegments.map(stripSudo);
-  const wasUnresolved = segments.some(isUnresolved);
+  // Run isUnresolved BEFORE stripSudo so checks like sudo detection see the
+  // original first token. Unresolved segments keep their original text;
+  // only resolved segments get sudo stripped for clean rule matching.
+  const wasUnresolved = rawSegments.some(isUnresolved);
+  const segments = rawSegments.map((s) => (isUnresolved(s) ? s : stripSudo(s)));
 
   return { segments, wasUnresolved };
 }
