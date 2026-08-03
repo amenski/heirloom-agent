@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { useStdin } from "ink";
 
 export interface InputKey {
@@ -168,30 +168,77 @@ export function parseTerminalInput(buf: string, pendingPaste: string | null = nu
   return { keys: results, pendingPaste: null };
 }
 
+// ── Single-wire input plumbing ─────────────────────────────────────────────
+// PromptInput is conditionally mounted (unmounted while any modal is open), so
+// attaching/removing a per-mount `data` listener flips the stream between
+// flowing ('data' → our parser) and paused ('readable' → Ink's drain → useInput)
+// at every modal open/close. A keypress landing in that transition window is
+// consumed by the drain and dropped. We instead attach ONE `data` listener for
+// the process lifetime and hand ownership to Ink by toggling stream mode
+// (pause/resume) in a layout effect — which runs synchronously in the commit,
+// before paint — so the mode is always settled before a key can physically
+// arrive. A permanent listener WITHOUT the pause/resume toggle would keep
+// eating bytes and starve Ink's readable drain forever (every modal useInput
+// would freeze after the first keypress), so the toggles are mandatory.
+//
+// Single-instance assumption: only PromptInput uses this hook. If a second
+// instance ever mounts, the later layout effect wins ownership (last attach).
+
+let inputWireAttached = false;                        // idempotent attach guard (per module instance)
+let inputWirePaste: string | null = null;             // split-paste buffer, survives remounts
+let activeHandlerRef: { current: ((key: InputKey) => void) | null } | null = null;
+
+function onTerminalData(data: string | Buffer): void {
+  const chunk = typeof data === "string" ? data : data.toString("utf-8");
+  const { keys, pendingPaste } = parseTerminalInput(chunk, inputWirePaste);
+  inputWirePaste = pendingPaste;
+  const handler = activeHandlerRef?.current;
+  if (!handler) return;                               // inactive: stream is paused, Ink owns it
+  for (const key of keys) handler(key);
+}
+
+/** Attach the single-wire listener to a stream. Idempotent per module instance. */
+export function attachInputWire(stdin: NodeJS.ReadableStream): void {
+  if (inputWireAttached) return;
+  inputWireAttached = true;
+  stdin.on("data", onTerminalData);
+}
+
+/** Test-only: reset module-level wire state between tests. */
+export function __resetInputWireForTests(): void {
+  inputWireAttached = false;
+  inputWirePaste = null;
+  activeHandlerRef = null;
+}
+
+/** Test-only: install (or clear, with null) the active dispatch handler. */
+export function __setActiveHandlerForTests(handler: ((key: InputKey) => void) | null): void {
+  activeHandlerRef = handler ? { current: handler } : null;
+}
+
 export function useTerminalInput(handler: (key: InputKey) => void, { isActive }: { isActive: boolean }): void {
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
-  const pendingPasteRef = useRef<string | null>(null);
-
+  handlerRef.current = handler;                       // always the latest render's closure
   const { stdin, setRawMode } = useStdin();
 
-  useEffect(() => {
-    if (!isActive) return;
-
+  useLayoutEffect(() => {
+    if (!stdin) return;
+    attachInputWire(stdin);
     if (setRawMode) setRawMode(true);
 
-    function onData(data: string | Buffer) {
-      const chunk = typeof data === "string" ? data : data.toString("utf-8");
-      const { keys, pendingPaste } = parseTerminalInput(chunk, pendingPasteRef.current);
-      pendingPasteRef.current = pendingPaste;
-      for (const k of keys) handlerRef.current(k);
+    if (isActive) {
+      activeHandlerRef = handlerRef;
+      stdin.resume();   // flowing: 'data' → our parser (PromptInput owns input)
+    } else {
+      activeHandlerRef = null;
+      stdin.pause();    // paused: 'readable' → Ink's drain → useInput (modals)
     }
 
-    if (stdin) {
-      stdin.on("data", onData);
-      return () => {
-        stdin.off("data", onData);
-      };
-    }
+    return () => {
+      // Unmount (a modal opened): hand the stream back to Ink's readable drain.
+      // The 'data' listener STAYS attached — no churn, no race window.
+      if (activeHandlerRef === handlerRef) activeHandlerRef = null;
+      stdin.pause();
+    };
   }, [isActive, stdin, setRawMode]);
 }

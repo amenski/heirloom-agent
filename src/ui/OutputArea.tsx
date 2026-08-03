@@ -112,6 +112,23 @@ const OutputLine = memo(function OutputLine({
   return <MarkdownText>{line}</MarkdownText>;
 });
 
+// Committed lines are rendered as a memoized block keyed on the merged array,
+// so per-character active-line updates (and 80ms spinner ticks) don't re-create
+// N elements or re-run the map for the whole transcript every frame.
+const CommittedLines = memo(function CommittedLines({
+  merged,
+}: {
+  merged: Array<{ text: string; key: number }>;
+}) {
+  return (
+    <>
+      {merged.map((item) => (
+        <OutputLine key={item.key} line={item.text} />
+      ))}
+    </>
+  );
+});
+
 // ── Main OutputArea ──
 
 function mergeTableLines(lines: string[]): Array<{ text: string; key: number }> {
@@ -174,9 +191,7 @@ function OutputArea({
           so the pinned WelcomeScreen banner can stay above the conversation —
           <Static> flushes to scrollback above the live frame and would fight the
           banner for the top rows, eating the first message. */}
-      {mergedLines.map((item) => (
-        <OutputLine key={item.key} line={item.text} />
-      ))}
+      <CommittedLines merged={mergedLines} />
 
       {/* Active streaming line (carries the same gutter tag as committed output) */}
       {activeLine !== "" && !busy && <OutputLine line={activeLine} />}

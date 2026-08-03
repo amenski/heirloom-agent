@@ -12,7 +12,8 @@ import {
 import {
   createPromptUndoRedoState, recordPromptEdit, undoPromptEdit, redoPromptEdit, clearPromptUndoRedoState,
 } from "../core/prompt-undo-redo.js";
-import { getSlashCommands, filterSlashCommands, findExactSlashCommand, type SlashCommandItem } from "../core/slash-commands.js";
+import { getSlashCommands, filterSlashCommands, type SlashCommandItem } from "../core/slash-commands.js";
+import { resolveSlashSubmit } from "../core/slash-submit.js";
 import { useHistoryNavigation } from "../hooks/useHistoryNavigation.js";
 import { readClipboardImageAsync } from "../core/clipboard.js";
 import { useTerminalInput, type InputKey } from "../hooks/useTerminalInput.js";
@@ -125,11 +126,11 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "permissions") { onSubmit({ text: "/permissions" }); resetInput(); return; }
     if (item.kind === "plan") { onSubmit({ text: "/plan" }); resetInput(); return; }
     if (item.kind === "exit") { onSubmit({ text: "/exit", command: "exit" }); return; }
-    if (item.kind === "clear") { const text = "/clear"; setBuffer({ text, cursor: text.length }); return; }
-    if (item.kind === "help") { const text = "/help"; setBuffer({ text, cursor: text.length }); return; }
-    if (item.kind === "skills") { const text = "/skills"; setBuffer({ text, cursor: text.length }); return; }
+    if (item.kind === "clear") { onSubmit({ text: item.label }); resetInput(); return; }
+    if (item.kind === "help") { onSubmit({ text: item.label }); resetInput(); return; }
+    if (item.kind === "skills") { onSubmit({ text: item.label }); resetInput(); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
-    if (item.kind === "raw") { const text = "/raw"; setBuffer({ text, cursor: text.length }); return; }
+    if (item.kind === "raw") { onSubmit({ text: item.label }); resetInput(); return; }
   }
 
   function submitCurrent(): void {
@@ -139,9 +140,10 @@ const PromptInput = React.memo(function PromptInput({
     // turn. Slash commands that open a modal view (model picker, etc.) are the
     // exception: those don't make sense to fire mid-turn, so route them through
     // onSubmit as text and let App decide (it queues them).
-    if (!busy && trimmed.startsWith("/")) {
-      const exactMatch = findExactSlashCommand(slashItems, trimmed.split(/\s+/, 1)[0]);
-      if (exactMatch) { handleSlashSelection(exactMatch); return; }
+    const decision = resolveSlashSubmit(trimmed, slashItems, busy);
+    if (decision?.action === "routeKind") {
+      handleSlashSelection(decision.kind);
+      return;
     }
     const imageUrls = attachedImagesRef.current;
     onSubmit({ text: trimmed, ...(imageUrls.length ? { imageUrls } : {}) });
@@ -198,9 +200,16 @@ const PromptInput = React.memo(function PromptInput({
     if (showMenu) {
       if (key.upArrow) { setMenuIndex((i) => (i - 1 + slashMenu.length) % slashMenu.length); return; }
       if (key.downArrow) { setMenuIndex((i) => (i + 1) % slashMenu.length); return; }
-      if (key.tab || key.return) {
+      // Tab completes the highlighted command into the buffer so the user can
+      // append args; Enter is NOT consumed here — it falls through to submit
+      // the full buffer below (the menu is a completion aid, not an Enter trap).
+      if (key.tab && !key.shift) {
         const selected = slashMenu[menuIndex];
-        if (selected) { handleSlashSelection(selected); return; }
+        if (selected) {
+          const label = selected.label;
+          setBuffer({ text: label, cursor: label.length });
+        }
+        return;
       }
     }
 

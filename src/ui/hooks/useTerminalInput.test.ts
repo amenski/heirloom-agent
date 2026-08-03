@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { parseTerminalInput } from "./useTerminalInput.js";
+import { describe, it, expect, beforeEach } from "vitest";
+import { PassThrough } from "node:stream";
+import { parseTerminalInput, attachInputWire, __resetInputWireForTests, __setActiveHandlerForTests, type InputKey } from "./useTerminalInput.js";
+
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 describe("parseTerminalInput", () => {
   it("parses a complete bracketed paste without dropping the first character", () => {
@@ -57,5 +62,61 @@ describe("parseTerminalInput", () => {
 
   it("parses a lone escape key", () => {
     expect(parseTerminalInput("\x1b").keys[0].escape).toBe(true);
+  });
+});
+
+describe("input wire (single module-level listener)", () => {
+  let stream: PassThrough;
+
+  beforeEach(() => {
+    stream = new PassThrough();
+    __resetInputWireForTests();
+  });
+
+  it("attaches the data listener exactly once (idempotent)", () => {
+    attachInputWire(stream);
+    attachInputWire(stream);
+    expect(stream.listenerCount("data")).toBe(1);
+  });
+
+  it("dispatches parsed keys to the active handler while flowing", async () => {
+    attachInputWire(stream);
+    const keys: InputKey[] = [];
+    __setActiveHandlerForTests((k) => keys.push(k));
+    stream.resume();
+    stream.write("/theme\r");
+    await settle();
+    expect(keys.filter((k) => k.value !== "\r").map((k) => k.value).join("")).toBe("/theme");
+    expect(keys.some((k) => k.return)).toBe(true);
+  });
+
+  it("hands the stream to a readable drain while paused (modal case)", async () => {
+    attachInputWire(stream);
+    __setActiveHandlerForTests(null);
+    stream.pause();
+    const drained: string[] = [];
+    stream.on("readable", () => {
+      let chunk: Buffer | null;
+      while ((chunk = stream.read()) !== null) drained.push(chunk.toString());
+    });
+    stream.write("x\r");
+    await settle();
+    expect(drained.join("")).toBe("x\r");
+  });
+
+  it("carries a split paste across an inactivity window", async () => {
+    attachInputWire(stream);
+    const keys: InputKey[] = [];
+    __setActiveHandlerForTests((k) => keys.push(k));
+    stream.resume();
+    stream.write("\x1b[200~he"); // part 1 while active → pendingPaste "he"
+    await settle();
+    __setActiveHandlerForTests(null);
+    stream.pause();
+    stream.write("llo\x1b[201~"); // part 2 while inactive → buffered
+    __setActiveHandlerForTests((k) => keys.push(k));
+    stream.resume();
+    await settle();
+    expect(keys.filter((k) => k.paste).map((k) => k.paste).join("")).toBe("hello");
   });
 });
