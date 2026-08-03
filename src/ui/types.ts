@@ -107,6 +107,9 @@ export interface AppContext {
   skillLoader: any;
   providerName: string;
   activeModel: string | undefined;
+  activeEffort?: string;
+  /** Valid reasoning-effort values for the active model; empty when it has no effort knob. */
+  effortValues: () => string[];
 
   provideAbortController: () => AbortController;
   renewAbortController: () => void;

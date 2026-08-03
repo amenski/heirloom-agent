@@ -48,7 +48,7 @@ import { buildReplayLines } from "./core/replay.js";
 import type { Message } from "../types.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
-import { ModelsDropdown } from "./components/index.js";
+import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
 import {
@@ -120,6 +120,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   } | null>(null);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showThemeDropdown, setShowThemeDropdown] = useState(false);
+  const [showEffortSelector, setShowEffortSelector] = useState(false);
   // The theme name active when the /theme picker opened — the revert target if
   // the user presses Esc after live-previewing other themes.
   const themeBeforePreviewRef = useRef<string>("dark");
@@ -807,6 +808,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowThemeDropdown(true);
       return;
     }
+    if (trimmed === "/effort") {
+      // Only open the picker for models that declare an effort knob; otherwise
+      // fall through to the CLI handler, which prints the informative message.
+      if (ctx.effortValues().length > 0) {
+        setShowEffortSelector(true);
+        return;
+      }
+    }
     if (trimmed === "/new") {
       // Start a fresh conversation: drop the model-visible history and wipe the
       // scrollback so the session reads as new. Same history reset as /clear,
@@ -1018,6 +1027,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (showCommandPalette) return;
     if (showModelDropdown) return;
     if (showThemeDropdown) return;
+    if (showEffortSelector) return;
 
     if (planPrompt) {
       return;
@@ -1107,7 +1117,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const modalOpen =
     !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList ||
-    showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showHelp || showCommandPalette ||
+    showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   modalOpenRef.current = modalOpen;
 
@@ -1289,6 +1299,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showEffortSelector && (
+        <EffortSelector
+          open={showEffortSelector}
+          currentEffort={ctx.activeEffort}
+          values={ctx.effortValues()}
+          width={term.columns}
+          onClose={() => setShowEffortSelector(false)}
+          onSelect={(effort) => {
+            ctx.handleSlash(`/effort ${effort}`).then((lines) => {
+              for (const line of lines) pushOutput(line);
+              setStatusLine(ctx.buildStatusBar());
+            });
+          }}
+        />
+      )}
+
       {resumeChoice && !compactingResume && (
         <ResumeChooser
           messageCount={resumeChoice.count}
@@ -1318,7 +1344,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}
