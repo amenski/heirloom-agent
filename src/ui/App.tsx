@@ -42,6 +42,7 @@ import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
+import SkillList from "./views/SkillList.js";
 import UndoSelector from "./views/UndoSelector.js";
 import McpStatusList from "./views/McpStatusList.js";
 import PermissionHistoryList from "./views/PermissionHistoryList.js";
@@ -158,6 +159,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     followUpPrompt: string;
   } | null>(null);
   const [showSessionList, setShowSessionList] = useState(false);
+  const [showSkillList, setShowSkillList] = useState(false);
   const [showUndoSelector, setShowUndoSelector] = useState(false);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const [showPermissionHistory, setShowPermissionHistory] = useState(false);
@@ -864,6 +866,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowSessionList(true);
       return;
     }
+    if (trimmed === "/skills") {
+      setShowSkillList(true);
+      return;
+    }
     if (trimmed === "/undo") {
       setShowUndoSelector(true);
       return;
@@ -1150,6 +1156,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
+    if (showSkillList) {
+      return;
+    }
+
     if (showUndoSelector) {
       return;
     }
@@ -1250,7 +1260,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const term = useTerminalInfo();
 
   const modalOpen =
-    !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList ||
+    !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList || showSkillList ||
     showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   modalOpenRef.current = modalOpen;
@@ -1363,6 +1373,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             }
           }}
           onClose={() => setShowSessionList(false)}
+          width={term.columns}
+          height={term.rows}
+        />
+      )}
+
+      {showSkillList && (
+        <SkillList
+          skills={ctx.skills ?? []}
+          onSelect={(name) => {
+            setShowSkillList(false);
+            handleSlashCommand(`/skill ${name}`);
+          }}
+          onClose={() => setShowSkillList(false)}
           width={term.columns}
           height={term.rows}
         />
@@ -1492,7 +1515,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showSkillList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={[]}
