@@ -1,6 +1,14 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Box, Text, useInput } from "ink";
 import type { SkillDef } from "../../skills/index.js";
+import { useTheme } from "../contexts.js";
+import { ansi256, type ThemeContextValue } from "../theme.js";
+
+/** Resolve a semantic theme slot to an Ink color string, honoring the color gate. */
+function slotColor(theme: ThemeContextValue, key: keyof ThemeContextValue["theme"]): string | undefined {
+  if (!theme.colorEnabled) return undefined;
+  return ansi256(theme.theme[key] as number);
+}
 
 interface Props {
   skills: SkillDef[];
@@ -18,6 +26,9 @@ interface Props {
  * content; Esc closes.
  */
 export default function SkillList({ skills, onSelect, onClose, width, height }: Props) {
+  const theme = useTheme();
+  const accent = slotColor(theme, "accent");
+  const borderColor = slotColor(theme, "border");
   const [searchText, setSearchText] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -33,7 +44,11 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
     );
   }, [skills, searchText]);
 
-  const pageSize = Math.max(3, height - 8);
+  // Each row now spans ~3 terminal lines (name + indented wrapped description +
+  // margin), so budget the visible height accordingly rather than 1 line/row —
+  // otherwise the slice overflows and pushes the footer off-screen.
+  const APPROX_LINES_PER_ROW = 3;
+  const pageSize = Math.max(3, Math.floor((height - 8) / APPROX_LINES_PER_ROW));
   const safeIndex = Math.max(0, Math.min(selectedIndex, filtered.length - 1));
 
   useEffect(() => {
@@ -81,9 +96,9 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1} width={width}>
+    <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1} width={width}>
       <Box marginBottom={1}>
-        <Text color="cyan" bold>Skills</Text>
+        <Text color={accent} bold>Skills</Text>
         {searchText && <Text dimColor> — matching "{searchText}"</Text>}
       </Box>
 
@@ -97,15 +112,19 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
           {visible.map((s, i) => {
             const globalIdx = scrollOffset + i;
             const isSelected = globalIdx === safeIndex;
+            // Name on its own line, description indented beneath it. The
+            // description sits in its own padded Box so wrapped continuation
+            // lines hang-indent under the name rather than running to the left
+            // margin and merging every skill into one text wall.
             return (
-              <Box key={s.name}>
-                <Text color={isSelected ? "cyanBright" : undefined} dimColor={!isSelected}>
+              <Box key={s.name} flexDirection="column" marginBottom={1}>
+                <Text color={isSelected ? accent : undefined} bold={isSelected}>
                   {isSelected ? "> " : "  "}
-                </Text>
-                <Text color={isSelected ? "cyanBright" : undefined} dimColor={!isSelected}>
                   {s.name}
-                  <Text dimColor> — {s.description || "no description"}</Text>
                 </Text>
+                <Box paddingLeft={4}>
+                  <Text dimColor wrap="wrap">{s.description || "no description"}</Text>
+                </Box>
               </Box>
             );
           })}
