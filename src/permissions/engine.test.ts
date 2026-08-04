@@ -365,19 +365,19 @@ describe("PermissionEngine.resolve", () => {
     });
   });
 
-  describe("folderReadRule: offer whole-folder only on a second read", () => {
-    it("returns undefined for a non-read tool", () => {
-      engine.approveForSession(rule({ tool: "write_to_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
-      expect(engine.folderReadRule("write_to_file", { path: "./src/b.ts" })).toBeUndefined();
+  describe("folderScopeRule: offer whole-folder only on a second call of the same kind", () => {
+    it("returns undefined for a tool that is neither a read nor a write/edit tool", () => {
+      engine.approveForSession(rule({ tool: "run_bash", kind: "exact", pattern: "npm test", action: "allow" }));
+      expect(engine.folderScopeRule("run_bash", { path: "./src/b.ts" })).toBeUndefined();
     });
 
     it("returns undefined when no sibling read is approved yet (first read)", () => {
-      expect(engine.folderReadRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
+      expect(engine.folderScopeRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
     });
 
     it("returns a recursive folder glob once a sibling exact read is approved", () => {
       engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
-      const folderRule = engine.folderReadRule("read_file", { path: "./src/b.ts" });
+      const folderRule = engine.folderScopeRule("read_file", { path: "./src/b.ts" });
       expect(folderRule).toEqual({
         tool: "read_file",
         kind: "glob",
@@ -389,24 +389,50 @@ describe("PermissionEngine.resolve", () => {
 
     it("does not offer the folder when the only prior approval is the same file", () => {
       engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
-      expect(engine.folderReadRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
+      expect(engine.folderScopeRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
     });
 
     it("does not offer the folder for a sibling approval in a different folder", () => {
       engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./lib/a.ts", action: "allow" }));
-      expect(engine.folderReadRule("read_file", { path: "./src/b.ts" })).toBeUndefined();
+      expect(engine.folderScopeRule("read_file", { path: "./src/b.ts" })).toBeUndefined();
     });
 
     it("returns undefined for an external path", () => {
       engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "/etc/a.conf", action: "allow" }));
-      expect(engine.folderReadRule("read_file", { path: "/etc/b.conf" })).toBeUndefined();
+      expect(engine.folderScopeRule("read_file", { path: "/etc/b.conf" })).toBeUndefined();
     });
 
     it("normalizes the incoming path spelling before comparing folders", () => {
       engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
       // "src/b.ts" (no leading ./) must normalize to the same folder as "./src/a.ts"
-      const folderRule = engine.folderReadRule("read_file", { path: "src/b.ts" });
+      const folderRule = engine.folderScopeRule("read_file", { path: "src/b.ts" });
       expect(folderRule?.pattern).toBe("./src/**");
+    });
+
+    it("returns a recursive folder glob for a write tool once a sibling exact write is approved", () => {
+      engine.approveForSession(rule({ tool: "write_to_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
+      const folderRule = engine.folderScopeRule("write_to_file", { path: "./src/b.ts" });
+      expect(folderRule).toEqual({
+        tool: "write_to_file",
+        kind: "glob",
+        pattern: "./src/**",
+        action: "allow",
+        origin: "config",
+      });
+    });
+
+    it("does not offer a write folder grant when the only sibling approval is a READ in that folder", () => {
+      engine.approveForSession(rule({ tool: "read_file", kind: "exact", pattern: "./src/a.ts", action: "allow" }));
+      expect(engine.folderScopeRule("write_to_file", { path: "./src/b.ts" })).toBeUndefined();
+    });
+
+    it("returns undefined for a write tool with an external (non-\"./\") path", () => {
+      engine.approveForSession(rule({ tool: "write_to_file", kind: "exact", pattern: "/etc/a.conf", action: "allow" }));
+      expect(engine.folderScopeRule("write_to_file", { path: "/etc/b.conf" })).toBeUndefined();
+    });
+
+    it("returns undefined for the first write in a folder (no sibling write approval yet)", () => {
+      expect(engine.folderScopeRule("write_to_file", { path: "./src/a.ts" })).toBeUndefined();
     });
   });
 
