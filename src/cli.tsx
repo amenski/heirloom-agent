@@ -1,12 +1,12 @@
 import { render } from "ink";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { checkForNpmUpdate, promptForPendingUpdate } from "./common/update-check.js";
 import { parseArguments } from "./cli-args.js";
 import { runExecMode } from "./exec-runner.js";
-import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, type ProviderOptions } from "./providers/presets.js";
+import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, getConfiguredProviders, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap, loadProjectResearch } from "./prompt.js";
@@ -29,19 +29,39 @@ import { loadConfig } from "./config/loader.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers } from "./mcp/connector.js";
-import type { ModelEntry } from "./ui/ModelSelector.js";
 import App from "./ui/App.js";
 import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue } from "./ui/theme.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
-import type { WorkflowIntegrationConfig } from "./ui/types.js";
+import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
 import { StatusLineManager } from "./ui/statusline/index.js";
+import { isSkillAlreadyLoaded, buildSkillLoadMessage } from "./ui/core/skill-load.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 
-void main();
+// Guarded so tests can import handleSlashCore (below) without triggering the
+// real CLI startup (which reads real settings.json / calls process.exit on a
+// non-TTY stdin).
+//
+// Compare REALPATHS, not raw URLs: `npm i -g` installs bin/heirloom as a
+// symlink, so process.argv[1] is the symlink path while import.meta.url is
+// already resolved to dist/cli.js. A raw comparison is false in exactly the
+// case that matters and the installed CLI silently exits without running.
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  void main();
+}
 
 async function main() {
   initPresets();
@@ -96,6 +116,11 @@ async function main() {
 
   const detected = detectProvider(configEnv);
   let providerName = configResult.config.provider || detected || "deepseek";
+  // Captured for getProvider() below: the resolved API key/base URL come from
+  // settings.json env.* and are only valid for THIS provider. Reusing them
+  // after /model switches to a different provider would leak one provider's
+  // credentials/host to another.
+  const startupProviderName = providerName;
 
   if (!detected && !configResult.config.provider && !resolvedApiKey) {
     const hasCreds = Object.values(readCredentialsFile()).some((v) => v);
@@ -116,7 +141,16 @@ async function main() {
   }
 
   function getProvider() {
-    return createProvider(shared.providerName, { modelOverride: shared.activeModel, baseUrl: resolvedBaseUrl, apiKey: resolvedApiKey });
+    // The startup env.API_KEY/env.BASE_URL are scoped to the provider active at
+    // startup. Once /model switches to a different provider, a key/host meant
+    // for the old provider must not leak to the new one — fall through to that
+    // provider's own keyEnv/getCredential resolution instead.
+    const isStartupProvider = shared.providerName === startupProviderName;
+    return createProvider(shared.providerName, {
+      modelOverride: shared.activeModel,
+      baseUrl: isStartupProvider ? resolvedBaseUrl : undefined,
+      apiKey: isStartupProvider ? resolvedApiKey : undefined,
+    });
   }
 
   const modeLoader = new ModeLoader();
@@ -127,6 +161,12 @@ async function main() {
   function getCompactor(): Compactor {
     if (!_compactor) _compactor = new Compactor(getProvider(), contextWindow, configResult.config.compaction?.threshold, configResult.config.compaction?.auto ?? true);
     return _compactor;
+  }
+  // _compactor memoizes the provider captured at first use — after /model
+  // switches providers it must be dropped so the next getCompactor() rebuilds
+  // against the new provider instead of silently keeping the old one.
+  function resetCompactor(): void {
+    _compactor = undefined;
   }
 
   const sessionStore = new SessionStore();
@@ -141,12 +181,21 @@ async function main() {
     mode: parsed.mode || "code",
   };
 
+  // loadEffective replays `state` records into meta, so a session resumed after
+  // a /model switch carries the provider/model that was active when it ended.
+  // Adopt it unless the user overrode the choice explicitly on this launch
+  // (CLI flag / settings.json), which must still win.
+  let resumedProvider: string | undefined;
+  let resumedModel: string | undefined;
+
   if (typeof resumeSessionId === "string") {
     try {
       const loaded = await sessionStore.loadEffective(resumeSessionId);
       sessionId = resumeSessionId;
       sessionMessages = loaded.messages;
       sessionLoaded = true;
+      resumedProvider = loaded.meta?.provider;
+      resumedModel = loaded.meta?.model;
     } catch {
       process.stderr.write(`Session not found: ${resumeSessionId}\n`);
       process.exit(1);
@@ -159,6 +208,8 @@ async function main() {
         const loaded = await sessionStore.loadEffective(sessionId);
         sessionMessages = loaded.messages;
         sessionLoaded = true;
+        resumedProvider = loaded.meta?.provider;
+        resumedModel = loaded.meta?.model;
       } catch (err) {
         process.stderr.write(`Failed to load session ${sessionId}: ${(err as Error).message}\n`);
         process.exit(1);
@@ -203,8 +254,10 @@ async function main() {
     toolUsage: {} as Record<string, number>,
     modelUsage: {} as Record<string, { input: number; output: number; cached: number }>,
     posture: "normal" as "normal" | "autoApprove" | "plan",
-    providerName,
-    activeModel: initialModel as string | undefined,
+    // An explicit choice this launch (--model / settings.json) outranks the
+    // resumed session's last-used provider/model; otherwise resume restores it.
+    providerName: (configResult.config.provider || parsed.model ? providerName : resumedProvider) ?? providerName,
+    activeModel: (initialModel ?? resumedModel) as string | undefined,
     activeEffort: undefined as string | undefined,
     // Live mode: /mode and the /modes picker mutate this so the running agent
     // (runAgentTurnBridge reads shared.activeMode) picks up the switch mid-
@@ -383,11 +436,13 @@ async function main() {
         const lines: string[] = [];
         const origLog = console.log;
         console.log = (...args) => lines.push(args.map(String).join(" "));
-        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort); } finally { console.log = origLog; }
+        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort, resetCompactor); } finally { console.log = origLog; }
         return lines;
       },
       getModelEntries: () => listKnownModels(),
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection),
+      getConfiguredProviders: () => getConfiguredProviders(),
+      getProviderLabels: () => PROVIDER_LABELS,
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled),
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);
@@ -653,13 +708,14 @@ async function runDoctor(): Promise<void> {
   console.log(`  node              ${process.version}`);
 }
 
-async function handleSlashCore(
+export async function handleSlashCore(
   input: string, getProvider: any,
   configResult: any, modeLoader: ModeLoader, permissions: PermissionEngine, sessionStore: SessionStore,
   sessionId: string, checkpoints: CheckpointManager, memoryStore: MemoryStore, memoryInjection: string | null | undefined,
   getCompactor: () => Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], skillLoader: SkillLoader,
   shared: any, getActiveModelCaps: () => ModelCapabilities | undefined,
   getCostStr: () => string | null, colorEnabled: boolean, reasoningEffort: string | undefined,
+  resetCompactor: () => void,
 ): Promise<void> {
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
@@ -680,7 +736,15 @@ async function handleSlashCore(
     case "/skill": {
       const name = input.slice(7).trim();
       const skill = skills.find((s: SkillDef) => s.name === name);
-      if (skill) console.log(skill.content); else console.log(`Unknown skill: ${name}`);
+      if (!skill) { console.log(`Unknown skill: ${name}`); return; }
+      if (isSkillAlreadyLoaded(shared.conversationHistory, name)) {
+        console.log(`Skill "${name}" is already loaded in this conversation.`);
+        return;
+      }
+      const msg = buildSkillLoadMessage(name, skill.content);
+      shared.conversationHistory.push(msg);
+      console.log(`Skill "${name}" loaded.`);
+      await sessionStore.appendMessage(sessionId, msg);
       return;
     }
     case "/clear": shared.conversationHistory = []; console.log("[cleared]"); return;
@@ -704,15 +768,33 @@ async function handleSlashCore(
       }
       const slashIdx = modelArg.indexOf("/");
       if (slashIdx < 0) { console.log("Use /model <provider/model>"); return; }
-      shared.providerName = modelArg.slice(0, slashIdx);
-      shared.activeModel = modelArg.slice(slashIdx + 1);
+      const prevProviderName = shared.providerName;
+      const prevActiveModel = shared.activeModel;
+      const provider = modelArg.slice(0, slashIdx);
+      const model = modelArg.slice(slashIdx + 1);
+      shared.providerName = provider;
+      shared.activeModel = model;
+      try {
+        getProvider();
+      } catch (err) {
+        shared.providerName = prevProviderName;
+        shared.activeModel = prevActiveModel;
+        console.log(`Cannot switch to ${provider}/${model}: ${(err as Error).message}`);
+        return;
+      }
+      await sessionStore.appendState(sessionId, { provider, model });
+      resetCompactor();
       console.log(`Model changed to ${shared.providerName}/${shared.activeModel}`);
       return;
     }
     case "/effort": {
       const arg = input.slice(7).trim();
       const caps = getActiveModelCaps();
-      if (!caps?.effort) { console.log("Current model does not support reasoning effort."); return; }
+      if (!caps?.effort) {
+        const modelId = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
+        console.log(`No verified reasoning-effort values for ${shared.providerName}/${modelId}. Set config.reasoningEffort in settings.json to override.`);
+        return;
+      }
       if (!arg) { console.log(`Effort: ${shared.activeEffort ?? caps.effort.default}\nValid: ${caps.effort.values.join(", ")}`); return; }
       if (!caps.effort.values.includes(arg)) { console.log(`Invalid effort. Valid: ${caps.effort.values.join(", ")}`); return; }
       shared.activeEffort = arg;
@@ -723,7 +805,7 @@ async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -752,7 +834,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     repomap: repomapInjection,
     research: researchInjection,
     memory: memoryInjection ?? undefined, memoryStore, sessionStore, sessionId,
-    signal: shared.abort.signal, effort: shared.activeEffort,
+    signal: shared.abort.signal, effort: shared.activeEffort, thinkingEnabled,
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
     imageUrls,
     planMode,
