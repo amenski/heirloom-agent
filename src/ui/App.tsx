@@ -49,6 +49,7 @@ import McpStatusList from "./views/McpStatusList.js";
 import PermissionHistoryList from "./views/PermissionHistoryList.js";
 import ResumeChooser from "./views/ResumeChooser.js";
 import { buildReplayLines } from "./core/replay.js";
+import { opensModal } from "./core/modal-commands.js";
 import type { Message } from "../types.js";
 import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
@@ -779,20 +780,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       }
     }
   };
-
-  // Slash commands that only open a UI-only modal (no model call, no history
-  // mutation). These are safe to run over an in-flight turn and must NOT be
-  // queued behind it — otherwise a long-running or hung turn locks the user out
-  // of switching sessions, models, etc. Matched on the first token so args like
-  // "/permissions history" still resolve.
-  const MODAL_SLASH = new Set([
-    "model", "theme", "effort", "resume", "continue", "sessions",
-    "skills", "modes", "undo", "mcp", "permissions", "help",
-  ]);
-  function opensModal(nameOrSlash: string): boolean {
-    const first = nameOrSlash.replace(/^\//, "").trim().split(/\s+/)[0];
-    return MODAL_SLASH.has(first);
-  }
 
   // Handles a submission from the input box: runs it now if idle, otherwise
   // enqueues it to drain after the in-flight turn(s) complete.
