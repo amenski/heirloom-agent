@@ -517,4 +517,47 @@ describe("runAgent", () => {
       ).rejects.toThrow("HTTP 401");
     });
   });
+
+  describe("large tool-call args diagnostic", () => {
+    const toolCallTurnWithArgs = (args: string): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "write" },
+      { type: "tool_call_delta", id: "call_1", arguments: args },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("fires onDiagnostic for oversized args without affecting the parsed result", async () => {
+      const bigValue = "x".repeat(300 * 1024); // over the 256KB threshold
+      const bigArgs = JSON.stringify({ content: bigValue });
+      const { provider } = makeProvider([toolCallTurnWithArgs(bigArgs), textTurn("done")]);
+      const executeTool = vi.fn(async (_call: { arguments: Record<string, unknown> }) => ({ content: "" }));
+      const onDiagnostic = vi.fn();
+
+      await runAgent("write a big file", {
+        provider,
+        tools: [],
+        executeTool,
+        onDiagnostic,
+      });
+
+      expect(onDiagnostic).toHaveBeenCalledWith(expect.stringContaining("write"));
+      expect(executeTool.mock.calls[0][0].arguments).toEqual({ content: bigValue });
+    });
+
+    it("does NOT fire onDiagnostic for normal-sized args", async () => {
+      const smallArgs = JSON.stringify({ path: "a.txt" });
+      const { provider } = makeProvider([toolCallTurnWithArgs(smallArgs), textTurn("done")]);
+      const executeTool = vi.fn(async (_call: { arguments: Record<string, unknown> }) => ({ content: "" }));
+      const onDiagnostic = vi.fn();
+
+      await runAgent("write a small file", {
+        provider,
+        tools: [],
+        executeTool,
+        onDiagnostic,
+      });
+
+      expect(onDiagnostic).not.toHaveBeenCalled();
+      expect(executeTool.mock.calls[0][0].arguments).toEqual({ path: "a.txt" });
+    });
+  });
 });
