@@ -20,6 +20,13 @@ function permissionSubjectText(toolName: string, args: Record<string, unknown>):
   return extractToolSubject(toolName, args);
 }
 
+// Reporting threshold only, not a limit — large tool-call arguments (e.g. a
+// big file write) are still parsed and executed in full. This just surfaces
+// via onDiagnostic when JSON.parse is about to run on a large string, since
+// that synchronous parse can stall the main thread long enough to look like
+// a hang (spinner + elapsed clock both stalling).
+const TOOL_ARGS_SIZE_DIAGNOSTIC_THRESHOLD = 256 * 1024; // 256KB
+
 // Rebuilding the stable preamble is pure string concatenation, but it's still
 // wasted work every turn when nothing it depends on has changed — and more
 // importantly, recomputing it is how a would-be-stable prefix accidentally
@@ -76,6 +83,7 @@ export interface AgentOptions {
   sessionId?: string;
   signal?: AbortSignal;
   effort?: string;
+  thinkingEnabled?: boolean;
   history?: Message[];
   imageUrls?: string[];
   planMode?: boolean;
@@ -96,7 +104,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<AgentResult> {
-  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20, effort } = options;
+  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20, effort, thinkingEnabled } = options;
 
   const promptCtx: PromptContext = {
     mode: options.mode,
@@ -169,7 +177,7 @@ export async function runAgent(
 
     try {
     const requestMessages = volatileContext ? withVolatilePrefix(messages, volatileContext) : messages;
-    for await (const event of provider.streamChat(requestMessages, tools, { signal: options.signal, effort })) {
+    for await (const event of provider.streamChat(requestMessages, tools, { signal: options.signal, effort, thinkingEnabled })) {
       switch (event.type) {
         case "text_delta":
           content += event.content;
@@ -239,6 +247,9 @@ export async function runAgent(
 
     for (const [id, tc] of pendingCalls) {
       let args: Record<string, unknown> = {};
+      if (tc.args.length > TOOL_ARGS_SIZE_DIAGNOSTIC_THRESHOLD) {
+        options.onDiagnostic?.(`large tool call args (${tc.args.length} bytes) for ${tc.name}`);
+      }
       try {
         args = JSON.parse(tc.args || "{}");
       } catch {
