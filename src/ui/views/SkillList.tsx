@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import type { SkillDef } from "../../skills/index.js";
 import { useTheme } from "../contexts.js";
 import { ansi256, type ThemeContextValue } from "../theme.js";
+import { fuzzyScore } from "../core/fuzzy.js";
 
 /** Resolve a semantic theme slot to an Ink color string, honoring the color gate. */
 function slotColor(theme: ThemeContextValue, key: keyof ThemeContextValue["theme"]): string | undefined {
@@ -35,13 +36,19 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
   const searchRef = useRef("");
 
   const filtered = useMemo(() => {
-    const q = searchText.toLowerCase();
-    if (!q) return skills;
-    return skills.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        (s.description ?? "").toLowerCase().includes(q),
-    );
+    if (!searchText) return skills;
+    const scored: Array<{ skill: SkillDef; score: number }> = [];
+    for (const s of skills) {
+      const nameScore = fuzzyScore(s.name, searchText);
+      const descScore = fuzzyScore(s.description ?? "", searchText);
+      if (nameScore === null && descScore === null) continue;
+      // A name hit ranks ahead of a description-only hit, same as
+      // ModelsDropdown preferring a model-name match over a provider one.
+      const score = nameScore !== null ? nameScore : descScore! + 1000;
+      scored.push({ skill: s, score });
+    }
+    scored.sort((a, b) => a.score - b.score);
+    return scored.map((x) => x.skill);
   }, [skills, searchText]);
 
   // Each row now spans ~3 terminal lines (name + indented wrapped description +
@@ -81,13 +88,24 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
       if (s) onSelect(s.name);
       return;
     }
-    if (key.backspace && searchText && !value) {
-      searchRef.current = searchRef.current.slice(0, -1);
-      setSearchText(searchRef.current);
+    if (key.backspace || key.delete) {
+      if (searchRef.current) {
+        searchRef.current = searchRef.current.slice(0, -1);
+        setSearchText(searchRef.current);
+        setSelectedIndex(0);
+        setScrollOffset(0);
+      }
       return;
     }
-    if (value && value.length === 1 && !key.ctrl && !key.meta && !key.shift) {
-      searchRef.current += value;
+    // Do NOT gate on value.length === 1: a fast typist or a paste arrives as
+    // one multi-character chunk, and requiring a single char silently drops
+    // it. Filter out control bytes instead and append whatever printable
+    // text came through.
+    if (value && !key.ctrl && !key.meta) {
+      // eslint-disable-next-line no-control-regex
+      const printable = value.replace(/[\x00-\x1f\x7f]/g, "");
+      if (!printable) return;
+      searchRef.current += printable;
       setSearchText(searchRef.current);
       setSelectedIndex(0);
       setScrollOffset(0);
