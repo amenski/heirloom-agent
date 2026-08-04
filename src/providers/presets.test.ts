@@ -97,6 +97,48 @@ describe("createProvider key resolution", () => {
     const preset = aisdkMock.mock.calls[0]?.[0];
     expect(preset.baseUrl).toBe("https://api.deepseek.com");
   });
+
+  // C1 security regression: cli.tsx's getProvider() only forwards the startup
+  // env.API_KEY/env.BASE_URL when switching to the SAME provider that was
+  // active at startup; for any other provider it passes apiKey/baseUrl as
+  // undefined so createProvider falls through to that provider's own
+  // keyEnv/getCredential resolution instead of reusing a key scoped to a
+  // different provider/host.
+  it("does not reuse a differently-scoped key when apiKey is omitted (switching away from the startup provider)", async () => {
+    // Simulates: startup provider was deepseek (holding DEEPSEEK_API_KEY via
+    // options.apiKey), user runs /model openai/..., cli.tsx now calls
+    // createProvider("openai", { apiKey: undefined, baseUrl: undefined }).
+    process.env.OPENAI_API_KEY = "sk-openai-real";
+
+    const { createProvider } = await import("./presets.js");
+    createProvider("openai", { apiKey: undefined, baseUrl: undefined });
+
+    expect(aisdkMock).toHaveBeenCalledTimes(1);
+    const [preset, , apiKey] = aisdkMock.mock.calls[0];
+    // Must resolve OpenAI's own key from OPENAI_API_KEY, never the startup
+    // provider's key, and must use OpenAI's own preset baseUrl, never a
+    // startup env.BASE_URL pinned to the previous provider's host.
+    expect(apiKey).toBe("sk-openai-real");
+    expect(preset.baseUrl).toBe("https://api.openai.com/v1");
+
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  it("would leak a stale key if apiKey were forwarded across providers (documents the bug C1 fixes)", async () => {
+    // Negative control: if cli.tsx forwarded the startup provider's resolved
+    // key/baseUrl unconditionally (the pre-fix behavior), createProvider has
+    // no way to detect the mismatch — options.apiKey/baseUrl are the highest
+    // priority source. This asserts that passing a key explicitly always wins,
+    // which is exactly why getProvider() must not do so for a non-startup
+    // provider.
+    const { createProvider } = await import("./presets.js");
+    createProvider("openai", { apiKey: "sk-deepseek-leaked", baseUrl: "https://api.deepseek.com" });
+
+    expect(aisdkMock).toHaveBeenCalledTimes(1);
+    const [preset, , apiKey] = aisdkMock.mock.calls[0];
+    expect(apiKey).toBe("sk-deepseek-leaked");
+    expect(preset.baseUrl).toBe("https://api.deepseek.com");
+  });
 });
 
 describe("BUILTIN_PRESETS models map", () => {
