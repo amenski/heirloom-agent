@@ -56,8 +56,8 @@ import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
+import { seedPromptHistory } from "./core/prompt-history.js";
 import {
-  SPINNER_FRAMES,
   formatToolCallHeader,
   formatToolResultPreview,
 } from "./ToolCallFormatter.js";
@@ -99,14 +99,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [outputLines, setOutputLines] = useState<string[]>([]);
   const [activeLine, setActiveLine] = useState("");
   const [busy, setBusy] = useState(false);
-  const [spinnerFrame, setSpinnerFrame] = useState(0);
+  // Shell-style ↑/↓ recall of what the user has typed. Kept in React state
+  // (rather than read off ctx.mutable) because a plain mutation wouldn't
+  // re-render PromptInput. Oldest first — useHistoryNavigation walks backwards
+  // from the end. Seeded from a resumed session's user turns so recall survives
+  // --resume; `sessionUserInputs` can't serve here since it starts empty on
+  // resume and is only appended at runtime.
+  const [promptHistory, setPromptHistory] = useState<string[]>(() =>
+    seedPromptHistory(ctx.mutable.conversationHistory),
+  );
   // A turn-scoped "working" indicator, distinct from `busy` (which flips false at
   // the first streamed token so the input unlocks mid-turn). `turnActive` stays
   // true for the whole turn — including the silent stretches during tool calls
   // and follow-up model turns — so progress is always visible while working.
+  //
+  // This is the ONLY spinner state App owns. The animation frame and elapsed
+  // clock live inside <Spinner> so their 80ms/1s ticks don't re-render the
+  // transcript — see the comment there.
   const [turnActive, setTurnActive] = useState(false);
-  const [turnElapsed, setTurnElapsed] = useState(0);
-  const elapsedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [statusLine, setStatusLine] = useState<StatusSegment[]>(() =>
     ctx.buildStatusBar(),
   );
@@ -123,7 +133,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     winningRule?: PermissionRule;
     /** The rule buildDefaultRule would create — used to show the approval scope. */
     defaultRule?: PermissionRule;
-    /** Recursive folder-glob rule offered when a sibling read is already approved. */
+    /** Recursive folder-glob rule offered when a sibling read/write is already approved. */
     folderRule?: PermissionRule;
     /** True once the user picked session/always and is choosing file-vs-folder scope. */
     scopeStage?: boolean;
@@ -249,23 +259,35 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     let cancelled = false;
     async function refreshGit() {
       try {
-        const { execSync } = await import("node:child_process");
-        const branch = execSync(
-          "git rev-parse --abbrev-ref HEAD 2>/dev/null",
-          { encoding: "utf-8", timeout: 3000 },
-        ).trim();
+        // MUST stay async. These ran under execSync, which blocks the main
+        // thread for as long as git takes — measured at 100-670ms on real
+        // repos (it scales with worktree size, and the @{upstream} rev-list
+        // can touch the network). On a 30s timer that freezes the spinner AND
+        // the elapsed clock together, which reads as a recurring "Working…"
+        // hang. See docs/input-stall-diagnosis.md for the freeze taxonomy.
+        const { exec } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const run = promisify(exec);
+        const git = async (cmd: string): Promise<string> => {
+          try {
+            const { stdout } = await run(cmd, { encoding: "utf-8", timeout: 3000 });
+            return stdout.trim();
+          } catch {
+            return "";
+          }
+        };
+
+        const branch = await git("git rev-parse --abbrev-ref HEAD 2>/dev/null");
         if (!branch || cancelled) {
           if (!branch) setGitStatus(null);
           return;
         }
-        const status = execSync(
-          "git status --porcelain=v1 2>/dev/null",
-          { encoding: "utf-8", timeout: 3000 },
-        ).trim();
-        const aheadBehind = execSync(
-          "git rev-list --count --left-right HEAD...@{upstream} 2>/dev/null",
-          { encoding: "utf-8", timeout: 3000 },
-        ).trim();
+        // Independent reads — run concurrently rather than serially.
+        const [status, aheadBehind] = await Promise.all([
+          git("git status --porcelain=v1 2>/dev/null"),
+          git("git rev-list --count --left-right HEAD...@{upstream} 2>/dev/null"),
+        ]);
+        if (cancelled) return;
 
         const modified = status
           ? status.split("\n").filter((l) => l.startsWith(" M") || l.startsWith("M ")).length
@@ -319,7 +341,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const activeLineRef = useRef("");
   const firstTokenRef = useRef(false);
-  const spinnerTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelled = useRef(false);
 
   const outputQueueRef = useRef<string[]>([]);
@@ -360,45 +381,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   }
 
-  function startSpinner() {
-    stopSpinner();
-    let frame = 0;
-    setSpinnerFrame(0);
-    spinnerTimer.current = setInterval(() => {
-      frame = (frame + 1) % SPINNER_FRAMES.length;
-      setSpinnerFrame(frame);
-    }, 80);
-  }
-
-  function stopSpinner() {
-    if (spinnerTimer.current) {
-      clearInterval(spinnerTimer.current);
-      spinnerTimer.current = null;
-    }
-  }
-
-  // Turn-scoped elapsed clock driving the "working" indicator. Ticks once a
-  // second from turn start until the turn's `finally`.
-  function startElapsedTimer() {
-    stopElapsedTimer();
-    setTurnElapsed(0);
-    const started = Date.now();
-    elapsedTimer.current = setInterval(() => {
-      setTurnElapsed(Math.floor((Date.now() - started) / 1000));
-    }, 1000);
-  }
-
-  function stopElapsedTimer() {
-    if (elapsedTimer.current) {
-      clearInterval(elapsedTimer.current);
-      elapsedTimer.current = null;
-    }
-  }
+  // The spinner animation and elapsed clock own their own timers inside
+  // <Spinner>, driven by `turnActive`. Starting/stopping them here would
+  // reintroduce the per-tick re-render of the whole transcript.
 
   useEffect(() => {
     return () => {
-      stopSpinner();
-      stopElapsedTimer();
       stopFlushTimer();
       flushOutputQueue();
     };
@@ -482,8 +470,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setTurnActive(true);
       setFirstTokenBoth(false);
       startFlushTimer();
-      startSpinner();
-      startElapsedTimer();
       cancelled.current = false;
       reasoningRef.current = { buffer: "", flushed: false };
       const turnStart = Date.now();
@@ -676,7 +662,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
           return new Promise<boolean>((resolve) => {
             const defaultRule = ctx.permissions.buildDefaultRule(toolName, args);
-            const folderRule = ctx.permissions.folderReadRule(toolName, args);
+            const folderRule = ctx.permissions.folderScopeRule(toolName, args);
             setAskPrompt({ resolve, toolName, args, winningRule, defaultRule, folderRule, cursor: 0 });
           });
         },
@@ -744,8 +730,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         stopFlushTimer();
         setBusy(false);
         setTurnActive(false);
-        stopSpinner();
-        stopElapsedTimer();
         codeBlockRef.current = { active: false, lines: [] };
         ctx.renewAbortController();
         setStatusLine(ctx.buildStatusBar());
@@ -781,9 +765,23 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   };
 
+  /**
+   * Append a submitted prompt for ↑/↓ recall. Skips blanks and collapses an
+   * immediate repeat (same as a shell's ignoredups) so holding Enter doesn't
+   * fill the history with duplicates.
+   */
+  function recordPromptHistory(entry: string): void {
+    const text = entry.trim();
+    if (!text) return;
+    setPromptHistory((prev) => (prev[prev.length - 1] === text ? prev : [...prev, text]));
+  }
+
   // Handles a submission from the input box: runs it now if idle, otherwise
   // enqueues it to drain after the in-flight turn(s) complete.
   function submitFromInput({ text, command, imageUrls }: { text: string; command?: string; imageUrls?: string[] }) {
+    // Record for ↑/↓ recall before any early return, so queued and modal
+    // submissions land in history too — the user typed them either way.
+    recordPromptHistory(command ? `/${command}` : text);
     if (command) {
       if (command === "exit") { handleExit(); return; }
       if (turnActiveRef.current && !opensModal(command)) {
@@ -1016,8 +1014,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setTimeout(() => resolve(allowed), 0);
       return null;
     });
+    // No spinner restart needed: the turn never ended while the prompt was up,
+    // so `turnActive` stayed true and <Spinner>'s own timers kept running.
     setBusy(true);
-    startSpinner();
   }
 
   /**
@@ -1081,8 +1080,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
-    // A read in a folder that already has a sibling exact approval: defer to a
-    // second prompt asking whether to grant just this file or the whole folder.
+    // A read or write/edit in a folder that already has a sibling exact
+    // approval: defer to a second prompt asking whether to grant just this
+    // file or the whole folder.
     if ((decision === "session" || decision === "always") && askPrompt.folderRule) {
       setAskPrompt((prev) => prev ? { ...prev, scopeStage: true, scopeDecision: decision, cursor: 0 } : null);
       return;
@@ -1305,7 +1305,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         busy={busy}
       />
 
-      <Spinner active={turnActive} frame={spinnerFrame} elapsed={turnElapsed} />
+      <Spinner active={turnActive} />
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 
@@ -1330,6 +1330,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       {askPrompt && askPrompt.scopeStage ? (
         <ScopeChoicePrompt
           folderPattern={askPrompt.folderRule?.pattern ?? ""}
+          toolName={askPrompt.toolName}
           cursor={askPrompt.cursor}
           onChoose={handleScopeDecision}
           onCancel={() => resolveAskPrompt(false)}
@@ -1472,7 +1473,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           open={showModelDropdown}
           providerName={ctx.providerName}
           currentModel={ctx.activeModel}
+          entries={ctx.getModelEntries()}
+          configured={ctx.getConfiguredProviders?.()}
+          labels={ctx.getProviderLabels?.()}
           width={term.columns}
+          height={term.rows}
           onClose={() => setShowModelDropdown(false)}
           onSelect={async (provider, model) => {
             const lines = await ctx.handleSlash(`/model ${provider}/${model}`);
@@ -1554,7 +1559,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
-          promptHistory={[]}
+          promptHistory={promptHistory}
           busy={busy}
           placeholder="Type your message..."
           promptDraft={promptDraft}
