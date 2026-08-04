@@ -94,6 +94,33 @@ function createAIInstance(apiType: string, baseUrl: string, apiKey: string, mode
   return createOpenAI({ baseURL: baseUrl, apiKey }).chat(model);
 }
 
+/**
+ * Reasoning levels the AI SDK's standardized `reasoning` option accepts
+ * (LanguageModelV4CallOptions). Note "max" is absent — see toReasoningLevel.
+ */
+const SDK_REASONING_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+type SdkReasoningLevel = (typeof SDK_REASONING_LEVELS)[number];
+
+/**
+ * Map heirloom's effort value onto the SDK's `reasoning` union.
+ *
+ * This must go through the top-level `reasoning` option, NOT a top-level
+ * `reasoningEffort`: streamText funnels unknown keys into `...settings` and
+ * prepareLanguageModelCallOptions keeps only a fixed whitelist, so a stray
+ * `reasoningEffort` is dropped silently (it was, for this file's whole life).
+ *
+ * "max" is a real DeepSeek level but is not in the SDK union, so it degrades to
+ * the nearest supported level rather than being dropped. Unknown values return
+ * undefined — omit rather than throw, since parseProviderOptions throws on a
+ * literal mismatch and a bad config value should not kill every turn.
+ */
+function toReasoningLevel(effort: string | undefined): SdkReasoningLevel | undefined {
+  if (!effort) return undefined;
+  if ((SDK_REASONING_LEVELS as readonly string[]).includes(effort)) return effort as SdkReasoningLevel;
+  if (effort === "max") return "xhigh";
+  return undefined;
+}
+
 export function createAISDKProvider(preset: ProviderPreset, model: string, apiKey: string): Provider {
   return {
     name: model,
@@ -106,26 +133,30 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
       const baseUrl = preset.baseUrl;
       const modelInstance = createAIInstance(preset.api, baseUrl, apiKey, model);
 
+      const reasoning = toReasoningLevel(options?.effort);
+      // Reasoning/thinking mode rejects sampling parameters (DeepSeek documents
+      // temperature, top_p, presence_penalty and frequency_penalty as
+      // unsupported), so drop temperature whenever a level is in play.
+      const temperature = reasoning ? undefined : options?.temperature;
+
       logRequest({
         model,
         messages,
         tools,
         max_tokens: options?.maxTokens,
-        temperature: options?.temperature,
-        effort: options?.effort,
-        thinking_enabled: options?.thinkingEnabled,
+        temperature,
+        effort: reasoning,
       });
 
       const result = streamText({
         model: modelInstance,
         messages: mapMessages(messages),
         tools: tools.length > 0 ? mapTools(tools) : undefined,
-        temperature: options?.temperature,
+        temperature,
         maxOutputTokens: options?.maxTokens,
         abortSignal: options?.signal,
         maxRetries: 3,
-        ...(options?.effort && preset.api === "openai-compatible" ? { reasoningEffort: options.effort } : {}),
-        ...(options?.thinkingEnabled && preset.api === "openai-compatible" ? { body: { thinking: { type: "enabled" } } as any } : {}),
+        ...(reasoning ? { reasoning } : {}),
         stopWhen: stepCountIs(1),
         allowSystemInMessages: true,
       });

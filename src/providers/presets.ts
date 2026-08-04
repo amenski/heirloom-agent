@@ -17,35 +17,43 @@ export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
     keyEnv: "DEEPSEEK_API_KEY",
     defaultModel: "deepseek-v4-pro",
     models: {
-      "deepseek-v4-flash": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.14, outputPerM: 0.28 } },
-      "deepseek-v4-pro": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.435, outputPerM: 0.87 } },
+      "deepseek-v4-flash": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.14, outputPerM: 0.28 }, effort: { values: ["low", "high", "max"], default: "high" } },
+      "deepseek-v4-pro": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.435, outputPerM: 0.87 }, effort: { values: ["low", "high", "max"], default: "high" } },
     },
   },
   openai: {
     api: "openai-compatible",
     baseUrl: "https://api.openai.com/v1",
     keyEnv: "OPENAI_API_KEY",
-    defaultModel: "gpt-4o",
+    defaultModel: "gpt-5.6-sol",
     models: {
-      "gpt-4o": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 2.50, outputPerM: 10.00 } },
+      // NOTE: no `effort` cap here — OpenAI's chat-completions API rejects
+      // reasoning_effort when function tools are also present, and Heirloom
+      // always sends tools.
+      "gpt-5.6-sol": { supportsTools: true, contextWindow: 256000, pricing: { inputPerM: 2.50, outputPerM: 10.00 } },
+      "gpt-5.6-terra": { supportsTools: true, contextWindow: 256000, pricing: { inputPerM: 1.25, outputPerM: 5.00 } },
+      "gpt-5.6-luna": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.25, outputPerM: 1.00 } },
     },
   },
   openrouter: {
     api: "openai-compatible",
     baseUrl: "https://openrouter.ai/api/v1",
     keyEnv: "OPENROUTER_API_KEY",
-    defaultModel: "anthropic/claude-sonnet-4",
+    defaultModel: "anthropic/claude-sonnet-4.6",
     models: {
-      "anthropic/claude-sonnet-4": { supportsTools: true, contextWindow: 200000, pricing: { inputPerM: 3.00, outputPerM: 15.00 } },
+      "anthropic/claude-sonnet-4.6": { supportsTools: true, contextWindow: 200000, pricing: { inputPerM: 3.00, outputPerM: 15.00 } },
     },
   },
   groq: {
     api: "openai-compatible",
     baseUrl: "https://api.groq.com/openai/v1",
     keyEnv: "GROQ_API_KEY",
-    defaultModel: "llama-4-scout",
+    defaultModel: "llama-3.3-70b-versatile",
     models: {
-      "llama-4-scout": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.11, outputPerM: 0.34 } },
+      "llama-3.3-70b-versatile": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.59, outputPerM: 0.79 } },
+      "llama-3.1-8b-instant": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.05, outputPerM: 0.08 } },
+      "openai/gpt-oss-120b": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.15, outputPerM: 0.75 }, effort: { values: ["low", "medium", "high"], default: "medium" } },
+      "openai/gpt-oss-20b": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.10, outputPerM: 0.50 }, effort: { values: ["low", "medium", "high"], default: "medium" } },
     },
   },
   ollama: {
@@ -77,6 +85,25 @@ export function getKnownProviderNames(): string[] {
     ...Object.keys(configProviders),
   ]);
   return [...names];
+}
+
+/**
+ * Whether an API key can be resolved for each known provider, using the same
+ * precedence createProvider does (env var, then credentials.yaml). Returns
+ * BOOLEANS ONLY — the UI needs to show "no key" without ever handling a secret.
+ * Providers with no keyEnv (e.g. a local ollama) always count as configured.
+ */
+export function getConfiguredProviders(): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const name of getKnownProviderNames()) {
+    const preset = BUILTIN_PRESETS[name];
+    if (!preset || !preset.keyEnv) {
+      out[name] = true;
+      continue;
+    }
+    out[name] = !!(process.env[preset.keyEnv] || getCredential(name));
+  }
+  return out;
 }
 
 export function getPreset(name: string): ProviderPreset | undefined {
