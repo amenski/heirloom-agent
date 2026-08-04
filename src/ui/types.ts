@@ -1,9 +1,14 @@
 import type { Provider } from "../providers/types.js";
 import type { Message } from "../types.js";
-import type { ModelEntry } from "./ModelSelector.js";
 import type { ThemeContextValue, ThemeDefinition } from "./theme.js";
 import type { KeybindingMap, KeybindingConfig, KeybindingAction } from "./keybindings.js";
 import type { StatusLineManager } from "./statusline/index.js";
+
+export interface ModelEntry {
+  provider: string;
+  model: string;
+  contextWindow?: number;
+}
 
 // ── State ──
 
@@ -128,6 +133,10 @@ export interface AppContext {
 
   handleSlash: (input: string) => Promise<string[]>;
   getModelEntries: () => ModelEntry[];
+  /** Provider name -> whether an API key resolves. Booleans only, never the key. */
+  getConfiguredProviders?: () => Record<string, boolean>;
+  /** Provider name -> display label (deepseek -> DeepSeek). */
+  getProviderLabels?: () => Record<string, string>;
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
   resumeSession?: (sessionId: string) => Promise<Message[] | null>;
   showResumeOnStart?: boolean;
