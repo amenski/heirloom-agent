@@ -210,31 +210,45 @@ const SCOPE_OPTIONS: { scope: "file" | "folder"; label: string }[] = [
   { scope: "folder", label: "Whole folder" },
 ];
 
+/** Write/edit tools — mirrors PermissionEngine.WRITE_TOOLS. Drives the elevated-risk copy below, since a recursive grant for these means write access, not just read. */
+const WRITE_TOOLS = new Set(["edit", "edit_file", "write_to_file", "search_replace", "apply_diff", "apply_patch"]);
+
 /**
- * Stage-two prompt shown after the user approves a read (session/always) for a
- * file whose folder already has a sibling exact approval. Lets them keep the
- * exact-file rule or broaden to a recursive folder glob.
+ * Stage-two prompt shown after the user approves a read or write/edit
+ * (session/always) for a file whose folder already has a sibling exact
+ * approval. Lets them keep the exact-file rule or broaden to a recursive
+ * folder glob. For write/edit tools the copy calls out that broadening
+ * grants recursive WRITE access, not just read — a materially riskier grant.
  */
 export function ScopeChoicePrompt({
   folderPattern,
+  toolName,
   cursor,
   onChoose,
 }: {
   folderPattern: string;
+  toolName: string;
   cursor: number;
   onChoose: (scope: "file" | "folder") => void;
   onCancel: () => void;
 }) {
   const theme = useTheme();
   const accentColor = slotColor(theme, "accent");
+  const errorColor = slotColor(theme, "error");
   const folderDir = folderPattern.replace(/\/\*\*$/, "");
+  const isWrite = WRITE_TOOLS.has(toolName);
+  const borderColor = isWrite ? errorColor : accentColor;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1} marginY={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1}>
       <Box marginBottom={1}>
         <Text bold>Grant just this file, or the whole folder?</Text>
       </Box>
-      <Text dimColor>Whole folder covers {folderDir} and everything beneath it.</Text>
+      {isWrite ? (
+        <Text color={errorColor}>Whole folder grants write access to {folderDir} and everything beneath it — the agent can modify or overwrite any file there.</Text>
+      ) : (
+        <Text dimColor>Whole folder covers {folderDir} and everything beneath it.</Text>
+      )}
       <Box flexDirection="column" marginTop={1}>
         {SCOPE_OPTIONS.map((opt, i) => (
           <Text key={opt.scope} color={i === cursor ? accentColor : undefined}>

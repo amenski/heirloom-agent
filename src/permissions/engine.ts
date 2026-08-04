@@ -50,6 +50,17 @@ export class PermissionEngine {
     "read_file", "list_files", "glob",
   ]);
 
+  /**
+   * Write/edit file tools eligible for the "grant whole folder" broadening
+   * offer. A recursive write grant is materially riskier than a recursive
+   * read grant (it lets the agent modify or overwrite anything under the
+   * folder, not just see it), so this offer is gated more strictly than the
+   * read one — see the hasSibling check in folderScopeRule.
+   */
+  private static readonly WRITE_TOOLS = new Set([
+    "edit", "edit_file", "write_to_file", "search_replace", "apply_diff", "apply_patch",
+  ]);
+
   constructor(config?: PermissionConfig, workingDir?: string) {
     this.workingDir = workingDir ?? process.cwd();
     this.configRules = (config?.rules ?? []).map((r) => this.normalizeConfigRule(r));
@@ -286,16 +297,24 @@ export class PermissionEngine {
   }
 
   /**
-   * For a read tool call, returns a recursive-glob allow rule covering the
-   * file's parent folder — but ONLY when at least one exact read approval
-   * already exists for a *different* file in that same folder. This is the
-   * "second read in a folder" signal: the first read gets an exact rule with
-   * no offer, and only when the user is clearly working within one folder does
-   * the UI offer to broaden. Returns undefined when the tool isn't a read
-   * tool, the path is external, or no sibling exact approval exists yet.
+   * For a read or write/edit tool call, returns a recursive-glob allow rule
+   * covering the file's parent folder — but ONLY when at least one exact
+   * approval already exists for a *different* file in that same folder, for
+   * that SAME tool. This is the "second call of this kind in a folder"
+   * signal: the first call gets an exact rule with no offer, and only when
+   * the user is clearly working within one folder does the UI offer to
+   * broaden. Returns undefined when the tool isn't a read or write/edit tool,
+   * the path is external, or no sibling exact approval exists yet.
+   *
+   * Policy: the sibling lookup matches on `r.tool === toolName`, so read and
+   * write approvals accumulate separately — prior reads in a folder never
+   * unlock a recursive WRITE offer. A write grant is materially more
+   * dangerous than a read grant (it lets the agent modify or overwrite
+   * anything under the folder), so a write offer requires its own two prior
+   * write approvals in that folder rather than piggybacking on read history.
    */
-  folderReadRule(toolName: string, args?: Record<string, unknown>): PermissionRule | undefined {
-    if (!PermissionEngine.READ_TOOLS.has(toolName)) return undefined;
+  folderScopeRule(toolName: string, args?: Record<string, unknown>): PermissionRule | undefined {
+    if (!PermissionEngine.READ_TOOLS.has(toolName) && !PermissionEngine.WRITE_TOOLS.has(toolName)) return undefined;
 
     const raw = args?.path ?? args?.filePath;
     if (typeof raw !== "string" || !raw) return undefined;
@@ -306,8 +325,9 @@ export class PermissionEngine {
     const folder = dirname(normalized);
     const folderGlob = `${folder}/**`;
 
-    // Look for an already-approved exact read rule for a *different* file in
-    // this same folder, across config + session rules the user has granted.
+    // Look for an already-approved exact rule for the SAME tool on a
+    // *different* file in this same folder, across config + session rules
+    // the user has granted.
     const userRules = [...this.configRules, ...this.sessionRules];
     const hasSibling = userRules.some(
       (r) =>
