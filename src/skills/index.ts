@@ -8,7 +8,6 @@ import { checkSkillTrust } from "./trust.js";
 export interface SkillDef {
   name: string;
   description: string;
-  triggers: string[];
   content: string;
   mode?: string;
   sourcePath: string;
@@ -136,13 +135,9 @@ async function scanDir(dir: string): Promise<SkillDef[]> {
       }
 
       const description = (frontmatter.description as string) || "";
-      let triggers: string[] = [];
-      if (Array.isArray(frontmatter.triggers)) {
-        triggers = frontmatter.triggers.map((t) => String(t));
-      }
       const mode = (frontmatter.mode as string) || undefined;
 
-      skills.push({ name, description, triggers, content, mode, sourcePath: skillPath });
+      skills.push({ name, description, content, mode, sourcePath: skillPath });
     } catch (err) {
       console.warn(
         `[skills] Failed to read ${skillPath}: ${(err as Error).message}`
@@ -208,26 +203,6 @@ export class SkillLoader {
     }
 
     return allSkills;
-  }
-
-  match(input: string, skills: SkillDef[]): SkillDef[] {
-    const lowerInput = input.toLowerCase();
-    const matched: { skill: SkillDef; triggerLen: number }[] = [];
-
-    for (const skill of skills) {
-      let bestLen = 0;
-      for (const trigger of skill.triggers) {
-        if (lowerInput.includes(trigger.toLowerCase())) {
-          bestLen = Math.max(bestLen, trigger.length);
-        }
-      }
-      if (bestLen > 0) {
-        matched.push({ skill, triggerLen: bestLen });
-      }
-    }
-
-    matched.sort((a, b) => b.triggerLen - a.triggerLen);
-    return matched.map((m) => m.skill);
   }
 }
 
