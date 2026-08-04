@@ -780,12 +780,26 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   };
 
+  // Slash commands that only open a UI-only modal (no model call, no history
+  // mutation). These are safe to run over an in-flight turn and must NOT be
+  // queued behind it — otherwise a long-running or hung turn locks the user out
+  // of switching sessions, models, etc. Matched on the first token so args like
+  // "/permissions history" still resolve.
+  const MODAL_SLASH = new Set([
+    "model", "theme", "effort", "resume", "continue", "sessions",
+    "skills", "modes", "undo", "mcp", "permissions", "help",
+  ]);
+  function opensModal(nameOrSlash: string): boolean {
+    const first = nameOrSlash.replace(/^\//, "").trim().split(/\s+/)[0];
+    return MODAL_SLASH.has(first);
+  }
+
   // Handles a submission from the input box: runs it now if idle, otherwise
   // enqueues it to drain after the in-flight turn(s) complete.
   function submitFromInput({ text, command, imageUrls }: { text: string; command?: string; imageUrls?: string[] }) {
     if (command) {
       if (command === "exit") { handleExit(); return; }
-      if (turnActiveRef.current) {
+      if (turnActiveRef.current && !opensModal(command)) {
         messageQueueRef.current.push({ kind: "slash", text: `/${command}`, at: Date.now() });
         syncQueueState();
         return;
@@ -794,7 +808,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
     const isSlash = text.startsWith("/");
-    if (turnActiveRef.current) {
+    if (turnActiveRef.current && !(isSlash && opensModal(text))) {
       messageQueueRef.current.push(isSlash ? { kind: "slash", text, at: Date.now() } : { kind: "message", text, at: Date.now(), imageUrls });
       syncQueueState();
       return;
@@ -1273,7 +1287,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
     showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
+  const prevModalOpenRef = useRef(modalOpen);
   modalOpenRef.current = modalOpen;
+
+  // When a modal closes and no turn is running, drain any commands/messages
+  // that were queued behind it. The drain itself stops at a modal-opening slash
+  // (see drainQueueRef), so without this re-trigger the tail of the queue would
+  // be stranded until the next turn.
+  useEffect(() => {
+    if (prevModalOpenRef.current && !modalOpen && !turnActiveRef.current) {
+      drainQueueRef.current();
+    }
+    prevModalOpenRef.current = modalOpen;
+  }, [modalOpen]);
 
   return (
     <Box flexDirection="column" width={term.columns}>
