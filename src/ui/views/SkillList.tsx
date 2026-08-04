@@ -12,7 +12,7 @@ function slotColor(theme: ThemeContextValue, key: keyof ThemeContextValue["theme
 
 interface Props {
   skills: SkillDef[];
-  /** User picked a skill; the host prints its content (like /skill <name>). */
+  /** User picked a skill; the host force-loads it (like /skill <name>). */
   onSelect: (name: string) => void;
   onClose: () => void;
   width: number;
@@ -22,8 +22,8 @@ interface Props {
 /**
  * Selectable list of available skills. Mirrors SessionList's navigation and
  * search so /skills behaves like the other interactive pickers rather than
- * dumping plain text into the scrollback. Enter prints the selected skill's
- * content; Esc closes.
+ * dumping plain text into the scrollback. Enter force-loads the selected
+ * skill; Esc closes.
  */
 export default function SkillList({ skills, onSelect, onClose, width, height }: Props) {
   const theme = useTheme();
@@ -135,7 +135,7 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
       )}
 
       <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>↑↓ navigate · Enter show · Esc close</Text>
+        <Text dimColor>↑↓ navigate · Enter load · Esc close</Text>
         {searchText && <Text dimColor>Search: {searchText}</Text>}
       </Box>
     </Box>
