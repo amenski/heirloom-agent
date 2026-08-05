@@ -8,6 +8,13 @@ export interface ModelCapabilities {
     values: string[];
     default: string;
   };
+  /**
+   * USD per million tokens. APPROXIMATE — the values in models.json were not
+   * verified against live price sheets and vendors change them without notice.
+   * Only feeds the status-bar cost estimate, never a billing or routing
+   * decision, so drift is cosmetic. (Context limits live in `contextWindow`,
+   * which is separate and does drive compaction.)
+   */
   pricing?: { inputPerM: number; outputPerM: number };
 }
 

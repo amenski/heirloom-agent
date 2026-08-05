@@ -52,40 +52,50 @@ a real terminal to confirm:
 - `--debug` JSONL is the ground truth for the wire: confirm `reasoning` is present on the
   request and `temperature` is absent when an effort level is set.
 
-## Deferred features (mentioned, never requested to build)
+## Deferred features
 
-### 2. User-defined providers (`setConfigProviders` is dead code)
-`setConfigProviders` (`src/providers/presets.ts:70`) is imported in `src/cli.tsx` but
-**never called**, so the whole config-provider branch is unreachable: `getProviderModels`
-always returns `undefined`, `createProvider`'s config branch never runs, and half of
-`listKnownModels` never contributes entries. Making it real needs three things that don't
-exist yet: a `providers` field in the config schema (`src/config/loader.ts`), a validator,
-and the `setConfigProviders(...)` call. Only worth doing if you want to point Heirloom at a
-provider that isn't one of the five built-in presets.
+### 2. User-defined providers — NOT BUILDING (revisit only on a real need)
+Decided 2026-08-05. Pointing Heirloom at a provider outside the five built-in presets would
+need a `providers` field in the config schema (`src/config/loader.ts`), a validator, and a
+`setConfigProviders(...)` call — roughly 150 lines of config surface for a capability nobody
+has asked for. Speculative configurability that no one exercises rots: untested against a
+real third-party endpoint, it would most likely be broken by the time someone tried it.
 
-### 3. Effort coverage beyond DeepSeek
-Effort caps are declared **per-model** on `deepseek-v4-flash` / `deepseek-v4-pro` (verified:
-low/high/max) and on Groq's two `openai/gpt-oss-*` models. Deliberately NOT on OpenAI:
-its chat-completions API rejects `reasoning_effort` when function tools are present
-("Function tools with reasoning_effort are not supported for gpt-5.6-sol in
-/v1/chat/completions"), and Heirloom always sends tools. Revisit only with evidence from a
-live call — per-provider flags are unsafe here, the failure mode is a hard 400.
-
-### 4. Preset pricing/context values are estimates
-The refreshed model entries (gpt-5.6 family, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`,
-`gpt-oss-*`, `claude-sonnet-4.6`) carry plausible-shape pricing and context-window numbers that
-were **not** verified against live price sheets. They only affect cost estimates and the
-compaction threshold, not correctness. Worth a pass if cost display starts mattering.
-
-### 5. Stale model IDs in docs
-Several `docs/*.md` handoff/spec files still reference retired IDs (`gpt-4o`,
-`anthropic/claude-sonnet-4`, `deepseek-chat`, `llama-4-scout`). They're historical
-snapshots, not live reference docs, so they were left alone — clean up only if they start
-misleading.
+The dead `setConfigProviders` import in `src/cli.tsx` was removed so the code stops implying
+the feature exists. The function itself stays in `presets.ts` — it is the entry point if
+this is ever built, and the plan above is the whole design. (`getProviderModels` is NOT dead;
+it is called at `cli.tsx:641`.)
 
 ---
 
 ## Closed 2026-08-05
+
+- **Effort coverage beyond DeepSeek — closed, not deferred.** This was a finished
+  investigation filed as if it were pending work. Effort caps are declared per-model on
+  `deepseek-v4-flash` / `deepseek-v4-pro` (verified low/high/max) and Groq's two
+  `openai/gpt-oss-*`. Deliberately NOT on OpenAI: its chat-completions API rejects
+  `reasoning_effort` when function tools are present ("Function tools with reasoning_effort
+  are not supported for gpt-5.6-sol in /v1/chat/completions") and Heirloom always sends
+  tools. No code change can fix that — it needs a vendor behaviour change, and the failure
+  mode is a hard 400, so per-provider flags are unsafe. Reopen only with evidence from a
+  live call proving the API now accepts it.
+
+- **Preset pricing values — closed as accepted risk.** Verified the blast radius rather than
+  re-checking the numbers: `pricing` feeds exactly one consumer, the status-bar cost string
+  at `cli.tsx:359`. `contextWindow` — which drives compaction and would actually matter — is
+  a separate field. So a stale price is a cosmetic error in one display, which does not
+  justify a recurring chore against price sheets that drift anyway. The estimates are now
+  documented as approximate at the type definition (`providers/types.ts`), where someone
+  reading the field will see it. Revisit only if cost display becomes load-bearing.
+
+- **Stale model IDs in docs — closed.** Nine `docs/*.md` files referenced retired IDs
+  (`gpt-4o`, `deepseek-chat`, `llama-4-scout`, bare `claude-sonnet-4`). Rather than rewrite
+  them — they are dated records, and editing the IDs would falsify what was true when they
+  were written — each got a banner pointing at `src/providers/models.json` as authoritative.
+  Handoffs are marked "historical snapshot"; the four living specs note their guidance is
+  current and only the examples are stale. Found while doing this: `mode-spec.md` says
+  `anthropic/claude-sonnet-4-6`, which is NOT retired — the separator is just wrong (real ID
+  is `claude-sonnet-4.6`), so its banner names the typo instead. `95ec2c3`.
 
 - **Paste arrived line by line — confirmed fixed in a live terminal.** `enableBracketedPaste()`
   existed but was never called, so the terminal sent a paste as bare bytes with no
