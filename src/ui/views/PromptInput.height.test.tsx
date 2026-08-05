@@ -83,6 +83,49 @@ describe("PromptInput frame height", () => {
     expect(rows[statusRow]).not.toMatch(/^│/);
   });
 
+  it("swallows a bare Tab instead of typing a literal tab", async () => {
+    // Regression: Tab carries a `value` of "\t", so with no slash menu open it
+    // fell through to the catch-all insert and typed a tab into the prompt.
+    // Each press widened the row past the box and wrapped the model pill onto
+    // its own line, cascading with every further press.
+    const { stdin, lastFrame } = setup();
+    const before = rowsOf(lastFrame());
+    for (let i = 0; i < 6; i++) {
+      stdin.write("\t");
+      await flush();
+    }
+    expect(strip(lastFrame() ?? "")).not.toContain("\t");
+    expect(rowsOf(lastFrame())).toBe(before);
+  });
+
+  it("does not submit a tab-only buffer", async () => {
+    // If Tab were still inserted, this would submit whitespace.
+    const onSubmit = vi.fn();
+    const { stdin } = setup({ onSubmit });
+    stdin.write("\t\t\t");
+    await flush();
+    stdin.write("\r");
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("keeps the model pill pinned to the first input row when text is long", async () => {
+    // The pill is fixed chrome: long input wraps inside the text column rather
+    // than squeezing the pill onto a line of its own. (The box itself DOES grow
+    // downward for multi-line input — that is correct; what must not happen is
+    // the pill being displaced.)
+    const { stdin, lastFrame } = setup({ modelPill: "[ DeepSeek V4 Flash ]" });
+    stdin.write("x".repeat(200));
+    await flush();
+    const rows = strip(lastFrame() ?? "").split("\n");
+    const pillRows = rows
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.includes("DeepSeek V4 Flash"));
+    // Exactly one row carries the pill, and it is the row with the input caret.
+    expect(pillRows).toHaveLength(1);
+    expect(pillRows[0].r).toContain("▏");
+  });
+
   it("reserves the notice row even when there is nothing to show", () => {
     // The blank row is load-bearing: without it, the first status message
     // pushes every row below the input down by one.
