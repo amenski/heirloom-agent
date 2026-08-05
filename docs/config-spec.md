@@ -1,5 +1,8 @@
 # Config Specification
 
+**Note:** this spec's guidance is current; only the example model IDs (e.g.
+`anthropic/claude-sonnet-4`) are stale. `src/providers/models.json` is authoritative.
+
 Heirloom config is **JSON**, loaded and merged by `src/config/loader.ts`. Two
 files are read and deep-merged (project wins over global):
 

@@ -1,5 +1,8 @@
 # Handoff — /model UX fixes + deepseek_reasoner provider wart
 
+**Note:** historical snapshot. Model IDs below (e.g. `gpt-4o`, `deepseek-chat`)
+are retired — see `src/providers/models.json` for current IDs.
+
 **For:** subagent (Sonnet). **Files:** `src/index.ts`, `src/providers/presets.ts`
 (+ tests). Surgical — found by driving the CLI in a real terminal.
 

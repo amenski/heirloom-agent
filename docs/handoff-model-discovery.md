@@ -1,5 +1,8 @@
 # Handoff — Model & Mode Discovery (/model listing + arg completion)
 
+**Note:** historical snapshot. Model IDs below (e.g. `gpt-4o`, `deepseek-chat`,
+`llama-4-scout`) are retired — see `src/providers/models.json` for current IDs.
+
 **For:** subagent (Sonnet). **File:** `src/index.ts` ONLY (plus a test if feasible).
 Surgical. Found by driving the CLI: `/model` gives no way to discover what's available.
 

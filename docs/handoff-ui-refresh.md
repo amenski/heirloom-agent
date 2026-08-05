@@ -1,5 +1,8 @@
 # Handoff Spec — Terminal UI Refresh + Model-Declared Effort
 
+**Note:** historical snapshot. Model IDs below (e.g. `deepseek-chat`) are
+retired — see `src/providers/models.json` for current IDs.
+
 **For:** implementing subagent (Sonnet).
 **Author:** planning agent. **Do not** deviate from scope without flagging.
 **Reference image:** `Screenshot 2026-07-29 at 08.43.26.png` in repo root — match the

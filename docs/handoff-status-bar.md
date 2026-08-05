@@ -1,5 +1,8 @@
 # Handoff — Persistent status bar (mode · model · cwd · context % · cost)
 
+**Note:** historical snapshot. Model IDs below (e.g. `gpt-4o`, `deepseek-chat`)
+are retired — see `src/providers/models.json` for current IDs.
+
 **For:** subagent (Sonnet). **Files:** `src/index.ts`, `src/providers/presets.ts`,
 `src/providers/openai-compatible.ts` (usage parsing only) + tests.
 **Depends on:** handoff-model-fixes.md landing first (presets get a `models`
