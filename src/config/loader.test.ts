@@ -358,6 +358,50 @@ describe("loadConfig enabledSkills", () => {
   });
 });
 
+describe("loadConfig favoriteModels", () => {
+  it("parses a list of provider/model ids", () => {
+    writeProjectSettings({ favoriteModels: ["deepseek/deepseek-v4-pro", "groq/llama"] });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.favoriteModels).toEqual(["deepseek/deepseek-v4-pro", "groq/llama"]);
+  });
+
+  it("rejects a non-array favoriteModels", () => {
+    writeProjectSettings({ favoriteModels: "nope" });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.favoriteModels: must be an array of strings");
+  });
+
+  it("rejects a favoriteModels array containing non-string entries", () => {
+    writeProjectSettings({ favoriteModels: ["deepseek/deepseek-v4-pro", 5] });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.favoriteModels: all entries must be strings");
+  });
+});
+
+describe("loadConfig recentModels", () => {
+  it("parses a list of { id, at } entries", () => {
+    writeProjectSettings({ recentModels: [{ id: "deepseek/deepseek-v4-pro", at: 12345 }] });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.recentModels).toEqual([{ id: "deepseek/deepseek-v4-pro", at: 12345 }]);
+  });
+
+  it("rejects a non-array recentModels", () => {
+    writeProjectSettings({ recentModels: "nope" });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.recentModels: must be an array");
+  });
+
+  it("rejects entries missing id or at", () => {
+    writeProjectSettings({ recentModels: [{ id: "deepseek/deepseek-v4-pro" }] });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("config.recentModels"))).toBe(true);
+  });
+});
+
 describe("loadConfig compaction.auto", () => {
   it("parses compaction.auto: false alongside threshold", () => {
     writeProjectSettings({ compaction: { auto: false, threshold: 0.6 } });

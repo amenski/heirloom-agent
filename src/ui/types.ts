@@ -8,6 +8,12 @@ export interface ModelEntry {
   provider: string;
   model: string;
   contextWindow?: number;
+  /** Pretty model name (e.g. "DeepSeek V4 Pro"), falls back to `model` when absent. */
+  displayName?: string;
+  /** Pretty provider name (e.g. "DeepSeek"), falls back to `provider` when absent. */
+  providerLabel?: string;
+  /** Whether this model is free to use — renders a "Free" tag in the picker. */
+  free?: boolean;
 }
 
 // ── State ──
@@ -137,6 +143,20 @@ export interface AppContext {
   getConfiguredProviders?: () => Record<string, boolean>;
   /** Provider name -> display label (deepseek -> DeepSeek). */
   getProviderLabels?: () => Record<string, string>;
+  /** Provider name -> the env var its API key comes from (deepseek -> DEEPSEEK_API_KEY). */
+  getKeyEnvByProvider?: () => Record<string, string>;
+  /** Favorited models in the /model picker, as "provider/model" ids. */
+  getFavoriteModels?: () => string[];
+  /** Toggle a model's favorite status, persist it, and return the new list. */
+  toggleFavoriteModel?: (id: string) => string[];
+  /** Recently-switched-to models for the /model picker, newest first. */
+  getRecentModels?: () => { id: string; at: number }[];
+  /**
+   * Save an API key for `provider` from the picker's inline "Connect
+   * provider" prompt. Returns ok:false with a message on failure; never
+   * throws the key itself into an error string.
+   */
+  saveProviderKey?: (provider: string, key: string) => Promise<{ ok: boolean; error?: string }>;
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
   resumeSession?: (sessionId: string) => Promise<Message[] | null>;
   showResumeOnStart?: boolean;

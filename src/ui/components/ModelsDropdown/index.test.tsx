@@ -171,6 +171,56 @@ describe("ModelsDropdown — searchable, provider-grouped picker", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("renders the display name as the primary label, not the raw model id, with the provider label dimmed alongside it", () => {
+    const named: ModelEntry[] = [
+      { provider: "deepseek", model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", providerLabel: "DeepSeek", contextWindow: 1000000 },
+    ];
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={named} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("DeepSeek V4 Pro");
+    // The raw id should not appear anywhere once a display name is set.
+    expect(frame).not.toContain("deepseek-v4-pro ");
+  });
+
+  it("shows a Free tag for models flagged free", () => {
+    const withFree: ModelEntry[] = [
+      { provider: "deepseek", model: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", free: true },
+      { provider: "deepseek", model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
+    ];
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={withFree} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    const lines = stripAnsi(lastFrame() ?? "").split("\n");
+    expect(lines.find((l) => l.includes("DeepSeek V4 Flash"))).toContain("Free");
+    expect(lines.find((l) => l.includes("DeepSeek V4 Pro"))).not.toContain("Free");
+  });
+
+  it("search by raw model id still finds the model once a display name is set", async () => {
+    const named: ModelEntry[] = [
+      { provider: "deepseek", model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
+      { provider: "openai", model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol" },
+    ];
+    const { lastFrame, stdin } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={named} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    stdin.write("v4-pro");
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("DeepSeek V4 Pro");
+    expect(frame).not.toContain("GPT-5.6 Sol");
+  });
+
   it("guards the empty-entries case: does not crash, and Esc still closes", async () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
@@ -191,5 +241,184 @@ describe("ModelsDropdown — searchable, provider-grouped picker", () => {
     stdin.write(ESC);
     await flush();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+const CTRL_F = "\x06";
+const CTRL_A = "\x01";
+
+describe("ModelsDropdown — Favorites, Recent, Connect provider", () => {
+  it("ctrl+f toggles favorite on the highlighted model and it moves into Favorites", async () => {
+    const onToggleFavorite = vi.fn((id: string) => [id]);
+    const { lastFrame, stdin } = render(
+      <ModelsDropdown
+        open providerName="openai" currentModel="gpt-5.6-sol"
+        entries={entries} labels={labels} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        getFavoriteModels={() => []}
+        onToggleFavorite={onToggleFavorite}
+      />,
+    );
+    // Cursor opens anchored on the current model (openai/gpt-5.6-sol).
+    stdin.write(CTRL_F);
+    await flush();
+    expect(onToggleFavorite).toHaveBeenCalledWith("openai/gpt-5.6-sol");
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("Favorites");
+    const lines = frame.split("\n");
+    const favIdx = lines.findIndex((l) => l.includes("Favorites"));
+    const modelLines = lines.slice(favIdx + 1);
+    expect(modelLines.some((l) => l.includes("gpt-5.6-sol"))).toBe(true);
+  });
+
+  it("renders Favorites above Recent, and both above the provider groups", () => {
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        getFavoriteModels={() => ["deepseek/deepseek-v4-flash"]}
+        getRecentModels={() => [{ id: "groq/llama-3.3-70b-versatile", at: 1 }]}
+      />,
+    );
+    const lines = stripAnsi(lastFrame() ?? "").split("\n");
+    const favIdx = lines.findIndex((l) => l.includes("Favorites"));
+    const recentIdx = lines.findIndex((l) => l.includes("Recent"));
+    // The provider heading line is "DeepSeek" alone (inside the box border);
+    // a model row instead has a model id and "ctx"/"current" alongside it.
+    const deepseekIdx = lines.findIndex((l) => l.includes("DeepSeek") && !l.includes("ctx"));
+    expect(favIdx).toBeGreaterThanOrEqual(0);
+    expect(recentIdx).toBeGreaterThan(favIdx);
+    expect(deepseekIdx).toBeGreaterThan(recentIdx);
+  });
+
+  it("a favorited model still appears in its own provider group", () => {
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        getFavoriteModels={() => ["deepseek/deepseek-v4-flash"]}
+      />,
+    );
+    const lines = stripAnsi(lastFrame() ?? "").split("\n");
+    const occurrences = lines.filter((l) => l.includes("deepseek-v4-flash"));
+    expect(occurrences).toHaveLength(2);
+  });
+
+  it("ctrl+a opens the key prompt only for an unconfigured provider", async () => {
+    const onSaveProviderKey = vi.fn();
+    const { lastFrame, stdin } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels}
+        configured={{ deepseek: true, openai: false, groq: true }}
+        width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        onSaveProviderKey={onSaveProviderKey}
+      />,
+    );
+    // Cursor starts on deepseek-v4-pro, which IS configured — ctrl+a must be a no-op.
+    stdin.write(CTRL_A);
+    await flush();
+    expect(stripAnsi(lastFrame() ?? "")).not.toContain("Connect");
+
+    // Move onto openai/gpt-5.6-sol (unconfigured) and try again.
+    stdin.write(DOWN);
+    await flush();
+    stdin.write(CTRL_A);
+    await flush();
+    expect(stripAnsi(lastFrame() ?? "")).toContain("Connect");
+  });
+
+  it("typed key is masked in the frame — the raw key string never appears", async () => {
+    const { lastFrame, stdin } = render(
+      <ModelsDropdown
+        open providerName="openai" currentModel="gpt-5.6-sol"
+        entries={entries} labels={labels}
+        configured={{ deepseek: true, openai: false, groq: true }}
+        width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        onSaveProviderKey={vi.fn().mockResolvedValue({ ok: true })}
+      />,
+    );
+    stdin.write(CTRL_A);
+    await flush();
+    stdin.write("sk-super-secret-key");
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).not.toContain("sk-super-secret-key");
+    expect(frame).toContain("•".repeat("sk-super-secret-key".length));
+  });
+
+  it("Esc cancels the key prompt without saving", async () => {
+    const onSaveProviderKey = vi.fn();
+    const { lastFrame, stdin } = render(
+      <ModelsDropdown
+        open providerName="openai" currentModel="gpt-5.6-sol"
+        entries={entries} labels={labels}
+        configured={{ deepseek: true, openai: false, groq: true }}
+        width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        onSaveProviderKey={onSaveProviderKey}
+      />,
+    );
+    stdin.write(CTRL_A);
+    await flush();
+    stdin.write("sk-abc");
+    await flush();
+    stdin.write(ESC);
+    await flush();
+    expect(onSaveProviderKey).not.toHaveBeenCalled();
+    expect(stripAnsi(lastFrame() ?? "")).not.toContain("Connect");
+  });
+
+  it("Enter submits the key prompt and calls onSaveProviderKey with the provider and typed key", async () => {
+    const onSaveProviderKey = vi.fn().mockResolvedValue({ ok: true });
+    const { stdin } = render(
+      <ModelsDropdown
+        open providerName="openai" currentModel="gpt-5.6-sol"
+        entries={entries} labels={labels}
+        configured={{ deepseek: true, openai: false, groq: true }}
+        width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        onSaveProviderKey={onSaveProviderKey}
+      />,
+    );
+    stdin.write(CTRL_A);
+    await flush();
+    stdin.write("sk-abc123");
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSaveProviderKey).toHaveBeenCalledWith("openai", "sk-abc123");
+  });
+
+  it("shows a save error without leaking the key, and the prompt stays open", async () => {
+    const onSaveProviderKey = vi.fn().mockResolvedValue({ ok: false, error: "Network error" });
+    const { lastFrame, stdin } = render(
+      <ModelsDropdown
+        open providerName="openai" currentModel="gpt-5.6-sol"
+        entries={entries} labels={labels}
+        configured={{ deepseek: true, openai: false, groq: true }}
+        width={80} onClose={vi.fn()} onSelect={vi.fn()}
+        onSaveProviderKey={onSaveProviderKey}
+      />,
+    );
+    stdin.write(CTRL_A);
+    await flush();
+    stdin.write("sk-bad");
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("Network error");
+    expect(frame).not.toContain("sk-bad");
+    expect(frame).toContain("Connect");
+  });
+
+  it("footer shows the ctrl+f and ctrl+a hints", () => {
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("ctrl+f");
+    expect(frame).toContain("ctrl+a");
   });
 });

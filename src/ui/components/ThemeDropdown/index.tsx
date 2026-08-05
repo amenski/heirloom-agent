@@ -48,15 +48,19 @@ export function resolveThemeOutcome(
 }
 
 /**
- * Persist the chosen theme into the user-level settings.json `theme` block, via
- * an atomic write (temp file + rename), mirroring the permission engine's
- * persist(). Existing settings are preserved; only `theme` is merged. `homeDir`
- * defaults to HEIRLOOM_HOME. Never writes project settings.
+ * Read-modify-write the user-level settings.json: read (tolerating a missing
+ * or corrupt file), hand the parsed object to `mutate` to merge in whatever
+ * changed, then write back atomically (temp file + rename), mirroring the
+ * permission engine's persist(). `homeDir` defaults to HEIRLOOM_HOME. Never
+ * writes project settings.
  *
- * "auto" is stored as `theme.mode = "auto"`; a builtin preset name is stored as
- * `theme.mode = <name>` (the loader/resolver accept a preset name in `mode`).
+ * Shared by every settings.json writer in the picker UI (theme, favorite
+ * models, recent models) so there is exactly one atomic-write implementation.
  */
-export function persistThemeChoice(name: string, homeDir?: string): void {
+export function updateSettings(
+  mutate: (config: Record<string, unknown>) => void,
+  homeDir?: string,
+): void {
   const dir = homeDir ?? resolveDeepcodeHome();
   const settingsPath = join(dir, "settings.json");
 
@@ -72,11 +76,7 @@ export function persistThemeChoice(name: string, homeDir?: string): void {
     }
   }
 
-  const existingTheme =
-    config.theme && typeof config.theme === "object" && !Array.isArray(config.theme)
-      ? (config.theme as Record<string, unknown>)
-      : {};
-  config.theme = { ...existingTheme, mode: name };
+  mutate(config);
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -85,6 +85,23 @@ export function persistThemeChoice(name: string, homeDir?: string): void {
   const tmpPath = join(dir, `.settings.json.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
   renameSync(tmpPath, settingsPath);
+}
+
+/**
+ * Persist the chosen theme into the user-level settings.json `theme` block.
+ * Existing settings are preserved; only `theme` is merged.
+ *
+ * "auto" is stored as `theme.mode = "auto"`; a builtin preset name is stored as
+ * `theme.mode = <name>` (the loader/resolver accept a preset name in `mode`).
+ */
+export function persistThemeChoice(name: string, homeDir?: string): void {
+  updateSettings((config) => {
+    const existingTheme =
+      config.theme && typeof config.theme === "object" && !Array.isArray(config.theme)
+        ? (config.theme as Record<string, unknown>)
+        : {};
+    config.theme = { ...existingTheme, mode: name };
+  }, homeDir);
 }
 
 interface Props {

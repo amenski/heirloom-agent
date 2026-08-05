@@ -8,6 +8,7 @@ import {
   moveSelection,
   selectableIndices,
   formatContext,
+  toModelId,
   type PickerRow,
 } from "../../core/model-picker.js";
 
@@ -24,8 +25,20 @@ interface Props {
   entries: ModelEntry[];
   /** Provider name -> whether an API key is resolvable. Unconfigured ones are dimmed. */
   configured?: Record<string, boolean>;
+  /** Re-fetch the configured map live (e.g. after a Connect-provider save). Falls back to `configured`. */
+  getConfigured?: () => Record<string, boolean>;
   /** Display names for providers (deepseek -> DeepSeek). */
   labels?: Record<string, string>;
+  /** Provider name -> the env var its API key comes from (deepseek -> DEEPSEEK_API_KEY), for the Connect-provider prompt. */
+  keyEnvByProvider?: Record<string, string>;
+  /** "provider/model" ids currently favorited. */
+  getFavoriteModels?: () => string[];
+  /** Toggle a model's favorite status, persist it, and return the new list. */
+  onToggleFavorite?: (id: string) => string[];
+  /** Recently-switched-to models, newest first. */
+  getRecentModels?: () => { id: string; at: number }[];
+  /** Save an API key for a provider from the inline Connect-provider prompt. */
+  onSaveProviderKey?: (provider: string, key: string) => Promise<{ ok: boolean; error?: string }>;
   width: number;
   height?: number;
   onClose: () => void;
@@ -42,7 +55,8 @@ interface Props {
  * rules stay unit-testable apart from rendering.
  */
 const ModelsDropdown: React.FC<Props> = ({
-  open, providerName, currentModel, entries, configured, labels,
+  open, providerName, currentModel, entries, configured, getConfigured, labels, keyEnvByProvider,
+  getFavoriteModels, onToggleFavorite, getRecentModels, onSaveProviderKey,
   width, height = 24, onClose, onSelect,
 }) => {
   const theme = useTheme();
@@ -54,9 +68,41 @@ const ModelsDropdown: React.FC<Props> = ({
   const [scrollOffset, setScrollOffset] = useState(0);
   const queryRef = useRef("");
 
+  // Local, refreshable copies of the live settings the picker annotates rows
+  // with. Seeded from the getters on open/prop change and re-pulled after an
+  // action (favorite toggle, key save) so the picker never renders a stale
+  // snapshot — re-reading a getter is the whole point of passing one instead
+  // of only a static prop.
+  const [liveConfigured, setLiveConfigured] = useState<Record<string, boolean> | undefined>(
+    () => getConfigured?.() ?? configured,
+  );
+  const [favorites, setFavorites] = useState<string[]>(() => getFavoriteModels?.() ?? []);
+  const [recents, setRecents] = useState<{ id: string; at: number }[]>(() => getRecentModels?.() ?? []);
+
+  useEffect(() => {
+    if (!open) return;
+    setLiveConfigured(getConfigured?.() ?? configured);
+    setFavorites(getFavoriteModels?.() ?? []);
+    setRecents(getRecentModels?.() ?? []);
+    // Only re-seed when the picker (re)opens — actions taken while open refresh
+    // these explicitly instead, so typing/navigating doesn't churn them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Inline "Connect provider" key entry: which provider it's for (undefined =
+  // closed), the typed key (kept in a ref, never in rendered state — see the
+  // security note above the render for why), and a status message.
+  const [keyPromptProvider, setKeyPromptProvider] = useState<string | undefined>(undefined);
+  const [keyPromptLength, setKeyPromptLength] = useState(0);
+  const [keyPromptError, setKeyPromptError] = useState<string | undefined>(undefined);
+  const keyInputRef = useRef("");
+
   const rows = useMemo(
-    () => buildRows({ entries, query, currentProvider: providerName, currentModel, configured, labels }),
-    [entries, query, providerName, currentModel, configured, labels],
+    () => buildRows({
+      entries, query, currentProvider: providerName, currentModel,
+      configured: liveConfigured, labels, favoriteModels: favorites, recentModels: recents,
+    }),
+    [entries, query, providerName, currentModel, liveConfigured, labels, favorites, recents],
   );
 
   // Anchor the cursor while rendering rather than in an effect. An effect keyed
@@ -99,9 +145,56 @@ const ModelsDropdown: React.FC<Props> = ({
     onClose();
   }
 
+  function closeKeyPrompt(): void {
+    keyInputRef.current = "";
+    setKeyPromptLength(0);
+    setKeyPromptError(undefined);
+    setKeyPromptProvider(undefined);
+  }
+
+  async function submitKeyPrompt(): Promise<void> {
+    const provider = keyPromptProvider;
+    const key = keyInputRef.current;
+    if (!provider || !key || !onSaveProviderKey) return;
+    const result = await onSaveProviderKey(provider, key);
+    if (!result.ok) {
+      setKeyPromptError(result.error ?? "Failed to save key.");
+      return;
+    }
+    closeKeyPrompt();
+    // The "no key" marker must clear without restarting — re-read live rather
+    // than trust the snapshot taken when the picker opened.
+    setLiveConfigured(getConfigured?.() ?? configured);
+  }
+
   useInput(
     (input, key) => {
       if (!open) return;
+
+      // ── Inline Connect-provider key entry owns all input while it's open ──
+      if (keyPromptProvider !== undefined) {
+        if (key.escape) { closeKeyPrompt(); return; }
+        if (key.return) { void submitKeyPrompt(); return; }
+        if (key.backspace || key.delete) {
+          if (keyInputRef.current) {
+            keyInputRef.current = keyInputRef.current.slice(0, -1);
+            setKeyPromptLength(keyInputRef.current.length);
+          }
+          return;
+        }
+        if (input && !key.ctrl && !key.meta) {
+          // eslint-disable-next-line no-control-regex
+          const printable = input.replace(/[\x00-\x1f\x7f]/g, "");
+          if (!printable) return;
+          // The key is held ONLY in this ref — never in React state, so it
+          // never reaches a render and can never appear in a frame or an
+          // error message. Rendered feedback is the length counter below.
+          keyInputRef.current += printable;
+          setKeyPromptLength(keyInputRef.current.length);
+        }
+        return;
+      }
+
       if (key.escape) {
         // First Esc clears an active search, second closes — same as SkillList.
         if (queryRef.current) {
@@ -111,6 +204,23 @@ const ModelsDropdown: React.FC<Props> = ({
           return;
         }
         onClose();
+        return;
+      }
+      if (key.ctrl && input === "f") {
+        const row = rows[effectiveCursor];
+        if (row?.kind === "model" && onToggleFavorite) {
+          setFavorites(onToggleFavorite(toModelId(row.provider, row.model)));
+        }
+        return;
+      }
+      if (key.ctrl && input === "a") {
+        const row = rows[effectiveCursor];
+        if (row?.kind === "model" && !row.configured) {
+          keyInputRef.current = "";
+          setKeyPromptLength(0);
+          setKeyPromptError(undefined);
+          setKeyPromptProvider(row.provider);
+        }
         return;
       }
       // Step from effectiveCursor so the first arrow key moves relative to the
@@ -149,6 +259,38 @@ const ModelsDropdown: React.FC<Props> = ({
 
   if (!open) return null;
 
+  // ── Inline Connect-provider key entry replaces the list while open ──
+  // SECURITY: the typed key lives only in keyInputRef (never React state), so
+  // it is never part of what renders here — this box shows a length-only
+  // masked placeholder, never the characters themselves, and keyPromptError
+  // is always a static message (never interpolates the key).
+  if (keyPromptProvider !== undefined) {
+    const providerLabel = labels?.[keyPromptProvider] ?? keyPromptProvider;
+    const envVar = keyEnvByProvider?.[keyPromptProvider];
+    const masked = "•".repeat(keyPromptLength);
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1} width={width}>
+        <Box marginBottom={1}>
+          <Text color={accent} bold>Connect {providerLabel}</Text>
+        </Box>
+        <Text dimColor>
+          Paste the API key for {providerLabel}{envVar ? ` (${envVar})` : ""}:
+        </Text>
+        <Box marginTop={1}>
+          <Text>{masked || "…"}</Text>
+        </Box>
+        {keyPromptError && (
+          <Box marginTop={1}>
+            <Text color="red">{keyPromptError}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Text dimColor>Enter save · Esc cancel</Text>
+        </Box>
+      </Box>
+    );
+  }
+
   const visible = rows.slice(scrollOffset, scrollOffset + pageSize);
   const hiddenAbove = scrollOffset;
   const hiddenBelow = Math.max(0, rows.length - scrollOffset - pageSize);
@@ -184,7 +326,7 @@ const ModelsDropdown: React.FC<Props> = ({
             const ctx = formatContext(row.contextWindow);
             const note = !row.configured ? "no key" : row.current ? "current" : "";
             return (
-              <Box key={`${row.provider}/${row.model}`}>
+              <Box key={`${row.group}:${row.provider}/${row.model}`}>
                 <Text
                   color={isSelected ? accent : undefined}
                   bold={isSelected}
@@ -193,7 +335,9 @@ const ModelsDropdown: React.FC<Props> = ({
                   {isSelected ? "> " : "  "}
                   {row.label.padEnd(labelWidth)}
                 </Text>
+                {row.providerLabel && <Text dimColor>{"  " + row.providerLabel}</Text>}
                 {ctx && <Text dimColor>{"  " + ctx}</Text>}
+                {row.free && <Text dimColor>{"  Free"}</Text>}
                 {note && <Text dimColor>{"  " + note}</Text>}
               </Box>
             );
@@ -203,7 +347,7 @@ const ModelsDropdown: React.FC<Props> = ({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>↑↓ navigate · Enter select · type to search · Esc close</Text>
+        <Text dimColor>↑↓ navigate · Enter select · type to search · Esc close · ctrl+f favorite · ctrl+a connect provider</Text>
       </Box>
     </Box>
   );

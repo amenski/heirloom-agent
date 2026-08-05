@@ -1475,7 +1475,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           currentModel={ctx.activeModel}
           entries={ctx.getModelEntries()}
           configured={ctx.getConfiguredProviders?.()}
+          getConfigured={ctx.getConfiguredProviders}
           labels={ctx.getProviderLabels?.()}
+          keyEnvByProvider={ctx.getKeyEnvByProvider?.()}
+          getFavoriteModels={ctx.getFavoriteModels}
+          onToggleFavorite={ctx.toggleFavoriteModel}
+          getRecentModels={ctx.getRecentModels}
+          onSaveProviderKey={ctx.saveProviderKey}
           width={term.columns}
           height={term.rows}
           onClose={() => setShowModelDropdown(false)}

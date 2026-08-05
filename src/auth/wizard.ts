@@ -30,14 +30,20 @@ async function writeCredentials(creds: Record<string, string>): Promise<void> {
 
 /**
  * Persist a single provider's key to ~/.heirloom/credentials.yaml (0600),
- * preserving any existing entries. Shared by the interactive wizard and the
- * non-interactive (`--api-key` / piped-stdin) paths.
+ * preserving any existing entries. Shared by the interactive wizard, the
+ * non-interactive (`--api-key` / piped-stdin) paths, and the in-picker
+ * "Connect provider" flow.
+ *
+ * `silent` suppresses the success console.log — needed when calling this from
+ * inside the Ink TUI, where an unexpected console.log would corrupt the
+ * current frame instead of appearing in a real terminal scrollback.
  */
-export async function authSaveKey(name: string, key: string): Promise<void> {
+export async function authSaveKey(name: string, key: string, silent = false): Promise<void> {
   const existing = readCredentialsFile();
   existing[name] = key;
   await writeCredentials(existing);
 
+  if (silent) return;
   console.log(`API key for ${name} saved to ${credsFile()}`);
   console.log("Run `heirloom` to start.");
 }
