@@ -17,6 +17,7 @@ import { isTableBlock } from "./MarkdownTable.js";
 import { useTheme } from "./contexts.js";
 import { ansi256 } from "./theme.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
+import { formatEcho } from "./core/echo-format.js";
 import type { TabDefinition } from "./types.js";
 
 interface OutputAreaProps {
@@ -78,11 +79,24 @@ const OutputLine = memo(function OutputLine({
   // replies can stay plain flush-left text. (A full-width background fill was
   // tried and read as heavier/noisier, so this uses a subtle left rule instead.)
   if (line.startsWith(USER_ECHO_TAG)) {
-    const msg = line.slice(USER_ECHO_TAG.length).replace(/\n/g, " ");
+    // Draw the gutter on every line rather than flattening the message: the
+    // echo must show what was actually submitted, newlines included.
+    const { lines: msgLines, truncated } = formatEcho(line.slice(USER_ECHO_TAG.length));
+    const gutter = theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined;
     return (
-      <Box>
-        <Text color={theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined}>{"▌ "}</Text>
-        <Text>{msg}</Text>
+      <Box flexDirection="column">
+        {msgLines.map((msg, i) => (
+          <Box key={i}>
+            <Text color={gutter}>{"▌ "}</Text>
+            <Text>{msg}</Text>
+          </Box>
+        ))}
+        {truncated !== null && (
+          <Box>
+            <Text color={gutter}>{"▌ "}</Text>
+            <Text dimColor>{truncated}</Text>
+          </Box>
+        )}
       </Box>
     );
   }
@@ -92,9 +106,14 @@ const OutputLine = memo(function OutputLine({
   // it gets no background fill, marking it as out-of-band (it makes no model
   // call and is not counted toward context usage).
   if (line.startsWith(COMMAND_ECHO_TAG)) {
-    const msg = line.slice(COMMAND_ECHO_TAG.length).replace(/\n/g, " ");
+    const { lines: msgLines, truncated } = formatEcho(line.slice(COMMAND_ECHO_TAG.length));
     return (
-      <Text dimColor>{`› ${msg}`}</Text>
+      <Box flexDirection="column">
+        {msgLines.map((msg, i) => (
+          <Text key={i} dimColor>{i === 0 ? `› ${msg}` : `  ${msg}`}</Text>
+        ))}
+        {truncated !== null && <Text dimColor>{`  ${truncated}`}</Text>}
+      </Box>
     );
   }
 
