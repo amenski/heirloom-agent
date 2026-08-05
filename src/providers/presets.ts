@@ -1,71 +1,34 @@
 import { createAISDKProvider } from "./aisdk.js";
 import type { Provider, ModelCapabilities } from "./types.js";
 import { getCredential } from "../config/credentials.js";
+import { loadModelCatalog, type CatalogModel } from "./catalog.js";
 
 export interface ProviderPreset {
+  label?: string;
   api: string;
   baseUrl: string;
   keyEnv: string;
   defaultModel: string;
-  models: Record<string, ModelCapabilities>;
+  models: Record<string, CatalogModel & ModelCapabilities>;
 }
 
-export const BUILTIN_PRESETS: Record<string, ProviderPreset> = {
-  deepseek: {
-    api: "openai-compatible",
-    baseUrl: "https://api.deepseek.com",
-    keyEnv: "DEEPSEEK_API_KEY",
-    defaultModel: "deepseek-v4-pro",
-    models: {
-      "deepseek-v4-flash": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.14, outputPerM: 0.28 }, effort: { values: ["low", "high", "max"], default: "high" } },
-      "deepseek-v4-pro": { supportsTools: true, contextWindow: 1000000, pricing: { inputPerM: 0.435, outputPerM: 0.87 }, effort: { values: ["low", "high", "max"], default: "high" } },
-    },
-  },
-  openai: {
-    api: "openai-compatible",
-    baseUrl: "https://api.openai.com/v1",
-    keyEnv: "OPENAI_API_KEY",
-    defaultModel: "gpt-5.6-sol",
-    models: {
-      // NOTE: no `effort` cap here — OpenAI's chat-completions API rejects
-      // reasoning_effort when function tools are also present, and Heirloom
-      // always sends tools.
-      "gpt-5.6-sol": { supportsTools: true, contextWindow: 256000, pricing: { inputPerM: 2.50, outputPerM: 10.00 } },
-      "gpt-5.6-terra": { supportsTools: true, contextWindow: 256000, pricing: { inputPerM: 1.25, outputPerM: 5.00 } },
-      "gpt-5.6-luna": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.25, outputPerM: 1.00 } },
-    },
-  },
-  openrouter: {
-    api: "openai-compatible",
-    baseUrl: "https://openrouter.ai/api/v1",
-    keyEnv: "OPENROUTER_API_KEY",
-    defaultModel: "anthropic/claude-sonnet-4.6",
-    models: {
-      "anthropic/claude-sonnet-4.6": { supportsTools: true, contextWindow: 200000, pricing: { inputPerM: 3.00, outputPerM: 15.00 } },
-    },
-  },
-  groq: {
-    api: "openai-compatible",
-    baseUrl: "https://api.groq.com/openai/v1",
-    keyEnv: "GROQ_API_KEY",
-    defaultModel: "llama-3.3-70b-versatile",
-    models: {
-      "llama-3.3-70b-versatile": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.59, outputPerM: 0.79 } },
-      "llama-3.1-8b-instant": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.05, outputPerM: 0.08 } },
-      "openai/gpt-oss-120b": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.15, outputPerM: 0.75 }, effort: { values: ["low", "medium", "high"], default: "medium" } },
-      "openai/gpt-oss-20b": { supportsTools: true, contextWindow: 128000, pricing: { inputPerM: 0.10, outputPerM: 0.50 }, effort: { values: ["low", "medium", "high"], default: "medium" } },
-    },
-  },
-  ollama: {
-    api: "openai-compatible",
-    baseUrl: "http://localhost:11434/v1",
-    keyEnv: "",
-    defaultModel: "llama3.2",
-    models: {
-      "llama3.2": { supportsTools: false, contextWindow: 8192 },
-    },
-  },
-};
+/**
+ * Built-in provider/model catalog, loaded from models.json (bundled) merged
+ * with an optional `~/.heirloom/models.json` user override — see
+ * ./catalog.ts. Kept as a plain object (not a function) so every existing
+ * consumer that reads BUILTIN_PRESETS directly keeps working; it is populated
+ * synchronously at module load, same as the previous hardcoded literal.
+ *
+ * NOTE: OpenAI models carry no `effort` cap — OpenAI's chat-completions API
+ * rejects reasoning_effort when function tools are also present, and
+ * Heirloom always sends tools.
+ */
+export const BUILTIN_PRESETS: Record<string, ProviderPreset> = Object.fromEntries(
+  Object.entries(loadModelCatalog().providers).map(([name, p]) => [
+    name,
+    { label: p.label, api: p.api, baseUrl: p.baseUrl, keyEnv: p.keyEnv, defaultModel: p.defaultModel, models: p.models },
+  ]),
+);
 
 export interface ProviderOptions {
   modelOverride?: string;

@@ -31,10 +31,12 @@ export default defineConfig({
       "const __dirname = __pathDirname(__filename);",
     ].join("\n"),
   },
-  // tsup bundles JS/TS only; the builtin mode YAMLs are assets the ModeLoader
-  // resolves relative to the compiled module (dist/cli.js -> dist/builtin/).
-  // Copy them into dist so the packaged binary can list and load modes.
+  // tsup bundles JS/TS only; the builtin mode YAMLs and the model catalog are
+  // assets resolved relative to the compiled module (dist/cli.js ->
+  // dist/builtin/, dist/models.json). Copy them into dist so the packaged
+  // binary can list/load modes and load the model catalog.
   async onSuccess() {
     await import("./scripts/copy-modes.mjs");
+    await import("./scripts/copy-models.mjs");
   },
 });
