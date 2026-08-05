@@ -55,7 +55,7 @@ import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
-import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
+import { USER_ECHO_TAG, COMMAND_ECHO_TAG, LIVE_LINE_BUDGET } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
 import {
   formatToolCallHeader,
@@ -1303,6 +1303,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         lines={outputLines}
         activeLine={activeLine}
         busy={busy}
+        liveLineBudget={LIVE_LINE_BUDGET}
       />
 
       <Spinner active={turnActive} />

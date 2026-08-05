@@ -29,6 +29,14 @@ interface OutputAreaProps {
   busy: boolean;
   /** Maximum number of lines to keep in view (0 = unlimited) */
   maxLines?: number;
+  /**
+   * Cap on how many committed lines stay individually rendered (0 = unlimited).
+   *
+   * Unlike `maxLines` this never discards output: older lines are folded into
+   * one collapsed element instead of many, so the transcript stays complete
+   * while Ink's per-frame layout cost stops scaling with session length.
+   */
+  liveLineBudget?: number;
   /** Active tab info (for multiplex mode) */
   tab?: TabDefinition;
 }
@@ -69,10 +77,21 @@ function summarizeText(text: string): string {
 
 const OutputLine = memo(function OutputLine({
   line,
+  verbatim = false,
 }: {
   line: string;
+  /**
+   * Render the text exactly as given, skipping echo/markdown/summary handling.
+   * Used for the folded backlog block, whose content is already-rendered output —
+   * re-interpreting it would re-tag echoes and let summarizeText drop its middle.
+   */
+  verbatim?: boolean;
 }) {
   const theme = useTheme();
+  // Computed unconditionally: hooks must not sit behind an early return.
+  const summary = useMemo(() => (verbatim ? null : needsSummary(line)), [line, verbatim]);
+
+  if (verbatim) return <Text>{line}</Text>;
 
   // A user-echo line (tagged with USER_ECHO_TAG) renders with a blue gutter bar
   // on the left and plain text — the gutter is what marks input, so assistant
@@ -117,8 +136,6 @@ const OutputLine = memo(function OutputLine({
     );
   }
 
-  const summary = useMemo(() => needsSummary(line), [line]);
-
   if (summary) {
     return (
       <Box flexDirection="column">
@@ -137,12 +154,12 @@ const OutputLine = memo(function OutputLine({
 const CommittedLines = memo(function CommittedLines({
   merged,
 }: {
-  merged: Array<{ text: string; key: number }>;
+  merged: Array<{ text: string; key: number; folded?: boolean }>;
 }) {
   return (
     <>
       {merged.map((item) => (
-        <OutputLine key={item.key} line={item.text} />
+        <OutputLine key={item.key} line={item.text} verbatim={item.folded === true} />
       ))}
     </>
   );
@@ -176,11 +193,33 @@ function mergeTableLines(lines: string[]): Array<{ text: string; key: number }> 
   return merged;
 }
 
+/**
+ * Fold everything older than the last `budget` lines into one entry.
+ *
+ * The transcript is only stored in this array — there is no <Static> flush, so
+ * dropping lines would lose them for good. Joining them into a single element
+ * keeps every character on screen while collapsing N Ink layout nodes into one,
+ * which is where the per-frame cost actually lives.
+ */
+export function foldOldLines(
+  merged: Array<{ text: string; key: number; folded?: boolean }>,
+  budget: number,
+): Array<{ text: string; key: number; folded?: boolean }> {
+  if (budget <= 0 || merged.length <= budget) return merged;
+  const foldCount = merged.length - budget;
+  const folded = merged.slice(0, foldCount);
+  return [
+    { text: folded.map((m) => m.text).join("\n"), key: folded[0].key, folded: true },
+    ...merged.slice(foldCount),
+  ];
+}
+
 function OutputArea({
   lines,
   activeLine,
   busy,
   maxLines = 0,
+  liveLineBudget = 0,
 }: OutputAreaProps) {
   // Truncate to maxLines if configured
   const displayLines = useMemo(() => {
@@ -190,7 +229,10 @@ function OutputArea({
     return lines;
   }, [lines, maxLines]);
 
-  const mergedLines = useMemo(() => mergeTableLines(displayLines), [displayLines]);
+  const mergedLines = useMemo(
+    () => foldOldLines(mergeTableLines(displayLines), liveLineBudget),
+    [displayLines, liveLineBudget],
+  );
 
   // Track if we have lines to show the "more lines above" indicator
   const hasMore = maxLines > 0 && lines.length > maxLines;
