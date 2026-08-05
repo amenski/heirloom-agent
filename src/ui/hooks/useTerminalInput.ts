@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { useStdin } from "ink";
+import { enableBracketedPaste, disableBracketedPaste } from "../Accessibility.js";
 
 export interface InputKey {
   key: string;
@@ -202,6 +203,15 @@ export function attachInputWire(stdin: NodeJS.ReadableStream): void {
   if (inputWireAttached) return;
   inputWireAttached = true;
   stdin.on("data", onTerminalData);
+  // Without this the terminal sends a paste as bare bytes, so every embedded
+  // newline reaches the handler as a plain Enter and submits that line on its
+  // own. The mode is enabled for the wire's lifetime (the process), matching
+  // the \x1b[200~/\x1b[201~ framing parseTerminalInput expects.
+  enableBracketedPaste();
+  const restore = (): void => disableBracketedPaste();
+  process.on("exit", restore);
+  process.once("SIGINT", restore);
+  process.once("SIGTERM", restore);
 }
 
 /** Test-only: reset module-level wire state between tests. */

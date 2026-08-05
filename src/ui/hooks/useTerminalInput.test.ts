@@ -79,6 +79,21 @@ describe("input wire (single module-level listener)", () => {
     expect(stream.listenerCount("data")).toBe(1);
   });
 
+  it("enables bracketed paste mode so multi-line pastes arrive as one event", () => {
+    const written: string[] = [];
+    const isTTY = process.stdout.isTTY;
+    const write = process.stdout.write.bind(process.stdout);
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    process.stdout.write = ((s: string) => { written.push(String(s)); return true; }) as typeof process.stdout.write;
+    try {
+      attachInputWire(stream);
+    } finally {
+      process.stdout.write = write;
+      Object.defineProperty(process.stdout, "isTTY", { value: isTTY, configurable: true });
+    }
+    expect(written.join("")).toContain("\x1b[?2004h");
+  });
+
   it("dispatches parsed keys to the active handler while flowing", async () => {
     attachInputWire(stream);
     const keys: InputKey[] = [];

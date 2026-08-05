@@ -12,6 +12,9 @@ import {
 import {
   createPromptUndoRedoState, recordPromptEdit, undoPromptEdit, redoPromptEdit, clearPromptUndoRedoState,
 } from "../core/prompt-undo-redo.js";
+import {
+  shouldCollapse, applyEditToSpans, clampSpans, collapseForDisplay, type PasteSpan,
+} from "../core/paste-spans.js";
 import { getSlashCommands, filterSlashCommands, type SlashCommandItem } from "../core/slash-commands.js";
 import { resolveSlashSubmit } from "../core/slash-submit.js";
 import { useHistoryNavigation } from "../hooks/useHistoryNavigation.js";
@@ -56,10 +59,24 @@ const PromptInput = React.memo(function PromptInput({
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const bufferRef = useRef(buffer);
   bufferRef.current = buffer;
+  // Display-only: ranges of `buffer.text` that came from a large paste and are
+  // drawn as "[pasted N chars]". The buffer itself always holds the real text.
+  const [pasteSpans, setPasteSpans] = useState<PasteSpan[]>([]);
+  const pasteSpansRef = useRef(pasteSpans);
+  pasteSpansRef.current = pasteSpans;
   const attachedImagesRef = useRef(attachedImages);
   attachedImagesRef.current = attachedImages;
 
-  const { historyCursor, navigateHistory, exitHistoryBrowsing } = useHistoryNavigation(buffer, setBuffer, promptHistory);
+  const {
+    historyCursor, navigateHistory: navigateHistoryRaw, exitHistoryBrowsing,
+  } = useHistoryNavigation(buffer, setBuffer, promptHistory);
+
+  // Recalling a history entry swaps the whole buffer, so any spans pointing into
+  // the previous text would collapse unrelated ranges.
+  function navigateHistory(direction: -1 | 1): void {
+    navigateHistoryRaw(direction);
+    setPasteSpansChecked([]);
+  }
 
   const slashToken = getCurrentSlashToken(buffer);
   const slashItems = useMemo(() => getSlashCommands(), []);
@@ -94,6 +111,7 @@ const PromptInput = React.memo(function PromptInput({
     if (!promptDraft || appliedDraftNonceRef.current === promptDraft.nonce) return;
     appliedDraftNonceRef.current = promptDraft.nonce;
     setBuffer({ text: promptDraft.text, cursor: promptDraft.text.length });
+    setPasteSpansChecked([]); // wholesale replacement — old offsets are meaningless
     exitHistoryBrowsing();
     clearPromptUndoRedoState(undoRedoRef.current);
   }, [promptDraft, exitHistoryBrowsing]);
@@ -113,6 +131,14 @@ const PromptInput = React.memo(function PromptInput({
     recordPromptEdit(undoRedoRef.current, current, next);
     bufferRef.current = next;
     setBuffer(next);
+    setPasteSpansChecked(applyEditToSpans(pasteSpansRef.current, current.text, next.text));
+  }
+
+  // Keep the ref in lockstep with state so several edits inside one stdin chunk
+  // (paste + Enter, held-key repeats) each see the previous edit's spans.
+  function setPasteSpansChecked(spans: PasteSpan[]): void {
+    pasteSpansRef.current = spans;
+    setPasteSpans(spans);
   }
 
   function handleSlashSelection(item: SlashCommandItem): void {
@@ -154,6 +180,7 @@ const PromptInput = React.memo(function PromptInput({
   function resetInput(): void {
     bufferRef.current = EMPTY_BUFFER;
     setBuffer(EMPTY_BUFFER);
+    setPasteSpansChecked([]);
     clearPromptUndoRedoState(undoRedoRef.current);
     setAttachedImages([]);
     attachedImagesRef.current = [];
@@ -164,7 +191,13 @@ const PromptInput = React.memo(function PromptInput({
 
     if (key.paste) {
       const sanitized = key.paste.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const start = bufferRef.current.cursor;
       updateBuffer((s) => insertText(s, sanitized));
+      // Record AFTER the edit: updateBuffer has already shifted existing spans
+      // past the insertion point, so appending here can't be double-adjusted.
+      if (shouldCollapse(sanitized)) {
+        setPasteSpansChecked([...pasteSpansRef.current, { start, end: start + sanitized.length }]);
+      }
       return;
     }
 
@@ -209,6 +242,7 @@ const PromptInput = React.memo(function PromptInput({
         if (selected) {
           const label = selected.label;
           setBuffer({ text: label, cursor: label.length });
+          setPasteSpansChecked([]);
         }
         return;
       }
@@ -293,7 +327,7 @@ const PromptInput = React.memo(function PromptInput({
         </Box>
         <Box flexGrow={1} flexShrink={1} width={inputContentWidth}>
           <Text wrap="hard">
-            {renderBufferWithCursor(buffer, placeholder)}
+            {renderBufferWithCursor(buffer, placeholder, pasteSpans)}
           </Text>
         </Box>
       </Box>
@@ -308,9 +342,19 @@ const PromptInput = React.memo(function PromptInput({
   );
 });
 
-function renderBufferWithCursor(state: PromptBufferState, placeholder?: string): string {
-  const text = state.text || "";
-  const cursor = Math.max(0, Math.min(state.cursor, text.length));
+function renderBufferWithCursor(
+  state: PromptBufferState,
+  placeholder?: string,
+  pasteSpans: PasteSpan[] = [],
+): string {
+  const raw = state.text || "";
+  const rawCursor = Math.max(0, Math.min(state.cursor, raw.length));
+  // Collapse pasted blocks for display only; `state` keeps the real text.
+  const collapsed = pasteSpans.length > 0
+    ? collapseForDisplay(raw, rawCursor, clampSpans(pasteSpans, raw.length))
+    : { text: raw, cursor: rawCursor };
+  const text = collapsed.text;
+  const cursor = Math.max(0, Math.min(collapsed.cursor, text.length));
 
   if (text.length === 0 && placeholder) {
     return `\u001B[7m \u001B[27m\u001B[2m ${placeholder}\u001B[22m`;
