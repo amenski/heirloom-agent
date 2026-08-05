@@ -267,6 +267,13 @@ const PromptInput = React.memo(function PromptInput({
       return;
     }
 
+    // Swallow a bare Tab with no menu open. parseTerminalInput gives Tab a
+    // `value` of "\t", so without this it fell through to the catch-all insert
+    // below and typed a literal tab into the prompt — which widened the row
+    // past the input box and wrapped the model pill onto its own line, once per
+    // press. Tab is a completion key here, never a character.
+    if (key.tab) return;
+
     if (key.shift && key.return) { updateBuffer((s) => insertText(s, "\n")); return; }
     if (key.return) { submitCurrent(); return; }
 
@@ -357,7 +364,14 @@ const PromptInput = React.memo(function PromptInput({
             {renderBufferWithCursor(buffer, placeholder, pasteSpans)}
           </Text>
         </Box>
-        {modelPill && <Text>{modelPill}</Text>}
+        {/* flexShrink=0: the pill is fixed chrome, so long input must wrap
+            within the text column rather than squeezing the pill and pushing it
+            onto its own line. */}
+        {modelPill && (
+          <Box flexShrink={0}>
+            <Text>{modelPill}</Text>
+          </Box>
+        )}
       </Box>
 
       {/* Status row: flat, outside the box, one line. A notice borrows this row
