@@ -1,6 +1,6 @@
 # Heirloom — Follow-ups
 
-Open items parked for later. Captured 2026-08-04, revised 2026-08-04 (later session).
+Open items parked for later. Captured 2026-08-04, revised 2026-08-05.
 
 ## STILL BROKEN
 
@@ -20,11 +20,21 @@ watchdog to a REAL session (`node:inspector` `Session` + `Profiler.start()`, a 2
 measuring its own lateness, and on a >150ms stall dump the hottest self-time frames). That
 names the blocking frame directly. Three code-reading diagnoses in a row were wrong.
 
-Unmeasured suspects: the full-transcript Ink render on real message appends (`OutputArea`
-still gets no `maxLines`, so every line is a live element), the still-absent `<Static>`,
-stdout backpressure on large frames, or something outside the UI entirely.
+Unmeasured suspects: stdout backpressure on large frames, the still-absent `<Static>`, or
+something outside the UI entirely.
+
+Addressed since (`76a1412`), so no longer a suspect: the full-transcript Ink render on
+message appends. `OutputArea` kept one live element per committed line, so per-frame layout
+cost scaled with session length. Now capped via `liveLineBudget` (400) — lines older than
+that fold into a single element rather than being dropped. Measured 310ms → 118ms to render
+4k lines. NOTE: the `maxLines` prop this doc previously recommended is the wrong tool — it
+slices to the newest N and discards the rest, and with `<Static>` absent `outputLines` is
+the only copy of the transcript, so it would lose scrollback permanently.
 
 ## Needs your eyes (cannot be verified without a TTY)
+
+Still outstanding: `/skills`, `/effort`, `/model` (§1). Multi-line paste was confirmed
+working in a live terminal 2026-08-05 — see Closed.
 
 ### 1. Confirm `/skills`, `/effort` and `/model` in a live terminal
 The command layer is now covered by logic + Ink render tests, but these three need
@@ -74,6 +84,23 @@ snapshots, not live reference docs, so they were left alone — clean up only if
 misleading.
 
 ---
+
+## Closed 2026-08-05
+
+- **Paste arrived line by line — confirmed fixed in a live terminal.** `enableBracketedPaste()`
+  existed but was never called, so the terminal sent a paste as bare bytes with no
+  `\x1b[200~` framing; every embedded newline reached the handler as a plain Enter and
+  submitted that line on its own. The parser and the `PromptInput` paste handler were
+  already correct. Enabled in `attachInputWire` (the single process-lifetime attach point),
+  restored on exit/SIGINT/SIGTERM. Two display fixes rode along: a large paste collapses in
+  the prompt to `[pasted N chars]` (display only — spans tracked in `core/paste-spans.ts`,
+  the buffer keeps the real text so submit/history/undo are untouched), and the transcript
+  echo no longer flattens newlines with `.replace(/\n/g, " ")` (`core/echo-format.ts`; this
+  was a pre-existing bug affecting Shift+Enter too, visible only once multi-line input could
+  reach the buffer). `c8f0eb8`.
+  Live-terminal check done 2026-08-05: paste lands as one message. Note that no test can
+  cover this part — synthetic `\x1b[200~` bytes prove parsing, not that the terminal
+  negotiates the mode.
 
 ## Closed 2026-08-04 (later session)
 
