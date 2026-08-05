@@ -108,6 +108,10 @@ export interface DeepCodeSettings {
   contextWindow?: number;
   /** Status line provider plugins (heirloom extension, deepcode-compatible) */
   statusline?: StatuslineConfig;
+  /** Favorited models in the /model picker, as "provider/model" ids (heirloom extension) */
+  favoriteModels?: string[];
+  /** Recently-switched-to models in the /model picker, newest first, capped at 5 (heirloom extension) */
+  recentModels?: { id: string; at: number }[];
 }
 
 // ── Statusline config (deepcode-compatible) ──
@@ -213,6 +217,8 @@ const KNOWN_KEYS = new Set([
   "compaction",
   "contextWindow",
   "statusline",
+  "favoriteModels",
+  "recentModels",
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
@@ -791,6 +797,35 @@ export function loadConfig(projectDir?: string): LoadResult {
   if ("statusline" in merged) {
     const statusline = validateStatusline(merged.statusline, "config", errors);
     if (statusline) config.statusline = statusline;
+  }
+
+  // favoriteModels
+  if ("favoriteModels" in merged) {
+    if (Array.isArray(merged.favoriteModels)) {
+      config.favoriteModels = merged.favoriteModels.filter((f): f is string => typeof f === "string");
+      if (config.favoriteModels.length !== merged.favoriteModels.length) {
+        errors.push("config.favoriteModels: all entries must be strings");
+      }
+    } else {
+      errors.push("config.favoriteModels: must be an array of strings");
+    }
+  }
+
+  // recentModels
+  if ("recentModels" in merged) {
+    if (Array.isArray(merged.recentModels)) {
+      const recent: { id: string; at: number }[] = [];
+      for (const item of merged.recentModels as unknown[]) {
+        if (!isObject(item) || typeof item.id !== "string" || typeof item.at !== "number") {
+          errors.push('config.recentModels: entries must be objects of shape { id: string, at: number }');
+          continue;
+        }
+        recent.push({ id: item.id, at: item.at });
+      }
+      config.recentModels = recent;
+    } else {
+      errors.push("config.recentModels: must be an array");
+    }
   }
 
   // ── Unknown field warnings ──

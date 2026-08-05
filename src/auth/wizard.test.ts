@@ -80,6 +80,15 @@ describe("authSaveKey", () => {
     expect(output).toContain("Run `heirloom` to start.");
   });
 
+  it("silent:true saves the key but suppresses the console.log — needed so the Ink TUI's frame isn't corrupted", async () => {
+    const logSpy = vi.spyOn(console, "log");
+    await authSaveKey("deepseek", "sk-silent-dummy", true);
+
+    expect(logSpy).not.toHaveBeenCalled();
+    const creds = parseFlatYaml(readFileSync(credsPath(), "utf-8"));
+    expect(creds.deepseek).toBe("sk-silent-dummy");
+  });
+
   it("does not write anything when the save path is never invoked (cancel)", () => {
     // The cancel path in the wizard/CLI never calls authSaveKey, so no file
     // is created. This asserts the precondition that our temp HOME starts clean.

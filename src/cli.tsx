@@ -37,6 +37,8 @@ import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingC
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
 import { StatusLineManager } from "./ui/statusline/index.js";
 import { isSkillAlreadyLoaded, buildSkillLoadMessage } from "./ui/core/skill-load.js";
+import { toModelId } from "./ui/core/model-picker.js";
+import { loadFavoriteModels, loadRecentModels, persistRecentModel, persistToggleFavorite } from "./ui/components/ModelsDropdown/settings.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
@@ -441,7 +443,23 @@ async function main() {
       },
       getModelEntries: () => listKnownModels(),
       getConfiguredProviders: () => getConfiguredProviders(),
-      getProviderLabels: () => PROVIDER_LABELS,
+      getProviderLabels: () => getProviderLabels(),
+      getKeyEnvByProvider: () => getKeyEnvByProvider(),
+      getFavoriteModels: () => loadFavoriteModels(),
+      toggleFavoriteModel: (id: string) => persistToggleFavorite(id),
+      getRecentModels: () => loadRecentModels(),
+      saveProviderKey: async (provider: string, key: string) => {
+        try {
+          const preset = getPreset(provider);
+          if (!preset?.keyEnv) {
+            return { ok: false, error: `Provider "${provider}" has no configurable API key.` };
+          }
+          await authSaveKey(provider, key, /* silent */ true);
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: (err as Error).message };
+        }
+      },
       runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled),
       resumeSession: async (id: string) => {
         try {
@@ -568,17 +586,60 @@ function detectProvider(configEnv: Record<string, string | undefined> | undefine
   return null;
 }
 
-const PROVIDER_LABELS: Record<string, string> = { deepseek: "DeepSeek", openai: "OpenAI", openrouter: "OpenRouter", groq: "Groq", ollama: "Ollama" };
-function getProviderLabel(name: string): string { return PROVIDER_LABELS[name] ?? name; }
+function getProviderLabels(): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const provName of getKnownProviderNames()) {
+    const preset = getPreset(provName);
+    labels[provName] = preset?.label ?? provName;
+  }
+  return labels;
+}
+function getProviderLabel(name: string): string { return getPreset(name)?.label ?? name; }
+
+function getKeyEnvByProvider(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const provName of getKnownProviderNames()) {
+    const keyEnv = getPreset(provName)?.keyEnv;
+    if (keyEnv) out[provName] = keyEnv;
+  }
+  return out;
+}
+
+/**
+ * Record a successful /model switch into settings.json's recentModels list,
+ * for the picker's Recent group. A model already favorited is skipped — the
+ * picker keeps Recent and Favorites disjoint. Best-effort: a write failure
+ * (e.g. read-only HOME) must never break the model switch itself.
+ */
+function recordRecentModel(id: string): void {
+  try {
+    if (loadFavoriteModels().includes(id)) return;
+    persistRecentModel(id, Date.now());
+  } catch {
+    // Best-effort — the /model switch already succeeded and must not fail here.
+  }
+}
 
 function listKnownModels(): ModelEntry[] {
   const entries: ModelEntry[] = [];
   for (const provName of getKnownProviderNames()) {
     const preset = getPreset(provName);
     const seen = new Set<string>();
-    if (preset) { for (const [modelName, caps] of Object.entries(preset.models)) { entries.push({ provider: provName, model: modelName, contextWindow: caps.contextWindow }); seen.add(modelName); } }
+    if (preset) {
+      for (const [modelName, caps] of Object.entries(preset.models)) {
+        entries.push({
+          provider: provName,
+          model: modelName,
+          contextWindow: caps.contextWindow,
+          displayName: caps.displayName,
+          providerLabel: preset.label,
+          free: caps.free,
+        });
+        seen.add(modelName);
+      }
+    }
     const models = getProviderModels(provName);
-    if (models) { for (const [modelName, info] of Object.entries(models)) { if (seen.has(modelName)) continue; entries.push({ provider: provName, model: modelName, contextWindow: info.contextWindow }); } }
+    if (models) { for (const [modelName, info] of Object.entries(models)) { if (seen.has(modelName)) continue; entries.push({ provider: provName, model: modelName, contextWindow: info.contextWindow, providerLabel: preset?.label }); } }
   }
   return entries;
 }
@@ -784,6 +845,7 @@ export async function handleSlashCore(
       }
       await sessionStore.appendState(sessionId, { provider, model });
       resetCompactor();
+      recordRecentModel(toModelId(provider, model));
       console.log(`Model changed to ${shared.providerName}/${shared.activeModel}`);
       return;
     }
