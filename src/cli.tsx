@@ -32,7 +32,8 @@ import { connectMCPServers } from "./mcp/connector.js";
 import App from "./ui/App.js";
 import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
-import { resolveTheme, ThemeContextValue } from "./ui/theme.js";
+import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
+import { chip, meter } from "./ui/core/chips.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
 import { StatusLineManager } from "./ui/statusline/index.js";
@@ -318,36 +319,70 @@ async function main() {
     let idCounter = 0;
     const nextId = () => `s${++idCounter}`;
 
-    // Posture indicator (cycled by Shift+Tab), leading the bar.
+    // Leading identity segment: the active mode when one is set, otherwise the
+    // permission posture. Posture still takes over when it is non-default,
+    // because auto-approve/plan change what the agent may do without asking —
+    // that outranks the persona for "what is this session doing right now".
+    // A coloured dot carries the state and the word stays neutral, so the row
+    // has one accent per meaning rather than three competing coloured words.
+    const statusDot = (code: number) =>
+      colorEnabled ? `${ansiFg(code)}●${ANSI_RESET} ` : "* ";
     if (shared.posture === "autoApprove") {
-      segments.push(T(nextId(), "⏵⏵ auto-approve (shift+tab)", { color: "yellow", bold: true }));
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.warning)}auto-approve`, { raw: true }));
     } else if (shared.posture === "plan") {
-      segments.push(T(nextId(), "⏸ plan mode (shift+tab)", { color: "cyan", bold: true }));
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.info)}plan`, { raw: true }));
+    } else if (shared.activeMode?.name) {
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}${shared.activeMode.name}`, { raw: true }));
     } else {
-      segments.push(dim(nextId(), "▶ normal (shift+tab)"));
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}normal`, { raw: true }));
     }
 
-    const modelId = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
-    segments.push(T(nextId(), `${getProviderLabel(shared.providerName)}/${modelId}`, { bold: true }));
+    // The model is NOT here — it rides as a chip on the input box's right edge
+    // (see buildModelPill), because it is a property of the message you are
+    // about to send rather than ambient session state.
 
-    // Effort sits with the model because it is a property of it: the values are
-    // declared per-model and /effort only offers what the active model supports.
-    // Shown only when the model declares effort levels, so providers without it
-    // (most of them) get no empty segment.
+    // Effort as a filled chip: it is a mode you switched into, so it should read
+    // as a set value rather than another word in a list. Shown only when the
+    // model declares effort levels.
     if (shared.activeEffort && getActiveModelCaps()?.effort) {
-      segments.push(dim(nextId(), `effort ${shared.activeEffort}`));
+      segments.push(T(nextId(), chip(shared.activeEffort, {
+        fg: resolvedTheme.theme.textInverse,
+        bg: resolvedTheme.theme.warning,
+        colorEnabled,
+      }), { raw: true }));
     }
 
     const ctxPercent = getContextPercent();
     if (ctxPercent !== null) {
-      const filled = Math.round((Math.min(ctxPercent, 100) / 100) * 8);
-      const bar = "█".repeat(filled) + "░".repeat(8 - filled);
-      const ctxText = `${bar} ${Math.round(ctxPercent)}%`;
-      const color = ctxPercent >= 95 ? "red" : ctxPercent >= 80 ? "yellow" : undefined;
-      segments.push(T(nextId(), `ctx ${ctxText}`, color ? { color } : { dimColor: true }));
+      // A thin meter rather than block glyphs: context usage is ambient, and
+      // heavy blocks made it the loudest thing on the row.
+      const bar = meter(ctxPercent, 12, {
+        fg: ctxPercent >= 95
+          ? resolvedTheme.theme.error
+          : ctxPercent >= 80
+            ? resolvedTheme.theme.warning
+            : resolvedTheme.theme.textDim,
+        dim: resolvedTheme.theme.surface,
+        colorEnabled,
+      });
+      segments.push(T(nextId(), `ctx ${bar} ${Math.round(ctxPercent)}%`, { raw: true, dimColor: true }));
     }
 
     return segments;
+  }
+
+  /**
+   * The model chip shown on the input box's right edge. Pre-rendered ANSI (not
+   * a node) so it stays inside the single input row — see PromptInput.modelPill.
+   */
+  function buildModelPill(): string {
+    const modelId = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
+    const label = getActiveModelCaps()?.displayName ?? modelId;
+    return chip(label, {
+      fg: resolvedTheme.theme.textBright,
+      bg: resolvedTheme.theme.surface,
+      colorEnabled,
+    });
   }
 
   function getContextPercent(): number | null {
@@ -437,6 +472,7 @@ async function main() {
       processAtMentions,
       completer: (line: string) => completer(line, knownModeSlugs),
       buildStatusBar,
+      buildModelPill,
       statusLineManager,
       getPromptStr: () => (colorEnabled ? `\u001B[34m\u258C\u001B[0m \u001B[34m\u203A\u001B[0m ` : "heirloom > "),
       getColorEnabled: () => colorEnabled,
@@ -550,7 +586,17 @@ async function main() {
         themeConfig: { mode: configResult.config.theme?.mode ?? "dark", name: configResult.config.theme?.name, overrides: configResult.config.theme?.overrides },
         keybindingConfig: resolvedKeybindingConfig,
       }),
-      { exitOnCtrlC: false },
+      {
+        exitOnCtrlC: false,
+        // Ink defaults to erasing the ENTIRE frame and redrawing it on every
+        // render — measured as `\x1b[2K\x1b[1A` repeated once per row, 465 bytes
+        // per tick for a small frame. At the working indicator's 80ms cadence
+        // that is a full-screen clear-and-repaint 12.5x/second, which is what
+        // the terminal shows as flicker (badly on slower emulators like
+        // IntelliJ's). Incremental mode moves the cursor and rewrites only the
+        // lines that actually changed: same frame, 69 bytes, no erase at all.
+        incrementalRendering: true,
+      },
     );
 
     const exitPromise = inkInstance.waitUntilExit();

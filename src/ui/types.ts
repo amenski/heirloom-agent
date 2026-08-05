@@ -39,6 +39,12 @@ export interface StatusSegment {
   color?: string;
   backgroundColor?: string;
   newLine?: boolean;
+  /**
+   * `text` already contains its own ANSI (a chip, a meter). StatusBar passes it
+   * through untouched instead of wrapping it in another colour, which would
+   * nest escapes and clobber the embedded background runs.
+   */
+  raw?: boolean;
 }
 
 // ── Tab / Multiplex ──
@@ -129,6 +135,8 @@ export interface AppContext {
   completer: (line: string) => [string[], string];
 
   buildStatusBar: () => StatusSegment[];
+  /** Pre-rendered model chip for the input box's right edge. */
+  buildModelPill?: () => string;
   /** Config-driven status line providers (command/module). Undefined when no `statusline` config. */
   statusLineManager?: StatusLineManager;
   getPromptStr: () => string;
