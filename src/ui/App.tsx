@@ -189,7 +189,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const [sessionStart] = useState(() => Date.now());
   const [tokenCounts, setTokenCounts] = useState<{
     input: number;
     output: number;
@@ -353,9 +352,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const reasoningRef = useRef<{ buffer: string; flushed: boolean }>({ buffer: "", flushed: false });
 
+  // Throttle the RENDERED active line to one commit per interval. Every
+  // streamed chunk used to call setActiveLine directly, so a fast model could
+  // trigger dozens of Ink frame writes per second — each one repainting the
+  // terminal (visible flicker in Terminal.app). `activeLineRef` always holds
+  // the freshest text for the places that read it synchronously (tool-start
+  // flush, turn-end commit); only the rendered value lags by up to one
+  // interval, matching the flush timer's cadence.
+  const activeLineFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   function setActiveLineBoth(v: string) {
     activeLineRef.current = v;
-    setActiveLine(v);
+    if (activeLineFlushRef.current) return;
+    activeLineFlushRef.current = setTimeout(() => {
+      activeLineFlushRef.current = null;
+      setActiveLine(activeLineRef.current);
+    }, 50);
   }
 
   function setFirstTokenBoth(v: boolean) {
@@ -389,6 +401,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     return () => {
       stopFlushTimer();
       flushOutputQueue();
+      if (activeLineFlushRef.current) {
+        clearTimeout(activeLineFlushRef.current);
+        activeLineFlushRef.current = null;
+      }
     };
   }, []);
 
@@ -1585,8 +1601,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             : statusLine
         }
         gitStatus={gitStatus}
-        showTimer
-        sessionStart={sessionStart}
         tokenCounts={tokenCounts}
       />
     </Box>
