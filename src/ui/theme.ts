@@ -227,7 +227,10 @@ export const DARK_THEME: ThemeDefinition = {
   background: ANSI.black,
   surface: ANSI.grey23,
   border: ANSI.grey47,
-  selection: ANSI.blue,
+  // Selection is used as a BACKGROUND slab, so it must be a dark tint that
+  // separates from `background` while staying readable under bright text.
+  // Low-ANSI blue (4) is a saturated block that swamps the row.
+  selection: 24,
 
   // Bright blue gutter/prompt accent, readable on black.
   promptFg: 39,
@@ -292,7 +295,7 @@ export const LIGHT_THEME: ThemeDefinition = {
   background: ANSI.white,
   surface: ANSI.grey191,
   border: ANSI.grey151,
-  selection: ANSI.sky,
+  selection: 153,
 
   // Deep blue gutter/prompt accent — legible on white (not the old mid-cyan,
   // which washed out).
@@ -356,7 +359,7 @@ export const HIGH_CONTRAST_THEME: ThemeDefinition = {
   background: ANSI.black,
   surface: ANSI.grey15,
   border: ANSI.grey31,
-  selection: ANSI.brightBlue,
+  selection: 25,
 
   promptFg: ANSI.brightCyan,
   promptBg: undefined,
@@ -427,8 +430,10 @@ export const DRACULA_THEME: ThemeDefinition = {
 
   background: 236, // #282a36
   surface: 237, // current line (#44475a) approx
-  border: 239,
-  selection: 239, // #44475a
+  // border doubles as the chip fill, so it needs real separation from the page
+  // (Dracula's own "current line" tone) rather than sitting 3 steps away.
+  border: 245,
+  selection: 60, // #44475a — the canonical Dracula selection
 
   // Bright cyan gutter/prompt accent, readable on the dark purple-grey bg.
   promptFg: 117,
@@ -491,8 +496,9 @@ export const MONOKAI_THEME: ThemeDefinition = {
 
   background: 235, // #272822
   surface: 236,
-  border: 238,
-  selection: 238, // #49483e
+  // border doubles as the chip fill and needs real separation from the page.
+  border: 244,
+  selection: 58, // #49483e
 
   // Bright cyan gutter/prompt accent, readable on the dark olive-grey bg.
   promptFg: 81,
@@ -555,8 +561,9 @@ export const GITHUB_DARK_THEME: ThemeDefinition = {
 
   background: 234, // #0d1117
   surface: 235, // #161b22
-  border: 238, // #30363d
-  selection: 238,
+  // border doubles as the chip fill and needs real separation from the page.
+  border: 243, // lifted from #30363d so chips read against the page
+  selection: 24,
 
   // Bright blue gutter/prompt accent, legible on the near-black navy bg.
   promptFg: 75,

@@ -3,6 +3,8 @@ import { Box, Text, useInput } from "ink";
 import type { ModelEntry } from "../../types.js";
 import { useTheme } from "../../contexts.js";
 import { ansi256, type ThemeContextValue } from "../../theme.js";
+import { keyCap } from "../../core/chips.js";
+import { computeColumns, fit, fitRight, COLUMN_GAP } from "../../core/picker-columns.js";
 import {
   buildRows,
   moveSelection,
@@ -61,6 +63,16 @@ const ModelsDropdown: React.FC<Props> = ({
 }) => {
   const theme = useTheme();
   const accent = slotColor(theme, "accent");
+  // The theme's dedicated selection slot — not `surface`, which is only a hair
+  // above `background` in the grey ramp and made the band vanish on a near-black
+  // terminal (and worse in the midnight theme, where the two are adjacent).
+  const selectionBg = slotColor(theme, "selection");
+  const stateColor = slotColor(theme, "success");
+  const capStyle = {
+    fg: theme.theme.textDim,
+    bg: theme.theme.border,
+    colorEnabled: theme.colorEnabled,
+  };
   const borderColor = slotColor(theme, "border");
 
   const [query, setQuery] = useState("");
@@ -305,23 +317,33 @@ const ModelsDropdown: React.FC<Props> = ({
   const visible = rows.slice(scrollOffset, scrollOffset + pageSize);
   const hiddenAbove = scrollOffset;
   const hiddenBelow = Math.max(0, rows.length - scrollOffset - pageSize);
-  const labelWidth = Math.max(
-    12,
-    ...rows.filter((r): r is Extract<PickerRow, { kind: "model" }> => r.kind === "model")
-      .map((r) => r.label.length),
+  // Column widths come from the whole row set (not each row) so every field
+  // lines up vertically — that is what turns the list into a table.
+  const cols = computeColumns(
+    rows
+      .filter((r): r is Extract<PickerRow, { kind: "model" }> => r.kind === "model")
+      .map((r) => ({
+        label: r.free ? `${r.label} · Free` : r.label,
+        providerLabel: r.providerLabel,
+        ctx: formatContext(r.contextWindow) ?? "",
+      })),
+    // interior width: panel minus its border and paddingX, minus the 2-col indent
+    panelWidth - 4 - 2,
   );
 
   return (
     <Box justifyContent="center" width={width} marginY={1}>
       <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} width={panelWidth}>
       <Box marginBottom={1} justifyContent="space-between">
-        <Text color={accent} bold>Select model</Text>
+        <Text bold>Select model</Text>
         <Text dimColor>esc</Text>
       </Box>
-      <Box marginBottom={1}>
-        <Text dimColor>Search </Text>
+      {/* A bordered field reads as something you type into, rather than a
+          label with text after it. */}
+      <Box marginBottom={1} borderStyle="round" borderDimColor paddingX={1}>
+        <Text dimColor>{"⌕ "}</Text>
         <Text>{query || ""}</Text>
-        {!query && <Text dimColor>…</Text>}
+        {!query && <Text dimColor>Search…</Text>}
       </Box>
 
       {rows.length === 0 ? (
@@ -334,27 +356,51 @@ const ModelsDropdown: React.FC<Props> = ({
             if (row.kind === "header") {
               return (
                 <Box key={`h:${row.provider}`} marginTop={i === 0 ? 0 : 1}>
-                  <Text color={accent} bold>{row.label}</Text>
+                  {/* Headers are quiet labels, not accents: every provider name
+                      in the accent colour made the list read as a wall of
+                      yellow with no way to find the cursor. Weight alone
+                      separates a group from its rows. */}
+                  <Text dimColor bold>{row.label}</Text>
                 </Box>
               );
             }
             const isSelected = idx === effectiveCursor;
-            const ctx = formatContext(row.contextWindow);
-            const note = !row.configured ? "no key" : row.current ? "current" : "";
+            const ctx = formatContext(row.contextWindow) ?? "";
+            // A row whose provider has no key is unusable, so the whole row
+            // recedes rather than being tagged. Emphasising what you CANNOT
+            // pick (a chip per unusable row) fought the panel's actual job.
+            const unusable = !row.configured;
+            // Fixed columns: provider / ctx / state each sit at the same x on
+            // every row, so the list scans as a table instead of a sentence.
+            // "Free" is pricing information, not state — it belongs with the
+            // model name rather than in the state column.
+            const labelText = row.free ? `${row.label} · Free` : row.label;
+            const body =
+              "  " + fit(labelText, cols.label) +
+              " ".repeat(COLUMN_GAP) + fit(row.providerLabel ?? "", cols.provider) +
+              " ".repeat(COLUMN_GAP) + fitRight(ctx, cols.ctx) +
+              " ".repeat(COLUMN_GAP);
+            // Trailing state marker: a dot for a usable provider, blank
+            // otherwise. Quieter than repeating "ready" on every row, and it
+            // reads as a column of its own.
+            const state = row.current ? "◉" : unusable ? " " : "●";
             return (
               <Box key={`${row.group}:${row.provider}/${row.model}`}>
                 <Text
+                  backgroundColor={isSelected ? selectionBg : undefined}
                   color={isSelected ? accent : undefined}
                   bold={isSelected}
-                  dimColor={!isSelected && !row.configured}
+                  dimColor={!isSelected && unusable}
                 >
-                  {isSelected ? "> " : "  "}
-                  {row.label.padEnd(labelWidth)}
+                  {body}
                 </Text>
-                {row.providerLabel && <Text dimColor>{"  " + row.providerLabel}</Text>}
-                {ctx && <Text dimColor>{"  " + ctx}</Text>}
-                {row.free && <Text dimColor>{"  Free"}</Text>}
-                {note && <Text dimColor>{"  " + note}</Text>}
+                <Text
+                  backgroundColor={isSelected ? selectionBg : undefined}
+                  color={!unusable ? stateColor : undefined}
+                  dimColor={unusable}
+                >
+                  {state}
+                </Text>
               </Box>
             );
           })}
@@ -362,11 +408,13 @@ const ModelsDropdown: React.FC<Props> = ({
         </Box>
       )}
 
+      {/* Same key-cap treatment as the main hint bar, so a chord looks like a
+          chord everywhere in the UI rather than only in the composer. */}
       <Box marginTop={1}>
-        <Text dimColor>Connect provider </Text>
-        <Text dimColor bold>ctrl+a</Text>
-        <Text dimColor>   Favorite </Text>
-        <Text dimColor bold>ctrl+f</Text>
+        <Text>{keyCap("ctrl+a", capStyle)}</Text>
+        <Text dimColor>{" connect provider   "}</Text>
+        <Text>{keyCap("ctrl+f", capStyle)}</Text>
+        <Text dimColor>{" favorite"}</Text>
       </Box>
       </Box>
     </Box>

@@ -79,3 +79,32 @@ describe("theme colour sourcing", () => {
     expect(DARK_THEME.surface).toBeGreaterThan(15);
   });
 });
+
+describe("chip fill contrast", () => {
+  it("fills chips with a tone that separates from the page background", async () => {
+    // Regression: chips and the picker's selection band were filled with
+    // `surface`, which sits only a hair above `background` in the grey ramp —
+    // both vanished into a near-black terminal. `border` is the slot that is
+    // meant to be visible against the page, and `selection` is purpose-built
+    // for the band. ANSI_* themes are excluded: they deliberately use the
+    // terminal's own 16-colour palette, where these numeric comparisons are
+    // meaningless.
+    const theme = await import("../theme.js");
+    const themes = Object.entries(theme.BUILTIN_THEMES)
+      .filter(([name]) => !name.startsWith("ansi"));
+    expect(themes.length).toBeGreaterThan(0);
+
+    for (const [name, t] of themes) {
+      // The chip fill must be clearly distinguishable from the page. 8 steps
+      // in the 256 ramp is roughly where a fill stops reading as "the same
+      // colour" — `surface` fails this on the dark themes, which is the bug.
+      expect(
+        Math.abs(t.border - t.background),
+        `${name}: chip fill (border) is too close to background`,
+      ).toBeGreaterThanOrEqual(8);
+      // And the selection band must not equal the page.
+      expect(t.selection, `${name}: selection must differ from background`)
+        .not.toBe(t.background);
+    }
+  });
+});
