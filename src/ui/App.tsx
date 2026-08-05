@@ -1322,8 +1322,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         liveLineBudget={LIVE_LINE_BUDGET}
       />
 
-      <Spinner active={turnActive} />
-
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 
       {showCommandPalette && (
@@ -1593,6 +1591,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           onCyclePosture={() => cyclePosture()}
         />
       )}
+
+      {/* The spinner animates at 80ms, so its line is dirty 12.5x/second. Ink
+          rewrites a changed line by walking the cursor UP from the bottom of
+          the frame, so anything rendered BELOW it gets repainted on every tick
+          — with the spinner above the input, that repainted the whole prompt
+          box continuously (visible tearing on slower emulators like IntelliJ's).
+          Kept here, immediately above the status bar, the only thing under it is
+          one static line, so a tick rewrites essentially just its own row. */}
+      <Spinner active={turnActive} />
 
       <StatusBar
         segments={

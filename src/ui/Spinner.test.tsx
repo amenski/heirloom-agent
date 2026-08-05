@@ -79,12 +79,26 @@ describe("Spinner owns its own animation state", () => {
   });
 
   it("counts elapsed seconds while active", async () => {
+    // The seconds are right-aligned in a fixed 3-char field so the line's width
+    // never changes (a width change forces Ink to reflow instead of overwrite).
     const { lastFrame, unmount } = render(<Spinner active />);
-    expect(lastFrame() ?? "").toContain("(0s");
+    expect(lastFrame() ?? "").toMatch(/\(\s*0s/);
     await new Promise((r) => setTimeout(r, 1100));
     const frame = lastFrame() ?? "";
     unmount();
-    expect(frame).toContain("(1s");
+    expect(frame).toMatch(/\(\s*1s/);
     expect(frame).toContain("esc to interrupt");
+  });
+
+  it("pads the counter so the line width cannot change as it grows", async () => {
+    // A width change at 10s/100s would force Ink to reflow the row instead of
+    // overwriting it in place — a second repaint source on top of the 80ms
+    // animation. The padding is what prevents that.
+    const { lastFrame, unmount } = render(<Spinner active />);
+    const width = (lastFrame() ?? "").trim().length;
+    await new Promise((r) => setTimeout(r, 1100));
+    const laterWidth = (lastFrame() ?? "").trim().length;
+    unmount();
+    expect(laterWidth).toBe(width);
   });
 });
