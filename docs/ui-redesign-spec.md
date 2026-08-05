@@ -1,5 +1,8 @@
 # UI Redesign Spec — hand-rolled terminal renderer
 
+**Note:** this spec's guidance is current; only the example model IDs (e.g.
+`gpt-4o`, `deepseek-chat`) are stale. `src/providers/models.json` is authoritative.
+
 **Decision (2026-07-29):** drop readline; own the terminal. No dependencies
 (no Ink/blessed). This is the biggest UI investment in the project and the
 point where heirloom stops fighting readline and starts owning rendering the

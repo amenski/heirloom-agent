@@ -1,5 +1,8 @@
 # Session Storage Specification
 
+**Note:** this spec's guidance is current; only the example model IDs (e.g.
+`deepseek-chat`) are stale. `src/providers/models.json` is authoritative.
+
 Sessions persist the conversation to disk so work survives process exit and
 can be resumed with `--continue`. This must land **before Phase 4** —
 compaction and checkpoints both reference session state, and retrofitting

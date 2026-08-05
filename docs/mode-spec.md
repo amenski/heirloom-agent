@@ -1,5 +1,9 @@
 # Mode Specification
 
+**Note:** this spec's guidance is current. The example model ID below is written
+`anthropic/claude-sonnet-4-6`; the real ID uses a dot (`anthropic/claude-sonnet-4.6`).
+`src/providers/models.json` is authoritative.
+
 A mode is a YAML-defined persona that gates tool access, file restrictions,
 model selection, and behavioral instructions.
 

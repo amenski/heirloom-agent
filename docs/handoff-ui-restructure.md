@@ -1,5 +1,8 @@
 # Handoff — UI Restructure (per-turn chrome)
 
+**Note:** historical snapshot. Model IDs below (e.g. `deepseek-chat`) are
+retired — see `src/providers/models.json` for current IDs.
+
 **For:** subagent (Sonnet). **File:** `src/index.ts` ONLY. Small, surgical.
 Follow-up to the Track 1 prompt header (commit 8099611). The pieces render but
 the per-turn structure is wrong.
