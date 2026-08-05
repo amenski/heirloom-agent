@@ -33,7 +33,7 @@ import CommandPalette, {
 } from "./CommandPalette.js";
 
 import OutputArea from "./OutputArea.js";
-import Spinner from "./Spinner.js";
+import HintBar from "./HintBar.js";
 import StatusBar from "./StatusBar.js";
 import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
 import { explainToolAction } from "./explain-action.js";
@@ -1589,26 +1589,38 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           onExitShortcut={() => handleExit()}
           onModelPickerOpen={() => setShowModelDropdown(true)}
           onCyclePosture={() => cyclePosture()}
+          modelPill={ctx.buildModelPill?.()}
+          statusLine={
+            <StatusBar
+              segments={
+                statusLineProviderSegments.length > 0
+                  ? [...statusLine, ...statusLineProviderSegments]
+                  : statusLine
+              }
+              gitStatus={gitStatus}
+              tokenCounts={tokenCounts}
+            />
+          }
         />
       )}
 
-      {/* The spinner animates at 80ms, so its line is dirty 12.5x/second. Ink
-          rewrites a changed line by walking the cursor UP from the bottom of
-          the frame, so anything rendered BELOW it gets repainted on every tick
-          — with the spinner above the input, that repainted the whole prompt
-          box continuously (visible tearing on slower emulators like IntelliJ's).
-          Kept here, immediately above the status bar, the only thing under it is
-          one static line, so a tick rewrites essentially just its own row. */}
-      <Spinner active={turnActive} />
-
-      <StatusBar
-        segments={
-          statusLineProviderSegments.length > 0
-            ? [...statusLine, ...statusLineProviderSegments]
-            : statusLine
+      {/* The hint bar is deliberately the LAST row of the frame, and carries the
+          only continuously-changing element (the working indicator). Ink
+          repaints a changed line by walking the cursor UP from the bottom, so
+          anything rendered BELOW an 80ms animation gets rewritten 12.5x/second
+          — which is what made the prompt box tear while streaming. With nothing
+          under it, a tick rewrites just this row. */}
+      <HintBar
+        working={turnActive}
+        left={
+          turnActive
+            ? [{ key: "esc", label: "interrupt" }]
+            : [{ key: "⇧ Tab", label: posture === "normal" ? "auto-approve" : "normal" }]
         }
-        gitStatus={gitStatus}
-        tokenCounts={tokenCounts}
+        right={[
+          { key: "^⇧P", label: "commands" },
+          { key: "^M", label: "model" },
+        ]}
       />
     </Box>
   );

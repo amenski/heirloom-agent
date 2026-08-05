@@ -35,6 +35,18 @@ interface Props {
   promptHistory: string[];
   busy: boolean;
   placeholder?: string;
+  /**
+   * Status line rendered inside the input box, under the typed text. Lives here
+   * rather than as a separate row below so the box reads as one unit and the
+   * frame keeps its only animating line (the hint bar) at the very bottom.
+   */
+  statusLine?: React.ReactNode;
+  /**
+   * Pre-rendered model chip shown on the input box's right edge. A string of
+   * ANSI rather than a node so it stays inside the single input row — a
+   * bordered Box would be three rows and break the constant height.
+   */
+  modelPill?: string;
   promptDraft?: { nonce: number; text: string } | null;
   onSubmit: (submission: PromptSubmission) => void;
   onInterrupt?: () => void;
@@ -44,7 +56,7 @@ interface Props {
 }
 
 const PromptInput = React.memo(function PromptInput({
-  screenWidth, promptHistory, busy, placeholder,
+  screenWidth, promptHistory, busy, placeholder, statusLine, modelPill,
   promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture,
 }: Props): React.ReactElement {
   const theme = useTheme();
@@ -311,33 +323,57 @@ const PromptInput = React.memo(function PromptInput({
     }
   }, { isActive: true });
 
+  // A transient notice (attachment count, or a status message like "press
+  // ctrl+d again to exit") TAKES OVER the status row rather than adding one of
+  // its own. Both are the same kind of information — one line of dim context —
+  // and a notice is short-lived, so borrowing the row costs nothing and keeps
+  // the composer's height constant. That matters beyond tidiness: Ink's
+  // incremental diff can only skip rows that keep their index, so a row that
+  // appears or disappears forces everything below it to repaint.
+  const notice = attachedImages.length > 0
+    ? { text: `📎 ${attachedImages.length} image${attachedImages.length === 1 ? "" : "s"} attached (ctrl+x to clear)`, color: "yellow" as const }
+    : footerText !== ""
+      ? { text: footerText, color: undefined }
+      : null;
+
   return (
     <Box flexDirection="column" width={screenWidth}>
+      {/* The INPUT is the raised element — a bright rounded box — because that
+          is where attention belongs. Everything else (status, hints) sits flat
+          and dim outside it. The model pill rides on the input's right edge:
+          it is a property of what you are about to send, so it belongs with the
+          composer rather than in the ambient status row. */}
       <Box
         width={screenWidth}
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={true}
-        borderLeft={false}
-        borderRight={false}
-        borderDimColor
+        borderStyle="round"
+        borderColor={theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined}
+        paddingX={1}
       >
-        <Box width={PROMPT_PREFIX_WIDTH}>
-          <Text color={theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined}>{"▌ "}</Text>
+        <Box width={1}>
+          <Text color={theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined}>{"▏"}</Text>
         </Box>
-        <Box flexGrow={1} flexShrink={1} width={inputContentWidth}>
+        <Box flexGrow={1} flexShrink={1}>
           <Text wrap="hard">
             {renderBufferWithCursor(buffer, placeholder, pasteSpans)}
           </Text>
         </Box>
+        {modelPill && <Text>{modelPill}</Text>}
       </Box>
+
+      {/* Status row: flat, outside the box, one line. A notice borrows this row
+          rather than adding one, so the composer's height is constant — which
+          is what lets Ink's incremental diff skip these rows instead of
+          repainting everything below them. */}
+      <Box>
+        {notice
+          ? <Text color={notice.color} dimColor={notice.color === undefined}>{notice.text}</Text>
+          : statusLine ?? <Text> </Text>}
+      </Box>
+
+      {/* The slash menu is intentionally still height-variable: it only opens on
+          an explicit "/" and closes on the next keystroke, so its cost is a
+          deliberate, user-initiated repaint rather than a continuous one. */}
       <SlashCommandMenu width={screenWidth} items={slashMenu} activeIndex={menuIndex} />
-      {attachedImages.length > 0 && (
-        <Box><Text color="yellow">📎 {attachedImages.length} image{attachedImages.length === 1 ? "" : "s"} attached (ctrl+x to clear)</Text></Box>
-      )}
-      {!showMenu && footerText !== "" && (
-        <Box><Text dimColor>{footerText}</Text></Box>
-      )}
     </Box>
   );
 });

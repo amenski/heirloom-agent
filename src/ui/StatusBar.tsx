@@ -19,6 +19,7 @@ import React, { useState, useEffect, useMemo, memo } from "react";
 import { Box, Text } from "ink";
 import type { StatusSegment, GitStatus } from "./types.js";
 import { useTheme, useTerminalInfo } from "./contexts.js";
+import { ansiFg, ANSI_RESET, ANSI } from "./theme.js";
 
 interface StatusBarProps {
   segments: StatusSegment[];
@@ -62,8 +63,22 @@ function formatElapsedShort(startMs: number, nowMs: number): string {
 /**
  * Build a git status indicator string.
  */
-function gitStatusString(git: GitStatus): string {
+/** Re-enter dim mode after an inline colour reset inside a dim run. */
+function ansiDim(): string {
+  return "\x1b[2m";
+}
+
+function gitStatusString(
+  git: GitStatus,
+  paint?: { colorEnabled: boolean; added: number; deleted: number; conflict: number },
+): string {
   const parts: string[] = [];
+  // Diff counts follow the convention every other tool uses \u2014 additions green,
+  // deletions red \u2014 so the row is scannable without reading the symbols. Only
+  // the counts are coloured; the branch and ahead/behind stay dim, since a
+  // dirty tree is the normal working state and shouldn't read as an alarm.
+  const paintFg = (code: number, s: string) =>
+    paint?.colorEnabled ? `${ansiFg(code)}${s}${ANSI_RESET}${ansiDim()}` : s;
 
   // Branch name
   parts.push(git.branch);
@@ -72,11 +87,13 @@ function gitStatusString(git: GitStatus): string {
   if (git.dirty) {
     const indicators: string[] = [];
     if (git.modified > 0) indicators.push(`~${git.modified}`);
-    if (git.added > 0) indicators.push(`+${git.added}`);
-    if (git.deleted > 0) indicators.push(`-${git.deleted}`);
+    if (git.added > 0) indicators.push(paintFg(paint?.added ?? 0, `+${git.added}`));
+    if (git.deleted > 0) indicators.push(paintFg(paint?.deleted ?? 0, `-${git.deleted}`));
     if (git.staged > 0) indicators.push(`\u25CF${git.staged}`);
-    if (git.conflicts > 0) indicators.push(`!${git.conflicts}`);
-    if (indicators.length > 0) parts.push(indicators.join(""));
+    if (git.conflicts > 0) indicators.push(paintFg(paint?.conflict ?? 0, `!${git.conflicts}`));
+    // Spaced rather than run together: "~5 +4 -3" reads as three counts,
+    // "~5+4-3" reads as one token.
+    if (indicators.length > 0) parts.push(indicators.join(" "));
   }
 
   // Ahead/behind
@@ -125,6 +142,10 @@ function StatusBar({
   const segmentTexts = segments.map((seg) => {
     let text = seg.text;
 
+    // Pre-rendered ANSI (chips, meters) passes through: re-wrapping it would
+    // nest escapes and clobber its embedded background runs.
+    if (seg.raw) return text;
+
     if (t && theme.colorEnabled) {
       if (seg.color === "red") {
         text = fg(t.errorFg, text);
@@ -145,19 +166,25 @@ function StatusBar({
   const sep = dim(" · ");
   const statusLine = segmentTexts.join(sep);
 
-  // Git status (if available)
+  // Git status (if available). Joined with the same "·" separator as everything
+  // else — a bare space made it read as a continuation of the preceding segment
+  // ("high main ~4+4-3" looked like one value). Dim overall, with only the diff
+  // counts carrying colour: a dirty worktree is the normal state while working,
+  // so colouring the whole thing cried wolf.
   let gitStr = "";
   if (gitStatus) {
-    gitStr = gitStatusString(gitStatus);
-    if (t && theme.colorEnabled) {
-      if (gitStatus.dirty) {
-        gitStr = fg(t.warningFg, ` ${gitStr}`);
-      } else {
-        gitStr = dim(` ${gitStr}`);
-      }
-    } else {
-      gitStr = ` ${gitStr}`;
-    }
+    // `sep` is already dim-wrapped; dim the git text separately rather than
+    // wrapping the pair, which would nest escape sequences.
+    // Explicit 256-colour diff greens/reds rather than theme.success/error,
+    // which are low ANSI (2/1) and get remapped by each terminal's palette —
+    // the counts would not match the rest of the 256-colour chrome. These are
+    // conventional diff colours, not theme accents, so pinning them is right.
+    gitStr = sep + dim(gitStatusString(gitStatus, {
+      colorEnabled: theme.colorEnabled,
+      added: ANSI.lime,
+      deleted: ANSI.coral,
+      conflict: ANSI.coral,
+    }));
   }
 
   // Session timer — adaptive format based on duration
