@@ -1,0 +1,122 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ModelCapabilities } from "./types.js";
+import { resolveDeepcodeHome } from "../ui/components/ThemeDropdown/index.js";
+
+/**
+ * The on-disk shape of models.json (bundled and user override). Mirrors
+ * ProviderPreset/ModelCapabilities but with JSON-friendly optional fields.
+ */
+export interface CatalogModel extends ModelCapabilities {
+  free?: boolean;
+}
+
+export interface CatalogProvider {
+  label?: string;
+  api: string;
+  baseUrl: string;
+  keyEnv: string;
+  defaultModel: string;
+  models: Record<string, CatalogModel>;
+}
+
+export interface ModelCatalog {
+  providers: Record<string, CatalogProvider>;
+}
+
+const BUNDLED_PATH = new URL("./models.json", import.meta.url);
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function loadJsonFile(path: string | URL): Record<string, unknown> | null {
+  try {
+    const content = readFileSync(path, "utf-8");
+    const parsed = JSON.parse(content);
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deep-merge a user provider entry onto a bundled one: scalar fields
+ * (label/api/baseUrl/keyEnv/defaultModel) are replaced wholesale when present,
+ * and `models` is merged key-by-key so a user can override one model's fields
+ * without repeating every other model in that provider.
+ */
+function mergeProvider(
+  base: CatalogProvider | undefined,
+  override: Partial<CatalogProvider>,
+): CatalogProvider {
+  const models: Record<string, CatalogModel> = { ...(base?.models ?? {}) };
+  if (isObject(override.models)) {
+    for (const [modelId, modelOverride] of Object.entries(override.models as Record<string, unknown>)) {
+      if (!isObject(modelOverride)) continue;
+      models[modelId] = { ...(models[modelId] ?? {}), ...(modelOverride as Partial<CatalogModel>) } as CatalogModel;
+    }
+  }
+  return {
+    label: override.label ?? base?.label,
+    api: override.api ?? base?.api ?? "openai-compatible",
+    baseUrl: override.baseUrl ?? base?.baseUrl ?? "",
+    keyEnv: override.keyEnv ?? base?.keyEnv ?? "",
+    defaultModel: override.defaultModel ?? base?.defaultModel ?? Object.keys(models)[0] ?? "",
+    models,
+  };
+}
+
+/**
+ * Load the bundled catalog and merge the user override
+ * (`~/.heirloom/models.json`) on top, provider-by-provider then
+ * model-by-model, user wins. A missing user file is normal (no warning); a
+ * malformed one warns to stderr and is skipped entirely so startup never
+ * crashes on bad JSON — matching readCredentialsFile/loadConfig.
+ */
+export function loadModelCatalog(homeDir?: string): ModelCatalog {
+  const bundledRaw = loadJsonFile(BUNDLED_PATH);
+  const bundledProviders = isObject(bundledRaw?.providers) ? (bundledRaw!.providers as Record<string, unknown>) : {};
+
+  const providers: Record<string, CatalogProvider> = {};
+  for (const [name, entry] of Object.entries(bundledProviders)) {
+    if (isObject(entry)) providers[name] = mergeProvider(undefined, entry as Partial<CatalogProvider>);
+  }
+
+  const userPath = join(homeDir ?? resolveDeepcodeHome(), "models.json");
+  const userRaw = readUserCatalog(userPath);
+  if (userRaw) {
+    const userProviders = isObject(userRaw.providers) ? (userRaw.providers as Record<string, unknown>) : {};
+    for (const [name, entry] of Object.entries(userProviders)) {
+      if (!isObject(entry)) continue;
+      providers[name] = mergeProvider(providers[name], entry as Partial<CatalogProvider>);
+    }
+  }
+
+  return { providers };
+}
+
+/**
+ * Read+parse the user override file. Missing file -> null (silent, expected).
+ * Present-but-malformed (bad JSON, or a non-object root) -> warn to stderr and
+ * return null so the caller falls back to the bundled catalog untouched.
+ */
+function readUserCatalog(path: string): Record<string, unknown> | null {
+  let content: string;
+  try {
+    content = readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(content);
+    if (!isObject(parsed)) {
+      console.warn(`warning: ${path} must be a JSON object — ignoring and using the bundled model catalog`);
+      return null;
+    }
+    return parsed;
+  } catch (err) {
+    console.warn(`warning: failed to parse ${path} (${(err as Error).message}) — using the bundled model catalog`);
+    return null;
+  }
+}
