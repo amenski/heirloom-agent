@@ -330,6 +330,14 @@ async function main() {
     const modelId = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
     segments.push(T(nextId(), `${getProviderLabel(shared.providerName)}/${modelId}`, { bold: true }));
 
+    // Effort sits with the model because it is a property of it: the values are
+    // declared per-model and /effort only offers what the active model supports.
+    // Shown only when the model declares effort levels, so providers without it
+    // (most of them) get no empty segment.
+    if (shared.activeEffort && getActiveModelCaps()?.effort) {
+      segments.push(dim(nextId(), `effort ${shared.activeEffort}`));
+    }
+
     const ctxPercent = getContextPercent();
     if (ctxPercent !== null) {
       const filled = Math.round((Math.min(ctxPercent, 100) / 100) * 8);
