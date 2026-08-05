@@ -317,7 +317,10 @@ describe("ModelsDropdown — Favorites, Recent, Connect provider", () => {
     // Cursor starts on deepseek-v4-pro, which IS configured — ctrl+a must be a no-op.
     stdin.write(CTRL_A);
     await flush();
-    expect(stripAnsi(lastFrame() ?? "")).not.toContain("Connect");
+    // Assert on the prompt's own text, not "Connect" — the picker footer
+    // permanently advertises "Connect provider ctrl+a", so that word is always
+    // on screen and would make this assertion vacuous.
+    expect(stripAnsi(lastFrame() ?? "")).not.toContain("Paste the API key");
 
     // Move onto openai/gpt-5.6-sol (unconfigured) and try again.
     stdin.write(DOWN);
@@ -364,7 +367,10 @@ describe("ModelsDropdown — Favorites, Recent, Connect provider", () => {
     stdin.write(ESC);
     await flush();
     expect(onSaveProviderKey).not.toHaveBeenCalled();
-    expect(stripAnsi(lastFrame() ?? "")).not.toContain("Connect");
+    // Assert on the prompt's own text, not "Connect" — the picker footer
+    // permanently advertises "Connect provider ctrl+a", so that word is always
+    // on screen and would make this assertion vacuous.
+    expect(stripAnsi(lastFrame() ?? "")).not.toContain("Paste the API key");
   });
 
   it("Enter submits the key prompt and calls onSaveProviderKey with the provider and typed key", async () => {
@@ -420,5 +426,50 @@ describe("ModelsDropdown — Favorites, Recent, Connect provider", () => {
     const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("ctrl+f");
     expect(frame).toContain("ctrl+a");
+  });
+});
+
+describe("ModelsDropdown — centered panel layout", () => {
+  it("renders as a narrow centered panel, not a full-width bar", async () => {
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={100} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    await flush();
+    const lines = stripAnsi(lastFrame() ?? "").split("\n").filter((l) => l.trim());
+    const border = lines.find((l) => l.includes("╭"))!;
+    // Indented from the left edge (centered) and capped well short of the
+    // terminal width, so it reads as a popup rather than a full-width bar.
+    expect(border.indexOf("╭")).toBeGreaterThan(4);
+    expect(border.trim().length).toBeLessThanOrEqual(66);
+  });
+
+  it("fills a narrow terminal instead of clipping", async () => {
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={50} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    await flush();
+    const widest = Math.max(...stripAnsi(lastFrame() ?? "").split("\n").map((l) => l.length));
+    expect(widest).toBeLessThanOrEqual(50);
+  });
+
+  it("shows the esc hint and the ctrl+a / ctrl+f footer", async () => {
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("Select model");
+    expect(frame).toContain("esc");
+    expect(frame).toContain("Connect provider ctrl+a");
+    expect(frame).toContain("Favorite ctrl+f");
   });
 });

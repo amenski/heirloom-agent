@@ -105,6 +105,15 @@ const ModelsDropdown: React.FC<Props> = ({
     [entries, query, providerName, currentModel, liveConfigured, labels, favorites, recents],
   );
 
+  // Render as a centered panel rather than a full-width bar: on a wide terminal
+  // a 100-column list of short model names is unreadable, and the modal reads
+  // as a popup when it is narrower than the screen. Falls back to the full width
+  // on narrow terminals so nothing is clipped. (Ink can position absolutely, but
+  // it composites rather than occludes — the transcript bleeds through and rows
+  // interleave — so this centers within the layout flow instead.)
+  const PANEL_MAX_WIDTH = 64;
+  const panelWidth = Math.min(width, PANEL_MAX_WIDTH);
+
   // Anchor the cursor while rendering rather than in an effect. An effect keyed
   // on `rows` re-fires every render (rows is a fresh array) and fights the
   // arrow keys; keying it on `query` alone reads `rows` from a stale closure.
@@ -269,7 +278,8 @@ const ModelsDropdown: React.FC<Props> = ({
     const envVar = keyEnvByProvider?.[keyPromptProvider];
     const masked = "•".repeat(keyPromptLength);
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1} width={width}>
+      <Box justifyContent="center" width={width} marginY={1}>
+      <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} width={panelWidth}>
         <Box marginBottom={1}>
           <Text color={accent} bold>Connect {providerLabel}</Text>
         </Box>
@@ -288,6 +298,7 @@ const ModelsDropdown: React.FC<Props> = ({
           <Text dimColor>Enter save · Esc cancel</Text>
         </Box>
       </Box>
+      </Box>
     );
   }
 
@@ -301,11 +312,16 @@ const ModelsDropdown: React.FC<Props> = ({
   );
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1} width={width}>
+    <Box justifyContent="center" width={width} marginY={1}>
+      <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} width={panelWidth}>
+      <Box marginBottom={1} justifyContent="space-between">
+        <Text color={accent} bold>Select model</Text>
+        <Text dimColor>esc</Text>
+      </Box>
       <Box marginBottom={1}>
-        <Text color={accent} bold>Select Model</Text>
-        <Text dimColor> — search: </Text>
-        <Text>{query || "…"}</Text>
+        <Text dimColor>Search </Text>
+        <Text>{query || ""}</Text>
+        {!query && <Text dimColor>…</Text>}
       </Box>
 
       {rows.length === 0 ? (
@@ -347,7 +363,11 @@ const ModelsDropdown: React.FC<Props> = ({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>↑↓ navigate · Enter select · type to search · Esc close · ctrl+f favorite · ctrl+a connect provider</Text>
+        <Text dimColor>Connect provider </Text>
+        <Text dimColor bold>ctrl+a</Text>
+        <Text dimColor>   Favorite </Text>
+        <Text dimColor bold>ctrl+f</Text>
+      </Box>
       </Box>
     </Box>
   );
