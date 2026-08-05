@@ -13,16 +13,28 @@ keep. Every layer is independently readable and replaceable, and every design
 decision is written down in [`docs/`](./docs/) with its rationale and the
 project it was learned from (opencode, RooCode, Aider, SWE-agent).
 
-> Status: working and under active development. It's usable today; rough edges
-> exist. Contributions and issues are welcome — see
-> [Contributing](#contributing).
+> **Status: working, daily-driven, looking for testers.** I use it every day
+> with **DeepSeek**, the best-tested path. The other provider presets share the
+> same OpenAI-compatible adapter but haven't had real-world mileage yet — if
+> you run one, [an issue](https://github.com/amenski/heirloom-agent/issues)
+> saying "works" or "breaks" is genuinely useful.
+
+---
+
+## Why this exists
+
+Heirloom started as a fix for a small, annoying problem: the coding agent I
+was using didn't work correctly inside IntelliJ's embedded terminal. Instead
+of patching around someone else's stack, I built the smallest agent that
+worked — then kept going. Today it's a full terminal coding agent that runs
+anywhere a real terminal does, embedded IDE terminals included.
 
 ---
 
 ## Highlights
 
-- **Any model, chosen in config** — built-in presets for DeepSeek, OpenAI,
-  OpenRouter, Groq, and a local Ollama. Adding another OpenAI-compatible
+- **Any model, chosen in config** — built-in presets for DeepSeek (the daily
+  driver), OpenAI, OpenRouter, Groq, and a local Ollama. Adding another OpenAI-compatible
   provider (endpoint + key) is configuration, not code.
 - **ReAct agent loop** with self-reflection, layered error recovery, and loop
   detection — it streams responses, runs tools, and verifies its own edits.
@@ -81,7 +93,7 @@ Connect a provider (stores a key in `~/.heirloom/credentials.yaml`, `chmod 600`)
 npm start -- auth
 ```
 
-…or just export an env var — e.g. `export ANTHROPIC_API_KEY=...`.
+…or just export an env var — e.g. `export DEEPSEEK_API_KEY=...`.
 
 Then launch:
 
