@@ -53,7 +53,7 @@ function HintBar({ left, right = [], working = false }: HintBarProps) {
   const render = (h: Hint) =>
     `${chip(h.key, {
       fg: theme.theme.textDim,
-      bg: theme.theme.surface,
+      bg: theme.theme.border,
       colorEnabled: theme.colorEnabled,
     })} ${dim(h.label)}`;
   const width = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;

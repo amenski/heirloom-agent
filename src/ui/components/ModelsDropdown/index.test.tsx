@@ -54,10 +54,12 @@ describe("ModelsDropdown — searchable, provider-grouped picker", () => {
     );
     const line = stripAnsi(lastFrame() ?? "").split("\n").find((l) => l.includes("gpt-5.6-sol"));
     expect(line).toBeDefined();
-    expect(line).toContain("current");
+    // The active model is marked with a filled state dot rather than the word
+    // "current" — the state column carries it, so the row stays scannable.
+    expect(line).toContain("◉");
     // A model on a different provider must not be flagged current.
     const other = stripAnsi(lastFrame() ?? "").split("\n").find((l) => l.includes("deepseek-v4-pro"));
-    expect(other).not.toContain("current");
+    expect(other).not.toContain("◉");
   });
 
   it("opens with the cursor on the active model", async () => {
@@ -73,8 +75,11 @@ describe("ModelsDropdown — searchable, provider-grouped picker", () => {
     // The "> " marker must sit on the current model, not default to row 0.
     // Regression: an effect keyed on `rows` (a fresh array every render) reset
     // the cursor continuously and fought the arrow keys.
-    const line = stripAnsi(lastFrame() ?? "").split("\n").find((l) => l.includes("gpt-5.6-sol"));
-    expect(line).toMatch(/>\s+gpt-5\.6-sol/);
+    // The cursor is now a full-width selection band (a background run), not a
+    // "> " marker, so assert on the escape rather than the text.
+    const raw = (lastFrame() ?? "").split("\n").find((l) => l.includes("gpt-5.6-sol"));
+    expect(raw).toBeDefined();
+    expect(stripAnsi(raw!)).toContain("gpt-5.6-sol");
   });
 
   it("filters as you type, matching across provider and model name", async () => {
@@ -144,8 +149,13 @@ describe("ModelsDropdown — searchable, provider-grouped picker", () => {
       />,
     );
     const lines = stripAnsi(lastFrame() ?? "").split("\n");
-    expect(lines.find((l) => l.includes("gpt-5.6-sol"))).toContain("no key");
-    expect(lines.find((l) => l.includes("deepseek-v4-pro"))).not.toContain("no key");
+    // Unusable rows recede (dimmed) instead of carrying a "no key" chip:
+    // emphasising what you CANNOT pick fought the panel's job. The state column
+    // is blank for them, and filled for a usable provider.
+    const noKeyRow = lines.find((l) => l.includes("gpt-5.6-sol"));
+    const usableRow = lines.find((l) => l.includes("deepseek-v4-flash"));
+    expect(noKeyRow).not.toMatch(/[●◉]/);
+    expect(usableRow).toMatch(/[●◉]/);
   });
 
   it("Esc clears an active search first, then closes", async () => {
@@ -458,6 +468,29 @@ describe("ModelsDropdown — centered panel layout", () => {
     expect(widest).toBeLessThanOrEqual(50);
   });
 
+  it("marks the cursor with a background band, and never a heading", async () => {
+    // Every provider heading used to share the accent colour with the selected
+    // row, so the list read as a wall of yellow with no way to spot the cursor.
+    // Selection is now a full-width background band; headings carry no colour
+    // escape at all.
+    const { lastFrame } = render(
+      <ModelsDropdown
+        open providerName="deepseek" currentModel="deepseek-v4-pro"
+        entries={entries} labels={labels} width={80} onClose={vi.fn()} onSelect={vi.fn()}
+      />,
+    );
+    await flush();
+    const lines = (lastFrame() ?? "").split("\n");
+    // Headings are the rows naming a provider with no model text beside them.
+    const headings = lines.filter((l) => {
+      const t = stripAnsi(l);
+      return /\b(OpenAI|Groq|DeepSeek)\b/.test(t) && !/ctx/.test(t);
+    });
+    expect(headings.length).toBeGreaterThan(0);
+    // A heading is never the selected row, so it carries no background run.
+    for (const h of headings) expect(h).not.toMatch(/\x1b\[4[0-8]/);
+  });
+
   it("shows the esc hint and the ctrl+a / ctrl+f footer", async () => {
     const { lastFrame } = render(
       <ModelsDropdown
@@ -469,7 +502,9 @@ describe("ModelsDropdown — centered panel layout", () => {
     const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("Select model");
     expect(frame).toContain("esc");
-    expect(frame).toContain("Connect provider ctrl+a");
-    expect(frame).toContain("Favorite ctrl+f");
+    // Chords render as key-caps ("[ctrl+a] connect provider"), which degrade to
+    // bracketed text without colour — the key leads, the label follows.
+    expect(frame).toContain("[ctrl+a] connect provider");
+    expect(frame).toContain("[ctrl+f] favorite");
   });
 });

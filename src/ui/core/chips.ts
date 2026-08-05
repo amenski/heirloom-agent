@@ -8,6 +8,13 @@
 
 import { ansiBg, ansiFg, ANSI_RESET } from "../theme.js";
 
+// Slot guidance for callers: a chip's `bg` should come from the theme's
+// `border` slot, not `surface`. `surface` sits a hair above `background` in the
+// grey ramp (grey23 vs black; adjacent outright in the midnight theme), so a
+// chip filled with it disappears into the page. `border` is already the
+// "visible edge against the background" tone, which is exactly what a chip
+// needs — and it stays theme-driven, so /theme re-colours it.
+
 /**
  * A filled chip: text on a background slab, padded one column each side.
  *

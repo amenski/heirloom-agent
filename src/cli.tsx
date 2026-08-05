@@ -380,7 +380,7 @@ async function main() {
     const label = getActiveModelCaps()?.displayName ?? modelId;
     return chip(label, {
       fg: resolvedTheme.theme.textBright,
-      bg: resolvedTheme.theme.surface,
+      bg: resolvedTheme.theme.border,
       colorEnabled,
     });
   }
