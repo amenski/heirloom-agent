@@ -6,7 +6,7 @@ import { createElement } from "react";
 import { checkForNpmUpdate, promptForPendingUpdate } from "./common/update-check.js";
 import { parseArguments } from "./cli-args.js";
 import { runExecMode } from "./exec-runner.js";
-import { initPresets, createProvider, setConfigProviders, getPreset, getKnownProviderNames, getProviderModels, getConfiguredProviders, type ProviderOptions } from "./providers/presets.js";
+import { initPresets, createProvider, getPreset, getKnownProviderNames, getProviderModels, getConfiguredProviders, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap, loadProjectResearch } from "./prompt.js";
