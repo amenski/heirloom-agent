@@ -1682,8 +1682,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         // useInput would see it anyway. "/" already lists the same commands
         // with fuzzy filtering, and is discoverable without a hint.
         right={[
+          // "/" is the honest router — the slash menu reaches everything,
+          // matching Claude Code. (A "^M model" hint lived here once: dead on
+          // arrival, since Ctrl+M is byte-identical to Enter in a terminal.)
           { key: "/", label: "commands" },
-          { key: "^M", label: "model" },
         ]}
       />
     </Box>

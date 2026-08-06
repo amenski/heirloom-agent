@@ -118,7 +118,12 @@ const DEFAULT_BINDINGS: KeybindingMap = {
   cancel: [{ key: "c", ctrl: true }],
 
   // Mode & App
-  openModelPicker: [{ key: "m", ctrl: true }],
+  // Unbound by default: Ctrl+M cannot exist in a terminal — 0x0D is the SAME
+  // BYTE as Enter, consumed as `return` by the input parser before any ctrl
+  // detection. (Ctrl+I is likewise Tab, 0x09.) The action stays so a user
+  // keybindings.json can bind a chord that actually encodes; /model and the
+  // slash menu are the default routes.
+  openModelPicker: [],
   // NOTE: unreachable in a standard terminal. Ctrl+P and Ctrl+Shift+P both
   // arrive as byte 0x10 — shift is not encoded — so a shift-qualified binding
   // can never match, and PromptInput claims ctrl+p for history navigation
