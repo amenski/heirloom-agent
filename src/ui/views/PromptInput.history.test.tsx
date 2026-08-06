@@ -3,12 +3,12 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render } from "ink-testing-library";
 import PromptInput from "./PromptInput.js";
 import { __resetInputWireForTests } from "../hooks/useTerminalInput.js";
+import { stripAnsi } from "../test-helpers.js";
 
 const ESC = "\x1b";
 const UP = `${ESC}[A`;
 const DOWN = `${ESC}[B`;
 
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const flush = () => new Promise((r) => setTimeout(r, 60));
 
 /**

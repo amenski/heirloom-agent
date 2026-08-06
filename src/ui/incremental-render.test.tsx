@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, it, expect } from "vitest";
 import { render, Box, Text } from "ink";
+import { fakeStdout } from "./test-helpers.js";
 
 /**
  * Ink's `incrementalRendering` option, which the app enables in cli.tsx.
@@ -26,20 +27,6 @@ import { render, Box, Text } from "ink";
  *
  * Nothing here depends on machine speed or on ambient environment variables.
  */
-function fakeStdout() {
-  const writes: string[] = [];
-  const stream = {
-    write: (s: string) => {
-      writes.push(s);
-      return true;
-    },
-    isTTY: true,
-    columns: 100,
-    rows: 30,
-    on() {}, off() {}, removeListener() {}, emit() {},
-  };
-  return { writes, stream: stream as unknown as NodeJS.WriteStream };
-}
 
 /** A frame whose last row changes per `tick`, with static rows above it. */
 function Frame({ tick }: { tick: number }) {

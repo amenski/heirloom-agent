@@ -3,8 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render } from "ink-testing-library";
 import { ThemeProvider, TerminalProvider } from "../contexts.js";
 import SkillList from "./SkillList.js";
-
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi as strip } from "../test-helpers.js";
 
 // Real-shaped data: skill descriptions are paragraphs (median 327 chars across
 // the installed set), which is what made the old two-line layout unusable.

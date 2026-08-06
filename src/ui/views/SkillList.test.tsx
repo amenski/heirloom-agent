@@ -4,11 +4,10 @@ import { render } from "ink-testing-library";
 import SkillList from "./SkillList.js";
 import type { SkillDef } from "../../skills/index.js";
 import { __resetInputWireForTests } from "../hooks/useTerminalInput.js";
+import { stripAnsi } from "../test-helpers.js";
 
 const ESC = "\x1b";
 const ENTER = "\r";
-
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 const skill = (name: string, description: string): SkillDef => ({
   name,

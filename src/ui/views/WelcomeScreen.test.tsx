@@ -3,8 +3,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "ink-testing-library";
 import { ThemeProvider, TerminalProvider } from "../contexts.js";
 import WelcomeScreen from "./WelcomeScreen.js";
-
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi as strip } from "../test-helpers.js";
 
 function setup(props: Partial<React.ComponentProps<typeof WelcomeScreen>> = {}) {
   return render(

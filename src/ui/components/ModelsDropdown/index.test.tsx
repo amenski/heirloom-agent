@@ -3,13 +3,12 @@ import { describe, it, expect, vi } from "vitest";
 import { render } from "ink-testing-library";
 import ModelsDropdown from "./index.js";
 import type { ModelEntry } from "../../types.js";
+import { stripAnsi } from "../../test-helpers.js";
 
 const ESC = "\x1b";
 const DOWN = `${ESC}[B`;
 const UP = `${ESC}[A`;
 const ENTER = "\r";
-
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 // Each keypress triggers an async React state update inside ink's useInput;
 // writes issued back-to-back in the same tick race the re-render, so tests

@@ -4,8 +4,7 @@ import { render } from "ink-testing-library";
 import { Text } from "ink";
 import PromptInput from "./PromptInput.js";
 import { __resetInputWireForTests } from "../hooks/useTerminalInput.js";
-
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi as strip } from "../test-helpers.js";
 const rowsOf = (f: string | undefined) => strip(f ?? "").split("\n").length;
 const flush = () => new Promise((r) => setTimeout(r, 60));
 

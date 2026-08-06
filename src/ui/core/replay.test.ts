@@ -2,8 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildReplayLines } from "./replay.js";
 import { USER_ECHO_TAG } from "../constants.js";
 import type { Message } from "../../types.js";
-
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi } from "../test-helpers.js";
 
 describe("buildReplayLines", () => {
   it("renders a user turn with the echo gutter tag", () => {
