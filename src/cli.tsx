@@ -35,6 +35,7 @@ import type { ModelCapabilities } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
 import { chip, meter } from "./ui/core/chips.js";
 import { resolveRefreshProfile, REFRESH_PROFILE_NAMES } from "./ui/core/refresh-rates.js";
+import { probeSyncOutput } from "./terminal-probe.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
 import { StatusLineManager } from "./ui/statusline/index.js";
@@ -847,6 +848,16 @@ async function runDoctor(): Promise<void> {
         : "(default)";
   console.log(`  refresh           ${refresh.name} ${source}`);
   console.log(`                    flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
+  const syncOutput = await probeSyncOutput();
+  const syncOutputLine =
+    syncOutput === "supported"
+      ? "supported (DEC 2026 — frames paint atomically)"
+      : syncOutput === "unsupported"
+        ? "unsupported — terminal paints partial writes; expect tearing while streaming"
+        : syncOutput === "no-response"
+          ? "no response (treated as unsupported)"
+          : "skipped (not a TTY)";
+  console.log(`  sync-output       ${syncOutputLine}`);
 }
 
 export async function handleSlashCore(
@@ -888,6 +899,11 @@ export async function handleSlashCore(
       console.log(`refresh    ${refresh.name} ${source}`);
       console.log(`           flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
       console.log(`node       ${process.version}`);
+      // Not run in-session: stdin here is owned by useTerminalInput's custom
+      // wire, which would swallow the terminal's DECRQM reply bytes before
+      // the probe ever saw them.
+      const probeNote = "terminal probe: run `heirloom doctor` from a shell";
+      console.log(colorEnabled ? `\x1b[2m${probeNote}\x1b[0m` : probeNote);
       return;
     }
     case "/skills": {
