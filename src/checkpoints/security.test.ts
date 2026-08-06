@@ -110,7 +110,7 @@ describe("checkpoint secret handling", () => {
       expect(hash).toBeTruthy();
 
       // list sees the commit
-      const entries = mgr.list();
+      const entries = await mgr.list();
       expect(entries.length).toBeGreaterThan(0);
       expect(entries[0]!.hash).toBe(hash);
 

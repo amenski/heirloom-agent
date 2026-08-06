@@ -551,7 +551,7 @@ async function main() {
           const result = await ck.restoreFrom(hash);
           if (!result.restored) return { restored: false, promptDraft: "" };
         }
-        const entries = ck.list();
+        const entries = await ck.list();
         const found = entries.find((e) => e.hash === hash);
         if (found) {
           const convMatch = found.message.match(/\[convLen:(\d+)\]/);
