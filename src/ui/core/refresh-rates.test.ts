@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveRefreshProfile, REFRESH_PROFILE_NAMES } from "./refresh-rates.js";
+import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./refresh-rates.js";
 
 /**
  * These intervals are the only throttle on how often the UI writes to the
@@ -87,5 +87,27 @@ describe("resolveRefreshProfile", () => {
 
   it("exposes its profile names for help text", () => {
     expect(REFRESH_PROFILE_NAMES).toEqual(["fast", "balanced", "slow"]);
+  });
+});
+
+describe("describeRefreshSource", () => {
+  it("labels a config-sourced profile", () => {
+    const r = resolveRefreshProfile({}, "slow");
+    expect(describeRefreshSource(r)).toBe("(from settings.json)");
+  });
+
+  it("labels an env-sourced profile", () => {
+    const r = resolveRefreshProfile({ HEIRLOOM_REFRESH: "fast" });
+    expect(describeRefreshSource(r)).toBe("(from HEIRLOOM_REFRESH)");
+  });
+
+  it("names the unrecognised value when the env var wasn't understood", () => {
+    const r = resolveRefreshProfile({ HEIRLOOM_REFRESH: "slowww" });
+    expect(describeRefreshSource(r)).toBe('(HEIRLOOM_REFRESH="slowww" not recognised — using default)');
+  });
+
+  it("labels a plain default with no env or config involved", () => {
+    const r = resolveRefreshProfile({});
+    expect(describeRefreshSource(r)).toBe("(default)");
   });
 });

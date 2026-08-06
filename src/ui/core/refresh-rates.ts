@@ -93,3 +93,14 @@ export function resolveRefreshProfile(
 
 /** The profile names a user can select, for help text and validation. */
 export const REFRESH_PROFILE_NAMES = Object.keys(PROFILES);
+
+/** Describe where a resolved refresh profile came from, for `/doctor` and `heirloom doctor`. */
+export function describeRefreshSource(r: ResolvedRefresh): string {
+  return r.source === "config"
+    ? "(from settings.json)"
+    : r.source === "env"
+      ? "(from HEIRLOOM_REFRESH)"
+      : r.invalid
+        ? `(HEIRLOOM_REFRESH="${r.invalid}" not recognised — using default)`
+        : "(default)";
+}
