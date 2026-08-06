@@ -7,8 +7,12 @@ import { MAX_ECHO_LINES } from "./core/echo-format.js";
 import { stripAnsi } from "./test-helpers.js";
 
 function frameOf(lines: string[]): string {
+  // OutputArea now flushes committed lines through Ink's <Static> (see trap
+  // #4 in test-helpers.ts): under ink-testing-library, lastFrame() still
+  // contains the full composite of Static content + the live tail, so a
+  // containment assertion against lastFrame() continues to work unchanged.
   const { lastFrame } = render(
-    <OutputArea lines={lines} activeLine="" busy={false} />,
+    <OutputArea lines={lines} activeLine="" busy={false} staticEpoch={0} />,
   );
   return stripAnsi(lastFrame() ?? "");
 }

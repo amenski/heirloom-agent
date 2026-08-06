@@ -11,6 +11,18 @@
  *    — when asserting bytes, pass interactive: true and a fake TTY stdout;
  *    always run the suite as `CI=true npm test` locally, because GitHub
  *    Actions sets CI=true.
+ * 4. ink-testing-library's <Static> does NOT behave like a real terminal's
+ *    Static flush for the purposes of `frames`/`lastFrame()`. Empirically
+ *    probed (see the OutputArea <Static> migration): every frame in `frames`
+ *    is a full composite snapshot containing BOTH the Static items rendered
+ *    so far AND the current live content, on every render — there is no
+ *    frame that holds only-static or only-live content, and content is never
+ *    duplicated across frames. So containment assertions against
+ *    `lastFrame()` keep working unchanged after switching a component to
+ *    <Static>. The trap is only for assertions that need a specific
+ *    Static-vs-live SPLIT (e.g. "the live tail alone must not contain X") —
+ *    those must inspect a single frame's full text, never diff/concatenate
+ *    across frames.
  */
 
 export const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");

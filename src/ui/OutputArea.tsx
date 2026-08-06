@@ -2,16 +2,16 @@
  * Heirloom OutputArea — High-performance scrolling output viewer
  *
  * Features:
- * - Static (committed) line rendering via Ink's <Static>
+ * - Static (committed) line rendering via Ink's <Static> — flushed once into
+ *   native terminal scrollback, never repainted
  * - Active line streaming for in-flight content
- * - Virtual scrolling via optional maxLines truncation
  * - Progressive disclosure: long blocks auto-collapse with summary
  * - Theme integration via ThemeContext
  * - React.memo for performance
  */
 
 import React, { useMemo, memo } from "react";
-import { Box, Text } from "ink";
+import { Box, Static, Text } from "ink";
 import MarkdownText from "./MarkdownText.js";
 import { useTheme } from "./contexts.js";
 import { ansi256 } from "./theme.js";
@@ -26,16 +26,13 @@ interface OutputAreaProps {
   activeLine: string;
   /** Whether the agent is busy generating */
   busy: boolean;
-  /** Maximum number of lines to keep in view (0 = unlimited) */
-  maxLines?: number;
   /**
-   * Cap on how many committed lines stay individually rendered (0 = unlimited).
-   *
-   * Unlike `maxLines` this never discards output: older lines are folded into
-   * one collapsed element instead of many, so the transcript stays complete
-   * while Ink's per-frame layout cost stops scaling with session length.
+   * Bumping this remounts the <Static> block, resetting its internal
+   * rendered-index so previously-flushed items render again. Ink's standard
+   * reset pattern for Static — used when the scrollback itself is cleared
+   * (e.g. /clear, /new) and the committed lines array is reset to match.
    */
-  liveLineBudget?: number;
+  staticEpoch: number;
   /** Active tab info (for multiplex mode) */
   tab?: TabDefinition;
 }
@@ -76,21 +73,11 @@ function summarizeText(text: string): string {
 
 const OutputLine = memo(function OutputLine({
   line,
-  verbatim = false,
 }: {
   line: string;
-  /**
-   * Render the text exactly as given, skipping echo/markdown/summary handling.
-   * Used for the folded backlog block, whose content is already-rendered output —
-   * re-interpreting it would re-tag echoes and let summarizeText drop its middle.
-   */
-  verbatim?: boolean;
 }) {
   const theme = useTheme();
-  // Computed unconditionally: hooks must not sit behind an early return.
-  const summary = useMemo(() => (verbatim ? null : needsSummary(line)), [line, verbatim]);
-
-  if (verbatim) return <Text>{line}</Text>;
+  const summary = useMemo(() => needsSummary(line), [line]);
 
   // A user-echo line (tagged with USER_ECHO_TAG) renders with a blue gutter bar
   // on the left and plain text — the gutter is what marks input, so assistant
@@ -147,88 +134,27 @@ const OutputLine = memo(function OutputLine({
   return <MarkdownText>{line}</MarkdownText>;
 });
 
-// Committed lines are rendered as a memoized block keyed on the merged array,
-// so per-character active-line updates (and 80ms spinner ticks) don't re-create
-// N elements or re-run the map for the whole transcript every frame.
-const CommittedLines = memo(function CommittedLines({
-  merged,
-}: {
-  merged: Array<{ text: string; key: number; folded?: boolean }>;
-}) {
-  return (
-    <>
-      {merged.map((item) => (
-        <OutputLine key={item.key} line={item.text} verbatim={item.folded === true} />
-      ))}
-    </>
-  );
-});
-
 // ── Main OutputArea ──
-
-/**
- * Fold everything older than the last `budget` lines into one entry.
- *
- * The transcript is only stored in this array — there is no <Static> flush, so
- * dropping lines would lose them for good. Joining them into a single element
- * keeps every character on screen while collapsing N Ink layout nodes into one,
- * which is where the per-frame cost actually lives.
- */
-export function foldOldLines(
-  merged: Array<{ text: string; key: number; folded?: boolean }>,
-  budget: number,
-): Array<{ text: string; key: number; folded?: boolean }> {
-  if (budget <= 0 || merged.length <= budget) return merged;
-  const foldCount = merged.length - budget;
-  const folded = merged.slice(0, foldCount);
-  return [
-    { text: folded.map((m) => m.text).join("\n"), key: folded[0].key, folded: true },
-    ...merged.slice(foldCount),
-  ];
-}
 
 function OutputArea({
   lines,
   activeLine,
   busy,
-  maxLines = 0,
-  liveLineBudget = 0,
+  staticEpoch,
 }: OutputAreaProps) {
-  // Truncate to maxLines if configured
-  const displayLines = useMemo(() => {
-    if (maxLines > 0 && lines.length > maxLines) {
-      return lines.slice(lines.length - maxLines);
-    }
-    return lines;
-  }, [lines, maxLines]);
-
-  // Table grouping now happens at append time (see core/table-group.ts), so
-  // `displayLines` already arrives with table blocks pre-joined — this just
-  // gives each entry the {text, key} shape foldOldLines expects.
-  const mergedLines = useMemo(
-    () => foldOldLines(displayLines.map((text, key) => ({ text, key })), liveLineBudget),
-    [displayLines, liveLineBudget],
-  );
-
-  // Track if we have lines to show the "more lines above" indicator
-  const hasMore = maxLines > 0 && lines.length > maxLines;
-
-  const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
-
   return (
     <>
-      {/* "More lines above" indicator */}
-      {hasMore && (
-        <Box>
-          <Text dimColor>{dim(`  [${lines.length - maxLines} more lines above]`)}</Text>
-        </Box>
-      )}
-
-      {/* Committed lines. Rendered as normal live elements (not Ink's <Static>)
-          so the pinned WelcomeScreen banner can stay above the conversation —
-          <Static> flushes to scrollback above the live frame and would fight the
-          banner for the top rows, eating the first message. */}
-      <CommittedLines merged={mergedLines} />
+      {/* Committed lines flush ONCE into native terminal scrollback via Ink's
+          <Static> and are never repainted — the transcript stops being a live
+          region Ink re-lays-out every frame, which is what let per-frame cost
+          scale with session length (and made slow terminal emulators tear).
+          `items` is append-only so an index key is stable. Bumping
+          `staticEpoch` (via the `key` prop) remounts Static and resets its
+          internal rendered-index, the standard reset used when the scrollback
+          itself is cleared (see App.tsx's /clear and /new handling). */}
+      <Static key={staticEpoch} items={lines}>
+        {(line, i) => <OutputLine key={i} line={line} />}
+      </Static>
 
       {/* Active streaming line (carries the same gutter tag as committed output) */}
       {activeLine !== "" && !busy && <OutputLine line={activeLine} />}
