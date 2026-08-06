@@ -4,76 +4,48 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
 A personal AI coding agent for the terminal — provider-agnostic, mode-gated,
-and permission-first. Built from first principles to be **fully understood by
-its owner**: no agent framework, no magic. Just TypeScript, a provider
-adapter, and a loop.
+and permission-first. No framework, no magic: one TypeScript codebase you can
+fully read, with every design decision written down in [`docs/`](./docs/)
+alongside its rationale. The name is the point — something you build once,
+understand completely, and keep.
 
-The name is the point: something you build once, understand completely, and
-keep. Every layer is independently readable and replaceable, and every design
-decision is written down in [`docs/`](./docs/) with its rationale and the
-project it was learned from (opencode, RooCode, Aider, SWE-agent).
+It started as a fix for an agent that broke inside IntelliJ's embedded
+terminal, and grew into a full agent by deliberately combining the proven
+parts of opencode, RooCode, Aider, and SWE-agent — modes, checkpoints, repo
+map, pattern permissions, layered error recovery — with no telemetry and no
+privileged vendor. The research trail, papers included, is in
+[`docs/architecture.md`](./docs/architecture.md).
 
 > **Status: working, daily-driven, looking for testers.** I use it every day
-> with **DeepSeek**, the best-tested path. The other provider presets share the
-> same OpenAI-compatible adapter but haven't had real-world mileage yet — if
-> you run one, [an issue](https://github.com/amenski/heirloom-agent/issues)
-> saying "works" or "breaks" is genuinely useful.
-
----
-
-## Why this exists
-
-Heirloom started as a fix for a small, annoying problem: the coding agent I
-was using didn't work correctly inside IntelliJ's embedded terminal. Instead
-of patching around someone else's stack, I built the smallest agent that
-worked — then kept going. Today it's a full terminal coding agent that runs
-anywhere a real terminal does, embedded IDE terminals included.
+> with **DeepSeek**, the best-tested path. Other provider presets are untested
+> in the real world — [a "works" or "breaks" issue](https://github.com/amenski/heirloom-agent/issues)
+> is genuinely useful.
 
 ---
 
 ## Highlights
 
-- **Any model, chosen in config** — built-in presets for DeepSeek (the daily
-  driver), OpenAI, OpenRouter, Groq, and a local Ollama. Adding another OpenAI-compatible
-  provider (endpoint + key) is configuration, not code.
+- **Any model, chosen in config** — presets for DeepSeek (the daily driver),
+  OpenAI, OpenRouter, Groq, and local Ollama; any other OpenAI-compatible
+  provider is configuration, not code.
 - **ReAct agent loop** with self-reflection, layered error recovery, and loop
-  detection — it streams responses, runs tools, and verifies its own edits.
-  Reflection issues bounded retry nudges on failed tools; error recovery
-  corrects malformed tool-call JSON and degrades gracefully on fatal errors;
-  loop detection breaks out of repeated identical or consecutively-failing calls.
+  detection — streams responses, runs tools, and verifies its own edits.
 - **Modes (personas)** — `code`, `ask` (read-only), `architect`, `debug`,
-  `orchestrator`. Each mode gates which tools the model can even see.
-- **Permission-first** — pattern rules (`allow` / `ask` / `deny`, last match
-  wins) plus a session posture (`askAll` / `allowAll`). `deny` is absolute.
-  You at the prompt are the firewall.
-- **Repository map** — a ranked symbol map of the repo, injected into the
-  system prompt once per session under a ~4KB budget, so the model has a
-  grounded picture of the codebase without reading every file.
-- **Safe edits** — specialized edit strategies with stale-file detection: the
-  agent cannot blind-overwrite a file it hasn't read.
-- **Resumable sessions** — append-only JSONL, resume by ID or `--last`, with
-  auto-compaction for arbitrarily long conversations. The session index carries
-  titles and lifecycle status (completed / interrupted / failed); rename and
-  pick sessions from `/resume`.
-- **Checkpoints** — shadow-Git snapshots before edits; `/undo` rewinds files
-  (or files + conversation).
-- **Auditable by design** — every permission decision is recorded to the
-  session (`/permissions` shows the trail) and per-turn token usage is logged
-  for `/cost`.
-- **Themes & statusline** — `/theme` switches color themes with live preview
-  (named presets included); a config-driven statusline runs your own plugins
-  along the bottom.
-- **MCP support** — connect Model Context Protocol servers via config; their
-  tools appear alongside the built-ins (`/mcp` to inspect). General web search
-  is a search MCP server of your choosing.
-- **`docs_search`** — built-in developer-docs search over free, keyless official
-  APIs (GitHub, Stack Overflow, npm/PyPI/crates, Wikipedia); no keys, no scraping.
-- **Skills** — reads the cross-tool [Agent Skills](https://agentskills.io)
-  format, so skills installed for other agents work here too.
-- **Notify hook** — point the `notify` config key at a script and it runs
-  (fire-and-forget, shell-safe) when a turn completes or fails.
-- **Headless mode** (`-x`) for scripting and pipelines, with fail-closed
-  permissions.
+  `orchestrator`; each gates which tools the model can even see.
+- **Permission-first** — `allow` / `ask` / `deny` pattern rules plus a session
+  posture, with every decision recorded (`/permissions`). You at the prompt
+  are the firewall.
+- **Grounded, safe edits** — a ranked repo map injected into the system
+  prompt; stale-file detection so the agent can't blind-overwrite a file it
+  hasn't read; shadow-Git checkpoints with `/undo`.
+- **Resumable sessions** — append-only JSONL with auto-compaction for
+  arbitrarily long conversations; resume by ID, picker, or `--last`.
+- **Extensible** — MCP servers via config, the cross-tool
+  [Agent Skills](https://agentskills.io) format, and a headless mode (`-x`)
+  with fail-closed permissions for scripting.
+
+There's more (themes, statusline plugins, notify hook, built-in docs search,
+`/cost`) — `/help` and the [docs](#documentation) cover it.
 
 ---
 
