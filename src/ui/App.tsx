@@ -215,6 +215,20 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [showSkillList, setShowSkillList] = useState(false);
   const [showModeList, setShowModeList] = useState(false);
   const [showUndoSelector, setShowUndoSelector] = useState(false);
+  // Checkpoint entries for the /undo selector. list() went async when the
+  // checkpoint manager dropped execSync (the 475ms main-thread block the stall
+  // profile caught) — and ctx.checkpoints is typed `any`, so WITHOUT this state
+  // hop TypeScript would happily pass the Promise straight into UndoSelector
+  // and /undo would silently show nothing. Loaded when the selector opens.
+  const [undoCheckpoints, setUndoCheckpoints] = useState<{ hash: string; message: string; timestamp: string }[]>([]);
+  useEffect(() => {
+    if (!showUndoSelector) return;
+    let live = true;
+    Promise.resolve(ctx.checkpoints?.list?.() ?? [])
+      .then((l) => { if (live) setUndoCheckpoints(l ?? []); })
+      .catch(() => { if (live) setUndoCheckpoints([]); });
+    return () => { live = false; };
+  }, [showUndoSelector]);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const [showPermissionHistory, setShowPermissionHistory] = useState(false);
   // Startup resume chooser: null until a resumed session offers the load/compact
@@ -1522,7 +1536,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
       {showUndoSelector && (
         <UndoSelector
-          checkpoints={(ctx.checkpoints?.list() as any[]) ?? []}
+          checkpoints={undoCheckpoints}
           onRestore={async (hash, restoreCode) => {
             if (ctx.restoreCheckpoint) {
               const result = await ctx.restoreCheckpoint(hash, restoreCode);

@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -17,15 +18,17 @@ export interface CheckpointEntry {
 // exotic global config that could otherwise block commits (commit.gpgsign),
 // execute arbitrary code (core.hooksPath), or corrupt content (autocrlf).
 const GIT_CONFIG_OVERRIDES = [
-  "-c user.name=heirloom",
-  "-c user.email=heirloom@local",
-  "-c commit.gpgsign=false",
-  "-c tag.gpgsign=false",
-  "-c core.hooksPath=/dev/null",
-  "-c core.autocrlf=false",
-  "-c core.fileMode=false",
-  "-c init.defaultBranch=main",
-].join(" ");
+  "-c", "user.name=heirloom",
+  "-c", "user.email=heirloom@local",
+  "-c", "commit.gpgsign=false",
+  "-c", "tag.gpgsign=false",
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "core.autocrlf=false",
+  "-c", "core.fileMode=false",
+  "-c", "init.defaultBranch=main",
+];
+
+const execFileAsync = promisify(execFile);
 
 export class CheckpointManager {
   private shadowDir: string;
@@ -42,12 +45,12 @@ export class CheckpointManager {
     return this.workspaceDir;
   }
 
-  private initialize(): void {
+  private async initialize(): Promise<void> {
     if (this.initialized) return;
 
     if (!existsSync(this.shadowDir)) {
       mkdirSync(this.shadowDir, { recursive: true });
-      execSync(`git ${GIT_CONFIG_OVERRIDES} init`, { cwd: this.shadowDir, stdio: "pipe" });
+      await execFileAsync("git", [...GIT_CONFIG_OVERRIDES, "init"], { cwd: this.shadowDir });
 
       const exclude = [
         ".git",
@@ -78,16 +81,32 @@ export class CheckpointManager {
     this.initialized = true;
   }
 
-  private git(args: string): string {
-    return execSync(
-      `git ${GIT_CONFIG_OVERRIDES} --work-tree="${this.workspaceDir}" --git-dir="${this.shadowDir}/.git" ${args}`,
-      { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: "pipe" },
-    ).trim();
+  // Async by hard-won necessity, not style. The 2026-08-06 stall profile
+  // (FOLLOWUPS §0) caught execSync here blocking the main thread for 475ms
+  // during a mid-turn checkpoint — the "dots freeze / input stalls / catches
+  // up" symptom that survived three earlier wrong diagnoses. Same disease the
+  // git-status poll had before 08-04, in the organ nobody checked.
+  //
+  // execFile with an args ARRAY (no shell) also closes an injection hole the
+  // shell string had: the commit message derives from raw prompt text, and the
+  // old escaping handled `"` but not `$(…)` or backticks.
+  private async git(args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync(
+      "git",
+      [
+        ...GIT_CONFIG_OVERRIDES,
+        `--work-tree=${this.workspaceDir}`,
+        `--git-dir=${join(this.shadowDir, ".git")}`,
+        ...args,
+      ],
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    return stdout.trim();
   }
 
-  private gitSilent(args: string): string | null {
+  private async gitSilent(args: string[]): Promise<string | null> {
     try {
-      return this.git(args);
+      return await this.git(args);
     } catch {
       return null;
     }
@@ -100,18 +119,19 @@ export class CheckpointManager {
     await prev;
 
     try {
-      this.initialize();
+      await this.initialize();
 
-      const status = this.gitSilent("status --porcelain");
+      const status = await this.gitSilent(["status", "--porcelain"]);
       if (!status) return null;
 
-      this.git("add -A");
+      await this.git(["add", "-A"]);
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const commitMsg = message ?? `checkpoint ${timestamp}`;
-      this.git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`);
+      // Passed verbatim as ONE argv entry — no shell, no escaping, no injection.
+      await this.git(["commit", "-m", commitMsg]);
 
-      return this.git("rev-parse HEAD");
+      return await this.git(["rev-parse", "HEAD"]);
     } catch {
       return null;
     } finally {
@@ -120,15 +140,15 @@ export class CheckpointManager {
   }
 
   async restore(type: "files" | "full"): Promise<{ restored: boolean; checkpointHash?: string }> {
-    this.initialize();
+    await this.initialize();
 
-    const hash = this.gitSilent("rev-parse HEAD");
+    const hash = await this.gitSilent(["rev-parse", "HEAD"]);
     if (!hash) {
       return { restored: false };
     }
 
     try {
-      this.git("checkout HEAD -- .");
+      await this.git(["checkout", "HEAD", "--", "."]);
     } catch {
       return { restored: false };
     }
@@ -137,10 +157,10 @@ export class CheckpointManager {
   }
 
   async restoreFrom(hash: string): Promise<{ restored: boolean; checkpointHash?: string }> {
-    this.initialize();
+    await this.initialize();
 
     try {
-      this.git(`checkout ${hash} -- .`);
+      await this.git(["checkout", hash, "--", "."]);
     } catch {
       return { restored: false };
     }
@@ -148,10 +168,10 @@ export class CheckpointManager {
     return { restored: true, checkpointHash: hash };
   }
 
-  list(): CheckpointEntry[] {
-    this.initialize();
+  async list(): Promise<CheckpointEntry[]> {
+    await this.initialize();
 
-    const output = this.gitSilent('log --format="%H|||%s|||%ci"');
+    const output = await this.gitSilent(["log", "--format=%H|||%s|||%ci"]);
     if (!output) return [];
 
     return output.split("\n").map((line) => {

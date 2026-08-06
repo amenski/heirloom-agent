@@ -4,7 +4,22 @@ Open items parked for later. Captured 2026-08-04, revised 2026-08-06.
 
 ## STILL BROKEN
 
-### 0. The "Working…" freeze is NOT fixed
+### 0. The "Working…" freeze — CAUSE FOUND 2026-08-06 (profile evidence), fix landed
+
+RESOLVED-PENDING-CONFIRMATION. The first real capture (HEIRLOOM_PROFILE=1, user session
+in IntelliJ) recorded one 580ms stall; the profile's longest same-stack run named it with
+zero ambiguity: `execSync` → `git` → `save` — the CHECKPOINT manager's shadow-git commit
+blocking the main thread 475ms (plus sibling sync spawns for status/add/rev-parse making
+up the rest). Checkpoints fire mid-turn around file edits, which is exactly the reported
+shape: dots freeze, input stalls, buffered keys replay. Same disease the git-status poll
+had before 08-04 — in the organ that fix never covered. Converted to async execFile
+(argv array — which also closed a shell-injection hole: commit messages derive from raw
+prompt text and the old quoting missed `$(…)`). Guarded by checkpoints/nonblocking.test.ts,
+same style as ui/git-poll-nonblocking.test.ts. Keep this item open until the user reports
+a stall-free long session; the watchdog remains available via HEIRLOOM_PROFILE=1.
+
+Original investigation record follows.
+
 Three separate blocking/render bugs were found and fixed this session (spinner re-render,
 git poll, JSON.parse instrumentation). All were real. **None of them resolved the reported
 freeze** — it still happens: the UI stalls mid-chat, won't accept input, then catches up.
