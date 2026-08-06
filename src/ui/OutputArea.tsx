@@ -13,7 +13,6 @@
 import React, { useMemo, memo } from "react";
 import { Box, Text } from "ink";
 import MarkdownText from "./MarkdownText.js";
-import { isTableBlock } from "./MarkdownTable.js";
 import { useTheme } from "./contexts.js";
 import { ansi256 } from "./theme.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
@@ -167,32 +166,6 @@ const CommittedLines = memo(function CommittedLines({
 
 // ── Main OutputArea ──
 
-function mergeTableLines(lines: string[]): Array<{ text: string; key: number }> {
-  const merged: Array<{ text: string; key: number }> = [];
-  let i = 0;
-  while (i < lines.length) {
-    if (lines[i].trimStart().startsWith("|")) {
-      const groupLines: string[] = [lines[i]];
-      let j = i + 1;
-      while (j < lines.length && lines[j].trimStart().startsWith("|")) {
-        groupLines.push(lines[j]);
-        j++;
-      }
-      const groupText = groupLines.join("\n");
-      if (groupLines.length >= 2 && isTableBlock(groupText)) {
-        merged.push({ text: groupText, key: i });
-      } else {
-        groupLines.forEach((l, k) => merged.push({ text: l, key: i + k }));
-      }
-      i = j;
-    } else {
-      merged.push({ text: lines[i], key: i });
-      i++;
-    }
-  }
-  return merged;
-}
-
 /**
  * Fold everything older than the last `budget` lines into one entry.
  *
@@ -229,8 +202,11 @@ function OutputArea({
     return lines;
   }, [lines, maxLines]);
 
+  // Table grouping now happens at append time (see core/table-group.ts), so
+  // `displayLines` already arrives with table blocks pre-joined — this just
+  // gives each entry the {text, key} shape foldOldLines expects.
   const mergedLines = useMemo(
-    () => foldOldLines(mergeTableLines(displayLines), liveLineBudget),
+    () => foldOldLines(displayLines.map((text, key) => ({ text, key })), liveLineBudget),
     [displayLines, liveLineBudget],
   );
 
