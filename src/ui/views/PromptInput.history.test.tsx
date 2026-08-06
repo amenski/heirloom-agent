@@ -119,4 +119,21 @@ describe("PromptInput ↑/↓ prompt history", () => {
     // The draft the user was mid-way through must come back, not be lost.
     expect(stripAnsi(lastFrame() ?? "")).toContain("half-typed");
   });
+
+  it("walks history PAST a slash command instead of getting trapped in its menu", async () => {
+    // Regression: recalling "/model" made getCurrentSlashToken non-null, the
+    // completion menu opened, and its branch consumed the next Up-arrow for
+    // menu navigation — so the entry BEFORE the command was unreachable.
+    const { stdin, lastFrame } = setup(["first message", "/model"]);
+    stdin.write(UP);
+    await flush();
+    const afterFirst = stripAnsi(lastFrame() ?? "");
+    expect(afterFirst).toContain("/model");
+    // The menu must be suppressed during recall — no completion row visible.
+    expect(afterFirst).not.toContain("Select model");
+
+    stdin.write(UP);
+    await flush();
+    expect(stripAnsi(lastFrame() ?? "")).toContain("first message");
+  });
 });
