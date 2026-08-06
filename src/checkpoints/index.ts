@@ -148,7 +148,7 @@ export class CheckpointManager {
     }
 
     try {
-      await this.git(["checkout", "HEAD", "--", "."]);
+      await this.git(["read-tree", "--reset", "-u", "HEAD"]);
     } catch {
       return { restored: false };
     }
@@ -160,7 +160,14 @@ export class CheckpointManager {
     await this.initialize();
 
     try {
-      await this.git(["checkout", hash, "--", "."]);
+      // read-tree --reset -u, NOT checkout <hash> -- . — checkout overlays the
+      // snapshot's files but never DELETES files created after it, so undoing
+      // a file creation silently left the file in place (found by the user's
+      // very first live /undo test: "write a sample file, then undo it").
+      // read-tree resets the index to the snapshot and syncs the worktree,
+      // removals included, while HEAD stays put — so later checkpoints remain
+      // listed and an undo can itself be undone by restoring forward.
+      await this.git(["read-tree", "--reset", "-u", hash]);
     } catch {
       return { restored: false };
     }

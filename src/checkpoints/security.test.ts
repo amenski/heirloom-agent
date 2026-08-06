@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -143,5 +143,36 @@ describe("checkpoint secret handling", () => {
 
     expect(existsSync(join(workspaceDir, "app.ts"))).toBe(true);
     expect(existsSync(join(workspaceDir, ".env"))).toBe(false);
+  });
+
+  it("undoes a file CREATION, and the undo is itself redoable", async () => {
+    // The user's first live /undo test: ask the agent to write a sample file,
+    // then undo. checkout <hash> -- . reverted modifications but never deleted
+    // the created file — the snapshot has nothing to overlay it with. The
+    // read-tree --reset -u primitive syncs the worktree to the snapshot,
+    // deletions included, without moving HEAD.
+    const mgr = await chkptManager();
+
+    writeFileSync(join(workspaceDir, "app.ts"), "console.log('v1');\n");
+    const before = await mgr.save("pre-creation");
+    expect(before).toBeTruthy();
+
+    writeFileSync(join(workspaceDir, "created-later.txt"), "new file\n");
+    writeFileSync(join(workspaceDir, "app.ts"), "console.log('v2');\n");
+    const after = await mgr.save("post-creation");
+    expect(after).toBeTruthy();
+
+    const undo = await mgr.restoreFrom(before!);
+    expect(undo.restored).toBe(true);
+    expect(existsSync(join(workspaceDir, "created-later.txt"))).toBe(false);
+    expect(readFileSync(join(workspaceDir, "app.ts"), "utf-8")).toContain("v1");
+
+    // HEAD did not move, so the later checkpoint is still listed — redo works.
+    const entries = await mgr.list();
+    expect(entries.some((e) => e.hash === after)).toBe(true);
+    const redo = await mgr.restoreFrom(after!);
+    expect(redo.restored).toBe(true);
+    expect(existsSync(join(workspaceDir, "created-later.txt"))).toBe(true);
+    expect(readFileSync(join(workspaceDir, "app.ts"), "utf-8")).toContain("v2");
   });
 });
