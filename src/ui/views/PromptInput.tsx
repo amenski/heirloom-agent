@@ -166,6 +166,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "exit") { onSubmit({ text: "/exit", command: "exit" }); return; }
     if (item.kind === "clear") { onSubmit({ text: item.label }); resetInput(); return; }
     if (item.kind === "help") { onSubmit({ text: item.label }); resetInput(); return; }
+    if (item.kind === "doctor") { onSubmit({ text: item.label }); resetInput(); return; }
     if (item.kind === "skills") { onSubmit({ text: item.label }); resetInput(); return; }
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
     if (item.kind === "effort") { onSubmit({ text: "/effort" }); resetInput(); return; }

@@ -26,6 +26,7 @@ const ROUTED_KINDS: ReadonlySet<SlashCommandKind> = new Set<SlashCommandKind>([
   "skills",
   "plan",
   "raw",
+  "doctor",
 ]);
 
 describe("/theme slash command registration", () => {
