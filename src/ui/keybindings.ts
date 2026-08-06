@@ -119,6 +119,12 @@ const DEFAULT_BINDINGS: KeybindingMap = {
 
   // Mode & App
   openModelPicker: [{ key: "m", ctrl: true }],
+  // NOTE: unreachable in a standard terminal. Ctrl+P and Ctrl+Shift+P both
+  // arrive as byte 0x10 — shift is not encoded — so a shift-qualified binding
+  // can never match, and PromptInput claims ctrl+p for history navigation
+  // before App's useInput would see it. "/" opens the same command list in the
+  // prompt with fuzzy filtering. Kept so a user-supplied keybindings.json can
+  // still bind the action to a chord that does encode (e.g. a function key).
   openCommandPalette: [{ key: "p", ctrl: true, shift: true }],
   toggleTheme: [{ key: "t", ctrl: true, shift: true }],
 

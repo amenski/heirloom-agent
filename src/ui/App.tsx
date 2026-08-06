@@ -1614,8 +1614,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             ? [{ key: "esc", label: "interrupt" }]
             : [{ key: "⇧ Tab", label: posture === "normal" ? "auto-approve" : "normal" }]
         }
+        // Only chords that actually reach a handler. "^⇧P commands" was dead
+        // twice over: a terminal sends the same byte (0x10) for ctrl+p and
+        // ctrl+shift+p, so the shift-qualified binding can never match, and
+        // PromptInput claims ctrl+p for history navigation before App's
+        // useInput would see it anyway. "/" already lists the same commands
+        // with fuzzy filtering, and is discoverable without a hint.
         right={[
-          { key: "^⇧P", label: "commands" },
+          { key: "/", label: "commands" },
           { key: "^M", label: "model" },
         ]}
       />
