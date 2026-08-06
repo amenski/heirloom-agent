@@ -91,9 +91,24 @@ function parseCsi(buf: string, offset: number): [InputKey, number] | null {
 function parseOseq(buf: string, offset: number): [InputKey, number] | null {
   if (offset + 1 >= buf.length) return null;
   const ch = buf[offset + 1];
+  // A/B/C/D: SS3-encoded arrow keys. Terminals in application-cursor-key mode
+  // (DECCKM, set via `ESC[?1h`) send arrows as `ESC O A/B/C/D` instead of the
+  // normal CSI `ESC[A/B/C/D` — JediTerm (IntelliJ's terminal) and others do
+  // this. Before this map had these entries, SS3 arrows fell through to the
+  // bare "\x1b" → escape branch below, plus the trailing O/letter leaked in
+  // as stray printable characters. Since `escape` drives interrupt/dismiss
+  // behavior throughout the UI, that meant every arrow keypress in these
+  // terminals closed menus or interrupted the current turn instead of just
+  // silently failing to navigate.
+  // Modified SS3 arrows (e.g. shift+up) are not handled here: unlike CSI,
+  // which encodes modifiers as `ESC[1;5A`, SS3 has no standard modifier
+  // parameter slot, and terminals that support modified arrows generally
+  // send CSI for those regardless of cursor-key mode. So this stays
+  // unmodified-arrows-only by design, not by oversight.
   const map: Record<string, Partial<InputKey>> = {
     P: { key: "F1" }, Q: { key: "F2" }, R: { key: "F3" }, S: { key: "F4" },
     H: { home: true }, F: { end: true },
+    A: { upArrow: true }, B: { downArrow: true }, C: { rightArrow: true }, D: { leftArrow: true },
   };
   if (map[ch]) return [makeKey(map[ch].key || "", map[ch]), offset + 2];
   return null;
