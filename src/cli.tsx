@@ -870,6 +870,29 @@ export async function handleSlashCore(
       const cost = getCostStr(); console.log(`Estimated cost: $${cost ?? "0.0000"}`);
       return;
     }
+    case "/doctor": {
+      // Same information as `heirloom doctor`, but reachable without leaving
+      // the session — the shell subcommand is intercepted before the UI starts,
+      // so it was the one place you could not check the running session's own
+      // settings.
+      const refreshRaw = (process.env.HEIRLOOM_REFRESH ?? "").trim();
+      const refresh = resolveRefreshProfile();
+      const refreshName = REFRESH_PROFILE_NAMES.find(
+        (n) => JSON.stringify(resolveRefreshProfile({ HEIRLOOM_REFRESH: n })) === JSON.stringify(refresh),
+      );
+      const note = refreshRaw === ""
+        ? "(default)"
+        : refreshName === refreshRaw.toLowerCase()
+          ? "(from HEIRLOOM_REFRESH)"
+          : `(HEIRLOOM_REFRESH="${refreshRaw}" not recognised — using default)`;
+      console.log(`provider   ${shared.providerName}`);
+      console.log(`model      ${shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown"}`);
+      console.log(`effort     ${shared.activeEffort ?? "(none)"}`);
+      console.log(`refresh    ${refreshName} ${note}`);
+      console.log(`           flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
+      console.log(`node       ${process.version}`);
+      return;
+    }
     case "/skills": {
       if (skills.length === 0) console.log("No skills available.");
       else for (const s of skills) console.log(`  ${s.name} — ${s.description || "no description"}`);
