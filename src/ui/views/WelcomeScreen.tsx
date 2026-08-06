@@ -33,10 +33,15 @@ interface Props {
  * 1. It is PINNED for the whole session (see App.tsx) — not a splash you scroll
  *    past. Fifteen rows is 63% of a standard 24-row terminal, permanently
  *    unavailable to the conversation.
- * 2. The banner mixed glyphs at 61 columns wide. In JetBrains Mono, ASCII,
- *    block-full, block-half and box-drawing all advance 9.625px, but quadrant
- *    glyphs advance 9.667px — a 0.4% drift that compounds across 61 columns
- *    into visible row-to-row skew. A short mark cannot accumulate that error.
+ * 2. The banner rendered shredded in IntelliJ's JediTerm. Measured in Figma
+ *    with JetBrains Mono at 16px, the banner's actual glyphs — ASCII,
+ *    block-full (█), block-half, and box-drawing (╗ ║ ╔ ═ ╝ ╚) — all advance
+ *    an identical 9.625px, so font-metric drift does not explain the
+ *    shredding (an earlier version of this comment blamed quadrant-glyph
+ *    width drift, but the banner contained no quadrant glyphs). The likely
+ *    cause is renderer-side: JediTerm probably custom-paints the box-drawing
+ *    and block ranges instead of using font glyphs (unverified). A short
+ *    mark sidesteps the problem regardless of its cause.
  *
  * The mark is reverse video (text on an accent slab) — the highest-contrast
  * device a terminal offers, and the same treatment already used for chips in

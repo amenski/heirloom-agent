@@ -61,6 +61,14 @@ it is called at `cli.tsx:641`.)
   behaved correctly, including a provider switch surviving `/resume`.
   This closes the last item that could only be verified by a human at a TTY.
 
+- **Corrected a false mechanism in `7cec1b0`'s commit message.** That commit attributes the
+  deleted ASCII banner's shredded rendering in IntelliJ to quadrant-glyph width drift, but
+  the banner contained no quadrant glyphs, and its actual glyphs (ASCII, block-full,
+  block-half, box-drawing) measured identical advance widths in Figma. Comments in
+  `WelcomeScreen.tsx` and its test corrected in this commit; git history stands as-is.
+  Probable real cause is renderer-side — JediTerm likely custom-paints those glyph ranges
+  instead of using font glyphs — unverified.
+
 ## Closed 2026-08-05
 
 - **Effort coverage beyond DeepSeek — closed, not deferred.** This was a finished
