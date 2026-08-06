@@ -71,7 +71,6 @@ import {
   lookupAction,
 } from "./keybindings.js";
 import { announceToScreenReader } from "./Accessibility.js";
-import { buildExitSummaryText, buildResumeHintText } from "./exit-summary.js";
 
 // Display label for a queued item in the above-input stack. A large paste is
 // collapsed to a bracket summary ("[Pasted N lines]") rather than dumping the
@@ -95,7 +94,7 @@ function formatQueueTime(at: number): string {
 }
 
 function InnerApp({ ctx }: { ctx: AppContext }) {
-  const { exit } = useApp();
+  const { exit, waitUntilRenderFlush } = useApp();
   const theme = useTheme();
   const themeController = useThemeController();
   const accessibility = useAccessibility();
@@ -129,6 +128,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [staticEpoch, setStaticEpoch] = useState(0);
   const [activeLine, setActiveLine] = useState("");
   const [busy, setBusy] = useState(false);
+  // Set while exiting: the whole frame collapses to this one line (the resume
+  // hint) before ink unmounts, so no input/menu/footer junk lingers on screen.
+  const [exitHint, setExitHint] = useState<string | null>(null);
   // Shell-style ↑/↓ recall of what the user has typed. Kept in React state
   // (rather than read off ctx.mutable) because a plain mutation wouldn't
   // re-render PromptInput. Oldest first — useHistoryNavigation walks backwards
@@ -1371,12 +1373,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   });
 
   function handleExit() {
-    const usage = ctx.mutable.modelUsage;
-    if (usage && Object.keys(usage).length > 0) {
-      pushOutput(buildExitSummaryText(usage));
-    }
-    pushOutput(buildResumeHintText(ctx.sessionId, colorEnabled));
-    ctx.logSessionEnd().finally(() => exit());
+    // Collapse the whole frame (header, input, menu, hint bar) to a single
+    // resume-hint line, flush it to the terminal, then unmount. The transcript
+    // stays in scrollback untouched — only the interactive frame goes away.
+    setExitHint(`Resume: heirloom --resume ${ctx.sessionId}`);
+    ctx.logSessionEnd().finally(async () => {
+      await waitUntilRenderFlush();
+      exit();
+    });
   }
 
   const promptStr = ctx.getPromptStr();
@@ -1400,6 +1404,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
     prevModalOpenRef.current = modalOpen;
   }, [modalOpen]);
+
+  if (exitHint) {
+    // Final frame: a single dim line. Ink erases the old frame rows and
+    // redraws only this, leaving the transcript scrollback intact above it.
+    return <Text dimColor>{exitHint}</Text>;
+  }
 
   return (
     <Box flexDirection="column" width={term.columns}>
