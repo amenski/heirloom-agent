@@ -102,7 +102,7 @@ export function startStallWatchdog(opts?: {
           const stamp = new Date().toISOString().replace(/[:.]/g, "-");
           const base = join(profileDir, `stall-${stamp}`);
           writeFileSync(`${base}.cpuprofile`, JSON.stringify(profile));
-          writeFileSync(`${base}.stalls.jsonl`, events.map((e) => JSON.stringify(e)).join("\n"));
+          writeFileSync(`${base}.stalls.jsonl`, events.map((e) => JSON.stringify(e) + "\n").join(""));
           profilePath = `${base}.cpuprofile`;
         } catch {
           profilePath = null;
