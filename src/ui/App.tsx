@@ -59,6 +59,7 @@ import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG, ANSI_CLEAR_SCREEN } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
+import { loadPromptHistory, appendPromptHistory } from "./core/history-store.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
 import { resolveRefreshProfile, type ResolvedRefresh } from "./core/refresh-rates.js";
 import { groupTableLines, splitCommittable } from "./core/table-group.js";
@@ -134,9 +135,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // from the end. Seeded from a resumed session's user turns so recall survives
   // --resume; `sessionUserInputs` can't serve here since it starts empty on
   // resume and is only appended at runtime.
-  const [promptHistory, setPromptHistory] = useState<string[]>(() =>
-    seedPromptHistory(ctx.mutable.conversationHistory),
-  );
+  // Persisted per-project history is the source of truth (like shell history —
+  // it survives sessions and includes slash commands, which never enter
+  // conversationHistory at all). Seeding from the resumed conversation remains
+  // ONLY as the fallback for projects that predate the history file; merging
+  // both would duplicate every resumed prompt the file already recorded.
+  const [promptHistory, setPromptHistory] = useState<string[]>(() => {
+    const persisted = loadPromptHistory(process.cwd());
+    if (persisted.length > 0) return persisted;
+    return seedPromptHistory(ctx.mutable.conversationHistory);
+  });
+  // Tail of what was last recorded — dedupes BOTH the in-memory list and the
+  // file with one comparison, and survives the setter's async timing.
+  const lastRecordedRef = useRef<string | null>(null);
+  if (lastRecordedRef.current === null && promptHistory.length > 0) {
+    lastRecordedRef.current = promptHistory[promptHistory.length - 1];
+  }
   // A turn-scoped "working" indicator, distinct from `busy` (which flips false at
   // the first streamed token so the input unlocks mid-turn). `turnActive` stays
   // true for the whole turn — including the silent stretches during tool calls
@@ -841,7 +855,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   function recordPromptHistory(entry: string): void {
     const text = entry.trim();
     if (!text) return;
-    setPromptHistory((prev) => (prev[prev.length - 1] === text ? prev : [...prev, text]));
+    // One dedupe for both destinations: the consecutive-repeat check used to
+    // live inside the setter, which the persistent file could not see.
+    if (text === lastRecordedRef.current) return;
+    lastRecordedRef.current = text;
+    setPromptHistory((prev) => [...prev, text]);
+    // Fire-and-forget by contract: zero synchronous I/O and zero new failure
+    // modes on the turn path while a main-thread stall is being hunted.
+    void appendPromptHistory(process.cwd(), text);
   }
 
   // Handles a submission from the input box: runs it now if idle, otherwise
