@@ -257,9 +257,19 @@ const PromptInput = React.memo(function PromptInput({
     if (showMenu) {
       if (key.upArrow) { setMenuIndex((i) => (i - 1 + slashMenu.length) % slashMenu.length); return; }
       if (key.downArrow) { setMenuIndex((i) => (i + 1) % slashMenu.length); return; }
+      // Enter selects the highlighted command — but only when the buffer holds
+      // just the slash token. With trailing args ("/raw normal") the whole line
+      // must submit so the args survive; that falls through to submitCurrent.
+      // This restores the "↑↓ navigate · Enter select" the menu footer
+      // advertises; before it, Enter on "/" submitted a bare slash, which App
+      // answered with "Unknown: /".
+      if (key.return && slashToken && bufferRef.current.text.trim() === slashToken) {
+        const selected = slashMenu[menuIndex];
+        if (selected) { handleSlashSelection(selected); return; }
+      }
       // Tab completes the highlighted command into the buffer so the user can
-      // append args; Enter is NOT consumed here — it falls through to submit
-      // the full buffer below (the menu is a completion aid, not an Enter trap).
+      // append args; Enter with args falls through to submit the full buffer
+      // below (the menu is a completion aid, not an Enter trap).
       if (key.tab && !key.shift) {
         const selected = slashMenu[menuIndex];
         if (selected) {
