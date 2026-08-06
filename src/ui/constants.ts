@@ -1,5 +1,5 @@
 export const ARGS_SEPARATOR = " | ";
-export const ANSI_CLEAR_SCREEN = "[2J[3J[H";
+export const ANSI_CLEAR_SCREEN = "[2J[3J[H";
 export const PROMPT_PREFIX_WIDTH = 2;
 /**
  * Sentinel prefixed onto an echoed user message so OutputArea renders it as a
