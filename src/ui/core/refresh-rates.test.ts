@@ -42,9 +42,10 @@ describe("resolveRefreshProfile", () => {
     }
   });
 
-  it("keeps every indicator rate above the perceptual floor for motion", () => {
-    // Below roughly 4 steps/sec an animation reads as intermittent flicker
-    // rather than movement, which defeats the point of having an indicator.
+  it("keeps every indicator rate above the chosen minimum step rate", () => {
+    // 4 steps/sec is a design budget we chose, not a measured perceptual
+    // floor: below it we judged the indicator reads as intermittent flicker
+    // rather than movement, which defeats the point of having one.
     for (const name of REFRESH_PROFILE_NAMES) {
       const { indicatorMs } = resolveRefreshProfile({ HEIRLOOM_REFRESH: name });
       const stepsPerSecond = 1000 / indicatorMs;
