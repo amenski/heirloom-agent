@@ -15,8 +15,9 @@
 //   slow           150ms      200ms       47    1.4KB
 //
 // "balanced" is the default: 2.4x less traffic than before, and the indicator
-// still advances 6.3 times a second — comfortably above the ~4-5 steps/sec
-// floor where an animation stops reading as motion.
+// still advances 6.3 times a second — above 4 steps/sec, the minimum we chose
+// as a budget for the animation still reading as motion (a design choice,
+// not a measured perceptual constant).
 
 export type RefreshProfile = {
   /** Interval for draining queued output lines into the transcript. */
@@ -34,7 +35,11 @@ const PROFILES: Record<string, RefreshProfile> = {
   balanced: { flushMs: 100, activeLineMs: 100, indicatorMs: 160 },
   // For emulators that paint every write (IntelliJ, some SSH sessions, tmux
   // over a slow link). Streaming text arrives in visible chunks rather than
-  // continuously, which is the tradeoff for a stable frame.
+  // continuously, which is the tradeoff for a stable frame. flushMs and
+  // activeLineMs also delay committed content — tool results and echoes —
+  // by up to 150ms, but those timers only fire while there's content to
+  // flush, so during a turn the indicator's timer is the sole one that runs
+  // unconditionally.
   slow: { flushMs: 150, activeLineMs: 150, indicatorMs: 200 },
 };
 
