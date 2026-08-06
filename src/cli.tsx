@@ -375,10 +375,19 @@ async function main() {
    * The model chip shown on the input box's right edge. Pre-rendered ANSI (not
    * a node) so it stays inside the single input row — see PromptInput.modelPill.
    */
-  function buildModelPill(): string {
+  /**
+   * The active model's display name, with the same fallback the status bar
+   * uses. `shared.activeModel` is undefined until a model is explicitly
+   * chosen, so reading it directly renders "unknown" on a fresh session even
+   * though the provider's default is what will actually be used.
+   */
+  function modelDisplayName(): string {
     const modelId = shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown";
-    const label = getActiveModelCaps()?.displayName ?? modelId;
-    return chip(label, {
+    return getActiveModelCaps()?.displayName ?? modelId;
+  }
+
+  function buildModelPill(): string {
+    return chip(modelDisplayName(), {
       fg: resolvedTheme.theme.textBright,
       bg: resolvedTheme.theme.border,
       colorEnabled,
@@ -473,6 +482,7 @@ async function main() {
       completer: (line: string) => completer(line, knownModeSlugs),
       buildStatusBar,
       buildModelPill,
+      modelDisplayName,
       statusLineManager,
       getPromptStr: () => (colorEnabled ? `\u001B[34m\u258C\u001B[0m \u001B[34m\u203A\u001B[0m ` : "heirloom > "),
       getColorEnabled: () => colorEnabled,
