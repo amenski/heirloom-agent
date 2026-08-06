@@ -1312,7 +1312,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       {/* Banner stays pinned at the top of the frame for the whole session;
           the conversation renders below it rather than replacing it. */}
       <WelcomeScreen
-        model={`${ctx.providerName}/${ctx.activeModel ?? "unknown"}`}
+        model={ctx.modelDisplayName?.() ?? ctx.activeModel ?? ctx.providerName}
         thinkingEnabled={thinkingEnabled}
         reasoningEffort={reasoningEffort}
         cwd={process.cwd()}

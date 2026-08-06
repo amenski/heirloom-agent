@@ -137,6 +137,8 @@ export interface AppContext {
   buildStatusBar: () => StatusSegment[];
   /** Pre-rendered model chip for the input box's right edge. */
   buildModelPill?: () => string;
+  /** Active model's display name, with the provider-default fallback applied. */
+  modelDisplayName?: () => string;
   /** Config-driven status line providers (command/module). Undefined when no `statusline` config. */
   statusLineManager?: StatusLineManager;
   getPromptStr: () => string;

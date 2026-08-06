@@ -1,8 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text } from "ink";
 import { getSlashCommands } from "../core/slash-commands.js";
-import { heirloomLogo } from "../ascii-art.js";
-import ThemedGradient from "./ThemedGradient.js";
 import { useTheme } from "../contexts.js";
 import { ansi256 } from "../theme.js";
 
@@ -26,9 +24,29 @@ interface Props {
   width: number;
 }
 
+/**
+ * The session header: a wordmark and one line of context.
+ *
+ * This used to be a six-row ASCII banner plus a six-row settings panel. Two
+ * problems with that, both measured rather than assumed:
+ *
+ * 1. It is PINNED for the whole session (see App.tsx) — not a splash you scroll
+ *    past. Fifteen rows is 63% of a standard 24-row terminal, permanently
+ *    unavailable to the conversation.
+ * 2. The banner mixed glyphs at 61 columns wide. In JetBrains Mono, ASCII,
+ *    block-full, block-half and box-drawing all advance 9.625px, but quadrant
+ *    glyphs advance 9.667px — a 0.4% drift that compounds across 61 columns
+ *    into visible row-to-row skew. A short mark cannot accumulate that error.
+ *
+ * The mark is reverse video (text on an accent slab) — the highest-contrast
+ * device a terminal offers, and the same treatment already used for chips in
+ * the status bar and key-caps in the hint bar, so it reads as one system.
+ */
 export default function WelcomeScreen({ model, thinkingEnabled, reasoningEffort, cwd, width }: Props) {
   const theme = useTheme();
   const accent = theme.colorEnabled ? ansi256(theme.theme.accent) : undefined;
+  const inverseFg = theme.colorEnabled ? ansi256(theme.theme.textInverse) : undefined;
+
   const tips = useMemo(() => {
     const slashItems = getSlashCommands();
     return [...slashItems.map(s => ({ label: s.label, description: s.description })), ...SHORTCUT_TIPS.filter(
@@ -38,8 +56,6 @@ export default function WelcomeScreen({ model, thinkingEnabled, reasoningEffort,
 
   const [tipIndex] = useState(() => tips.length > 0 ? Math.floor(Math.random() * tips.length) : 0);
   const tip = tips[Math.min(tipIndex, tips.length - 1)] ?? tips[0];
-  const compact = width < 70;
-  const narrow = width < 112;
 
   function formatCwd(path: string): string {
     const home = process.env.HOME || process.env.USERPROFILE || "";
@@ -47,37 +63,25 @@ export default function WelcomeScreen({ model, thinkingEnabled, reasoningEffort,
     return resolved.length > 40 ? "…" + resolved.slice(-37) : resolved;
   }
 
-  const logo = heirloomLogo();
+  // One line of context, in the same "·"-separated vocabulary as the status
+  // bar. The model/thinking/cwd used to be a bordered three-row panel that
+  // restated what the status bar already shows a few rows below.
+  const thinking = thinkingEnabled ? (reasoningEffort ?? "on") : "off";
+  const context = `${model} · thinking ${thinking} · ${formatCwd(cwd)}`;
 
   return (
-    <Box flexDirection="column" marginY={1} paddingX={narrow ? 0 : 1}>
-      <Box marginBottom={1}>
-        <ThemedGradient>{logo}</ThemedGradient>
-      </Box>
-      <Box flexDirection="column" width={compact ? undefined : narrow ? undefined : 72}>
-        <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
-          <Box marginBottom={1}>
-            <Text bold color={accent}>{">"}_ Heirloom</Text>
-          </Box>
-          <SettingRow label="Model" value={model} />
-          <SettingRow label="Thinking" value={thinkingEnabled ? (reasoningEffort ?? "enabled") : "disabled"} />
-          <SettingRow label="CWD" value={formatCwd(cwd)} />
-        </Box>
+    <Box flexDirection="column" marginY={1}>
+      <Box>
+        <Text backgroundColor={accent} color={inverseFg} bold>
+          {" HEIRLOOM "}
+        </Text>
+        <Text dimColor>{"  " + context}</Text>
       </Box>
       {tip && (
         <Box marginTop={1}>
           <Text dimColor>Tip: {tip.label} — {tip.description}</Text>
         </Box>
       )}
-    </Box>
-  );
-}
-
-function SettingRow({ label, value }: { label: string; value: string }) {
-  return (
-    <Box flexDirection="row">
-      <Box width={14}><Text>{label}</Text></Box>
-      <Box flexGrow={1} justifyContent="flex-end"><Text>{value}</Text></Box>
     </Box>
   );
 }
