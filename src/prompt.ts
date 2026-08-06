@@ -3,8 +3,9 @@ import type { SkillDef } from "./skills/index.js";
 import { RepoMap } from "./repomap/index.js";
 import type { ToolGroup } from "./tools/types.js";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { join, relative, sep } from "node:path";
+import { promisify } from "node:util";
 import { platform } from "node:os";
 
 export interface PromptContext {
@@ -123,7 +124,7 @@ export async function buildVolatileContext(ctx: PromptContext): Promise<string> 
     }
   }
 
-  const env = getEnvironment(ctx.workingDir);
+  const env = await getEnvironment(ctx.workingDir);
   if (env) sections.push(env);
 
   return sections.join("\n\n");
@@ -185,22 +186,34 @@ Pick the smallest tool that expresses the change. Never write_to_file to change 
   return parts.join("\n\n");
 }
 
-function getEnvironment(cwd: string): string {
+async function getEnvironment(cwd: string): Promise<string> {
   const date = new Date().toISOString().slice(0, 10);
 
+  // Must stay async. This ran under execSync, which blocks the main thread for
+  // as long as git takes — measured at multi-second freezes on a loaded
+  // machine, same disease the git-status poll and checkpoint manager cured.
+  // execFile with an argv array also avoids the /bin/sh hop.
   let gitLine = "not a git repository";
   try {
-    const branch = execSync("git branch --show-current", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-    const status = execSync("git status --porcelain", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const fileCount = status.trim().split("\n").filter(Boolean).length;
+    const run = promisify(execFile);
+    const git = async (args: string[]): Promise<string> => {
+      try {
+        const { stdout } = await run("git", args, {
+          cwd,
+          encoding: "utf-8",
+          timeout: 3000,
+        });
+        return stdout.trim();
+      } catch {
+        return "";
+      }
+    };
+    // Independent reads — run concurrently rather than serially.
+    const [branch, status] = await Promise.all([
+      git(["branch", "--show-current"]),
+      git(["status", "--porcelain"]),
+    ]);
+    const fileCount = status ? status.split("\n").filter(Boolean).length : 0;
     const statusStr = fileCount === 0 ? "clean" : `${fileCount} files modified`;
     if (branch) {
       gitLine = `${branch} (${statusStr})`;

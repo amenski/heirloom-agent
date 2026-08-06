@@ -144,7 +144,8 @@ export interface AppContext {
   getPromptStr: () => string;
   getColorEnabled: () => boolean;
 
-  logSessionEnd: () => Promise<void>;
+  /** Ends the session; resolves with the stall-watchdog report line (or null). */
+  logSessionEnd: () => Promise<string | null>;
   onExit: () => void;
 
   handleSlash: (input: string) => Promise<string[]>;

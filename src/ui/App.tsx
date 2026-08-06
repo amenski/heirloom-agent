@@ -1372,15 +1372,18 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   });
 
-  function handleExit() {
+  async function handleExit() {
     // Collapse the whole frame (header, input, menu, hint bar) to a single
     // resume-hint line, flush it to the terminal, then unmount. The transcript
     // stays in scrollback untouched — only the interactive frame goes away.
+    // The stall-watchdog report is printed only AFTER ink unmounts: stderr
+    // writes while ink still owns the screen get erased by the next frame
+    // redraw (the resume-hint render), so the report never showed.
     setExitHint(`Resume: heirloom --resume ${ctx.sessionId}`);
-    ctx.logSessionEnd().finally(async () => {
-      await waitUntilRenderFlush();
-      exit();
-    });
+    const reportLine = await ctx.logSessionEnd().catch(() => null);
+    await waitUntilRenderFlush().catch(() => {});
+    exit();
+    if (reportLine) process.stderr.write(reportLine + "\n");
   }
 
   const promptStr = ctx.getPromptStr();

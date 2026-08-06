@@ -304,12 +304,12 @@ async function main() {
     if (stallWatchdog) {
       try {
         const report = await stallWatchdog.stop();
-        process.stderr.write(
-          `[profile] ${report.count} stalls ≥150ms (worst ${report.worstLagMs}ms) — ${report.profilePath ?? "lateness-only, no profile"}\n`,
-        );
+        stallWatchdog = null;
+        return `[profile] ${report.count} stalls ≥150ms (worst ${report.worstLagMs}ms) — ${report.profilePath ?? "lateness-only, no profile"}`;
       } catch {}
       stallWatchdog = null;
     }
+    return null;
   }
 
   const skillLoader = new SkillLoader();
@@ -506,7 +506,7 @@ async function main() {
       getPromptStr: () => (colorEnabled ? `\u001B[34m\u258C\u001B[0m \u001B[34m\u203A\u001B[0m ` : "heirloom > "),
       getColorEnabled: () => colorEnabled,
       logSessionEnd,
-      onExit: () => logSessionEnd().then(() => process.exit(0)),
+      onExit: () => logSessionEnd().catch(() => null).then((line) => { if (line) process.stderr.write(line + "\n"); process.exit(0); }),
       handleSlash: async (input: string) => {
         const lines: string[] = [];
         const origLog = console.log;
@@ -936,7 +936,8 @@ export async function handleSlashCore(
       }
       const msg = buildSkillLoadMessage(name, skill.content);
       shared.conversationHistory.push(msg);
-      console.log(`Skill "${name}" loaded.`);
+      const kb = (skill.content.length / 1024).toFixed(1);
+      console.log(`Skill "${name}" loaded into conversation (${kb} KB).`);
       await sessionStore.appendMessage(sessionId, msg);
       return;
     }
