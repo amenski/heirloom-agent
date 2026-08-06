@@ -2,8 +2,7 @@ import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render } from "ink-testing-library";
 import { ScopeChoicePrompt } from "./PermissionPrompt.js";
-
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi } from "./test-helpers.js";
 // Collapses the rendered frame to a single space-joined line, stripping the
 // box-drawing border chars too — long sentences wrap inside the bordered box
 // and the border glyphs sit flush against the text, so a plain whitespace

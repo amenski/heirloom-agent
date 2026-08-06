@@ -3,8 +3,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "ink-testing-library";
 import OutputArea, { foldOldLines } from "./OutputArea.js";
 import { USER_ECHO_TAG } from "./constants.js";
-
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi as strip } from "./test-helpers.js";
 
 function frameOf(lines: string[], liveLineBudget: number): string {
   const { lastFrame } = render(

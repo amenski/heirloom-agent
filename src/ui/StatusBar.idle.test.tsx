@@ -2,8 +2,7 @@ import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render } from "ink-testing-library";
 import StatusBar from "./StatusBar.js";
-
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi as strip } from "./test-helpers.js";
 
 const SEGMENTS = [
   { id: "1", text: "▶ normal (shift+tab)", dimColor: true },

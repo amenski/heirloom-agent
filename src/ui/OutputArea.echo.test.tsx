@@ -4,8 +4,7 @@ import { render } from "ink-testing-library";
 import OutputArea from "./OutputArea.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
 import { MAX_ECHO_LINES } from "./core/echo-format.js";
-
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi } from "./test-helpers.js";
 
 function frameOf(lines: string[]): string {
   const { lastFrame } = render(

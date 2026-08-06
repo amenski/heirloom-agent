@@ -4,8 +4,7 @@ import { render } from "ink-testing-library";
 import { Box, Text } from "ink";
 import { ThemeProvider, TerminalProvider } from "./contexts.js";
 import HintBar from "./HintBar.js";
-
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+import { stripAnsi as strip } from "./test-helpers.js";
 
 function renderBar(ui: React.ReactElement) {
   return render(
