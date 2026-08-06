@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { startStallWatchdog } from "./stall-watchdog.js";
+
+// Every test MUST pass an explicit profileDir. Without it the default is the
+// user's real ~/.heirloom/profiles — an earlier version omitted it and every
+// `npm test` sprayed ~5 cpuprofile pairs into their home directory.
+const tmpProfileDir = () => mkdtempSync(join(tmpdir(), "heirloom-profile-"));
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -7,7 +15,7 @@ function sleep(ms: number): Promise<void> {
 
 describe("startStallWatchdog", () => {
   it("detects a lag caused by a synchronous busy-block", async () => {
-    const watchdog = startStallWatchdog({ intervalMs: 10, thresholdMs: 100 });
+    const watchdog = startStallWatchdog({ profileDir: tmpProfileDir(), intervalMs: 10, thresholdMs: 100 });
 
     // A sync block guarantees the interval cannot fire during it, so the
     // very next tick observes a lag of roughly the block's duration.
@@ -23,7 +31,7 @@ describe("startStallWatchdog", () => {
   });
 
   it("reports zero stalls when the event loop stays responsive", async () => {
-    const watchdog = startStallWatchdog({ intervalMs: 10, thresholdMs: 150 });
+    const watchdog = startStallWatchdog({ profileDir: tmpProfileDir(), intervalMs: 10, thresholdMs: 150 });
     await sleep(80);
     const report = await watchdog.stop();
     expect(report.count).toBe(0);
@@ -31,7 +39,7 @@ describe("startStallWatchdog", () => {
   });
 
   it("degrades gracefully and never rejects, regardless of profiling mode", async () => {
-    const watchdog = startStallWatchdog({ intervalMs: 10, thresholdMs: 150 });
+    const watchdog = startStallWatchdog({ profileDir: tmpProfileDir(), intervalMs: 10, thresholdMs: 150 });
     await sleep(30);
     const report = await watchdog.stop();
     expect(report).toMatchObject({
@@ -43,7 +51,7 @@ describe("startStallWatchdog", () => {
   });
 
   it("caps stored events and returns a complete report shape", async () => {
-    const watchdog = startStallWatchdog({ intervalMs: 5, thresholdMs: 0 });
+    const watchdog = startStallWatchdog({ profileDir: tmpProfileDir(), intervalMs: 5, thresholdMs: 0 });
     await sleep(100);
     const report = await watchdog.stop();
     expect(report.events.length).toBeLessThanOrEqual(1000);
@@ -53,7 +61,7 @@ describe("startStallWatchdog", () => {
   });
 
   it("getStallCount reflects events observed before stop()", async () => {
-    const watchdog = startStallWatchdog({ intervalMs: 10, thresholdMs: 100 });
+    const watchdog = startStallWatchdog({ profileDir: tmpProfileDir(), intervalMs: 10, thresholdMs: 100 });
     const end = Date.now() + 200;
     while (Date.now() < end) {
       // busy-wait
