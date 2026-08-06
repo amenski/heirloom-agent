@@ -61,6 +61,7 @@ import { USER_ECHO_TAG, COMMAND_ECHO_TAG, LIVE_LINE_BUDGET } from "./constants.j
 import { seedPromptHistory } from "./core/prompt-history.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
 import { resolveRefreshProfile, type ResolvedRefresh } from "./core/refresh-rates.js";
+import { groupTableLines, splitCommittable } from "./core/table-group.js";
 import {
   formatToolCallHeader,
   formatToolResultPreview,
@@ -376,11 +377,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     firstTokenRef.current = v;
   }
 
-  function flushOutputQueue() {
-    const batch = outputQueueRef.current;
-    if (batch.length === 0) return;
-    outputQueueRef.current = [];
-    setOutputLines((prev) => [...prev, ...batch]);
+  // Commit queued output lines into the transcript.
+  //
+  // On a non-final (timer) flush, an open table run — a suffix of the queue
+  // where every line is still `|`-prefixed — is held back rather than
+  // committed: it may still be mid-stream, and once a line is committed it
+  // flushes to Ink's <Static> and can never be retroactively merged with rows
+  // that arrive later (see core/table-group.ts). `final` (turn end, or the
+  // unmount cleanup) commits everything regardless, since no more rows are
+  // coming.
+  function flushOutputQueue(final = false) {
+    const queue = outputQueueRef.current;
+    if (queue.length === 0) return;
+
+    const { commit, hold } = splitCommittable(queue, final);
+    if (commit.length === 0) return;
+
+    outputQueueRef.current = hold;
+    setOutputLines((prev) => [...prev, ...groupTableLines(commit)]);
   }
 
   function startFlushTimer() {
@@ -402,7 +416,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   useEffect(() => {
     return () => {
       stopFlushTimer();
-      flushOutputQueue();
+      flushOutputQueue(true);
       if (activeLineFlushRef.current) {
         clearTimeout(activeLineFlushRef.current);
         activeLineFlushRef.current = null;
@@ -425,7 +439,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (rawMode.mode === "raw") {
       for (const l of lines) process.stdout.write(l + "\n");
     } else {
-      setOutputLines((prev) => [...prev, ...lines]);
+      setOutputLines((prev) => [...prev, ...groupTableLines(lines)]);
     }
   }
 
@@ -697,7 +711,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       try {
         const result = await ctx.runAgentTurnCore(input, callbacks, imageUrls, planMode);
 
-        flushOutputQueue();
+        flushOutputQueue(true);
 
         if (
           codeBlockRef.current.active &&
@@ -738,7 +752,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
         announceToScreenReader("Heirloom has finished processing", "polite");
       } catch (err) {
-        flushOutputQueue();
+        flushOutputQueue(true);
         pushOutput(`Error: ${(err as Error).message}`);
         announceToScreenReader(
           `Error: ${(err as Error).message}`,
