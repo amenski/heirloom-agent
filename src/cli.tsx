@@ -34,6 +34,7 @@ import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
 import { chip, meter } from "./ui/core/chips.js";
+import { resolveRefreshProfile, REFRESH_PROFILE_NAMES } from "./ui/core/refresh-rates.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
 import { StatusLineManager } from "./ui/statusline/index.js";
@@ -831,6 +832,22 @@ async function runDoctor(): Promise<void> {
   const issues = [...configResult.errors, ...configResult.warnings];
   console.log(`  config            ${issues.length === 0 ? "valid" : `${issues.length} issue(s):\n${issues.map(i => `                    - ${i}`).join("\n")}`}`);
   console.log(`  node              ${process.version}`);
+  // Surface the repaint cadence, and say plainly when an env value was not
+  // understood — resolveRefreshProfile falls back silently so a typo cannot
+  // stop the CLI starting, which otherwise leaves no way to tell whether
+  // HEIRLOOM_REFRESH took effect.
+  const refreshRaw = (process.env.HEIRLOOM_REFRESH ?? "").trim();
+  const refresh = resolveRefreshProfile();
+  const refreshName = REFRESH_PROFILE_NAMES.find(
+    (n) => JSON.stringify(resolveRefreshProfile({ HEIRLOOM_REFRESH: n })) === JSON.stringify(refresh),
+  );
+  const refreshNote = refreshRaw === ""
+    ? "(default)"
+    : refreshName === refreshRaw.toLowerCase()
+      ? `(from HEIRLOOM_REFRESH)`
+      : `(HEIRLOOM_REFRESH="${refreshRaw}" not recognised — using default)`;
+  console.log(`  refresh           ${refreshName} ${refreshNote}`);
+  console.log(`                    flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
 }
 
 export async function handleSlashCore(

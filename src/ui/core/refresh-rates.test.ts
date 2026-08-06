@@ -53,6 +53,16 @@ describe("resolveRefreshProfile", () => {
     }
   });
 
+  it("makes an unrecognised value distinguishable from the default", () => {
+    // `heirloom doctor` reports which profile is active and whether an env
+    // value was understood. That relies on a typo resolving to exactly the
+    // default profile, so the reporting can compare and say so rather than
+    // leaving the user unable to tell whether their setting took effect.
+    const typo = resolveRefreshProfile({ HEIRLOOM_REFRESH: "slowww" });
+    const fallback = resolveRefreshProfile({});
+    expect(typo).toEqual(fallback);
+  });
+
   it("exposes its profile names for help text", () => {
     expect(REFRESH_PROFILE_NAMES).toEqual(["fast", "balanced", "slow"]);
   });
