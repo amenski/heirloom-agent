@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { describe, it, expect } from "vitest";
 import { render, Box, Text } from "ink";
 
@@ -11,8 +11,15 @@ import { render, Box, Text } from "ink";
  * flicker (severely on slower emulators). With it, Ink moves the cursor and
  * rewrites only the lines that changed.
  *
- * This test drives real Ink against a fake stdout and asserts on the bytes, so
- * it fails if the option is dropped or if Ink changes the default behaviour.
+ * These tests drive real Ink against a fake stdout and assert on the bytes, so
+ * they fail if the option is dropped or if Ink changes its default.
+ *
+ * Frames are driven with explicit `rerender()` calls rather than a timer. An
+ * earlier version rendered a 20ms <Ticker> and waited 120ms of wall-clock,
+ * which passed locally but failed on CI: a loaded runner delivers fewer
+ * effective ticks, so the second render produced no large writes at all and the
+ * byte comparison degenerated to `91 < 91`. Nothing here now depends on how
+ * fast the machine is.
  */
 function fakeStdout() {
   const writes: string[] = [];
@@ -29,73 +36,64 @@ function fakeStdout() {
   return { writes, stream: stream as unknown as NodeJS.WriteStream };
 }
 
-function Ticker() {
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setN((x) => x + 1), 20);
-    return () => clearInterval(t);
-  }, []);
-  return <Text>{`tick ${n % 8}`}</Text>;
-}
-
-function Frame() {
+/** A frame whose last row changes per `tick`, with static rows above it. */
+function Frame({ tick }: { tick: number }) {
   return (
     <Box flexDirection="column">
       {Array.from({ length: 6 }, (_, i) => (
         <Text key={i}>static line {i}</Text>
       ))}
-      <Ticker />
+      <Text>{`tick ${tick}`}</Text>
     </Box>
   );
 }
 
-const ERASE_LINE = "[2K";
-const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const ERASE_LINE = "[2K";
+
+/**
+ * Render `Frame` and step it through several frames, returning everything
+ * written after the initial paint — i.e. the steady-state repaint traffic,
+ * which is what actually causes flicker.
+ */
+function captureRepaints(incrementalRendering: boolean, frames = 5) {
+  const { writes, stream } = fakeStdout();
+  const inst = render(<Frame tick={0} />, {
+    stdout: stream,
+    patchConsole: false,
+    ...(incrementalRendering ? { incrementalRendering: true } : {}),
+  });
+
+  // Everything written so far is the first paint; measure only what follows.
+  const afterFirstPaint = writes.length;
+  for (let i = 1; i <= frames; i++) {
+    inst.rerender(<Frame tick={i} />);
+  }
+  inst.unmount();
+
+  const repaints = writes.slice(afterFirstPaint);
+  return { body: repaints.join(""), writes: repaints };
+}
 
 describe("incrementalRendering", () => {
-  it("rewrites only changed lines instead of erasing the frame", async () => {
-    const { writes, stream } = fakeStdout();
-    const inst = render(<Frame />, {
-      stdout: stream,
-      patchConsole: false,
-      incrementalRendering: true,
-    });
-    await settle(120);
-    inst.unmount();
-
-    const body = writes.join("");
+  it("rewrites only changed lines instead of erasing the frame", () => {
+    const { body } = captureRepaints(true);
     expect(body).toContain("tick");
     // The whole point: no full-line erases in the steady-state repaint.
     expect(body).not.toContain(ERASE_LINE);
   });
 
-  it("erases every row when the option is off (the behaviour we opt out of)", async () => {
+  it("erases every row when the option is off (the behaviour we opt out of)", () => {
     // Pins WHY the option is set — if this ever stops erasing, Ink changed its
     // default and the comment in cli.tsx is stale.
-    const { writes, stream } = fakeStdout();
-    const inst = render(<Frame />, { stdout: stream, patchConsole: false });
-    await settle(120);
-    inst.unmount();
-
-    expect(writes.join("")).toContain(ERASE_LINE);
+    const { body } = captureRepaints(false);
+    expect(body).toContain(ERASE_LINE);
   });
 
-  it("writes dramatically fewer bytes per frame when incremental", async () => {
-    const measure = async (incrementalRendering: boolean) => {
-      const { writes, stream } = fakeStdout();
-      const inst = render(<Frame />, {
-        stdout: stream,
-        patchConsole: false,
-        incrementalRendering,
-      });
-      await settle(120);
-      inst.unmount();
-      // Ignore the tiny synchronized-output and cursor control writes.
-      return writes.filter((w) => w.length > 40).join("").length;
-    };
-
-    const incremental = await measure(true);
-    const full = await measure(false);
+  it("writes dramatically fewer bytes per repaint when incremental", () => {
+    const incremental = captureRepaints(true).body.length;
+    const full = captureRepaints(false).body.length;
+    expect(incremental).toBeGreaterThan(0);
+    expect(full).toBeGreaterThan(0);
     expect(incremental).toBeLessThan(full);
   });
 });
