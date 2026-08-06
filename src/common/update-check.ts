@@ -44,7 +44,18 @@ async function writeUpdateState(state: UpdateState): Promise<void> {
   await writeFile(STATE_PATH, JSON.stringify(state, null, 2), "utf-8");
 }
 
-export async function checkForNpmUpdate(packageInfo: { name: string; version: string }): Promise<void> {
+// Incident (2026-08-06): this repo's package has never been published to npm
+// (`private: true` in package.json is deliberate), but the update checker
+// queried the registry by name anyway. The npm registry's `heirloom` is an
+// unrelated package (a photo-backup-to-S3 tool, maintainer briangershon,
+// v0.3.0) — a stranger's code. While package.json still carried the scaffold
+// version 1.0.0 this was invisibly masked (1.0.0 > 0.3.0, so "no update"),
+// but setting the honest 0.1.0 exposed it: the CLI started prompting to
+// install v0.3.0 of someone else's package globally. A private package is by
+// definition not on npm under this name, so any registry answer is always
+// about someone else's package — both entry points below must no-op.
+export async function checkForNpmUpdate(packageInfo: { name: string; version: string; private?: boolean }): Promise<void> {
+  if (packageInfo.private) return;
   const { name, version: installed } = packageInfo;
   try {
     const latest = await fetchLatestVersion(name);
@@ -111,7 +122,18 @@ function fetchLatestVersion(packageName: string): Promise<string | null> {
   });
 }
 
-export async function promptForPendingUpdate(packageInfo: { name: string; version: string }): Promise<void> {
+export async function promptForPendingUpdate(packageInfo: { name: string; version: string; private?: boolean }): Promise<void> {
+  if (packageInfo.private) {
+    // Clear any pending entry a prior (buggy) run may have already persisted
+    // for the unrelated npm `heirloom` package — see incident note above.
+    const state = await readUpdateState();
+    if (state.pending) {
+      state.pending = null;
+      await writeUpdateState(state);
+    }
+    return;
+  }
+
   const state = await readUpdateState();
   if (!state.pending) return;
   if (state.ignoredVersions.includes(state.pending.version)) return;

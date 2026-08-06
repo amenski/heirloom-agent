@@ -640,7 +640,7 @@ async function main() {
     };
   }
 
-  const packageInfo = { name: pkg.name, version: pkg.version };
+  const packageInfo = { name: pkg.name, version: pkg.version, private: pkg.private };
 
   if (!parsed.exec && !parsed.resume) {
     await promptForPendingUpdate(packageInfo);
