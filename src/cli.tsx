@@ -34,6 +34,7 @@ import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
 import { chip, meter } from "./ui/core/chips.js";
+import { ANSI_CLEAR_SCREEN } from "./ui/constants.js";
 import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./ui/core/refresh-rates.js";
 import { probeSyncOutput } from "./terminal-probe.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
@@ -615,7 +616,7 @@ async function main() {
     const exitPromise = inkInstance.waitUntilExit();
     restartRef.current = () => {
       restarting = true;
-      process.stdout.write("\u001B[2J\u001B[3J\u001B[H");
+      process.stdout.write(ANSI_CLEAR_SCREEN);
       exitPromise.then(() => {
         if (!restarting) { restartRef.current = null; process.exit(0); }
       });

@@ -57,7 +57,7 @@ import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
-import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
+import { USER_ECHO_TAG, COMMAND_ECHO_TAG, ANSI_CLEAR_SCREEN } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
 import { resolveRefreshProfile, type ResolvedRefresh } from "./core/refresh-rates.js";
@@ -119,6 +119,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       cwd: process.cwd(),
     }),
   );
+  // Bumped whenever the scrollback is wiped (setOutputLines([])) — remounts
+  // OutputArea's <Static> so it forgets what it already flushed. Static
+  // content is written straight to the terminal's own scrollback and can't be
+  // un-printed, so clearing the array alone would leave stale rows on screen;
+  // the actual clear-screen escape is written at each wipe site alongside
+  // this bump (see /new, /resume, /undo below).
+  const [staticEpoch, setStaticEpoch] = useState(0);
   const [activeLine, setActiveLine] = useState("");
   const [busy, setBusy] = useState(false);
   // Shell-style ↑/↓ recall of what the user has typed. Kept in React state
@@ -443,6 +450,20 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     } else {
       setOutputLines((prev) => [...prev, line]);
     }
+  }
+
+  /**
+   * Wipe the scrollback: write the clear-screen escape, remount <Static> (so
+   * it forgets what it already flushed to the real terminal scrollback — that
+   * content can't be un-printed, only visually cleared), then reset the lines
+   * array to `next`. Static content is already in the terminal's own
+   * scrollback, not just this array, so clearing the array alone would leave
+   * stale rows on screen; the escape + remount is what actually erases them.
+   */
+  function wipeScrollback(next: string[]) {
+    process.stdout.write(ANSI_CLEAR_SCREEN);
+    setStaticEpoch((e) => e + 1);
+    setOutputLines(next);
   }
 
   // Batched append — one state update for many lines (used by resume replay so a
@@ -898,9 +919,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     if (trimmed === "/new") {
       // Start a fresh conversation: drop the model-visible history and wipe the
       // scrollback so the session reads as new. Same history reset as /clear,
-      // plus a visible-transcript clear the bare /clear doesn't do.
+      // plus a visible-transcript clear the bare /clear doesn't do. Re-seeds
+      // with the welcome banner so it reappears at the top of the fresh
+      // screen — parity with the old pinned WelcomeScreen, which survived
+      // clears because it lived outside the transcript entirely.
       ctx.mutable.conversationHistory = [];
-      setOutputLines([]);
+      wipeScrollback(
+        buildWelcomeLines(theme, {
+          model: ctx.modelDisplayName?.() ?? ctx.activeModel ?? ctx.providerName,
+          thinkingEnabled: true,
+          reasoningEffort: undefined,
+          cwd: process.cwd(),
+        }),
+      );
       pushOutput("[started a fresh conversation]");
       return;
     }
@@ -1341,7 +1372,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         lines={outputLines}
         activeLine={activeLine}
         busy={busy}
-        staticEpoch={0}
+        staticEpoch={staticEpoch}
       />
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
@@ -1426,7 +1457,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               const messages = await ctx.resumeSession(sessionId);
               if (messages) {
                 setShowSessionList(false);
-                setOutputLines([]);
+                // Wipes the current scrollback (not a re-seed — the resumed
+                // session's own transcript is about to replace it via the
+                // load/compact chooser below).
+                wipeScrollback([]);
                 // Route into the same load/compact chooser the startup path uses.
                 pendingResumeRef.current = messages;
                 setResumeChoice({ count: messages.length });
@@ -1473,7 +1507,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               const result = await ctx.restoreCheckpoint(hash, restoreCode);
               if (result.restored) {
                 setShowUndoSelector(false);
-                setOutputLines([]);
+                // Not a re-seed — the restored checkpoint's own state (plus
+                // any prompt draft below) is what should appear next, not a
+                // fresh-session banner.
+                wipeScrollback([]);
                 if (result.promptDraft) {
                   draftNonceRef.current += 1;
                   setPromptDraft({ nonce: draftNonceRef.current, text: result.promptDraft });
