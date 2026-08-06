@@ -596,6 +596,7 @@ async function main() {
         ctx: appCtx,
         themeConfig: { mode: configResult.config.theme?.mode ?? "dark", name: configResult.config.theme?.name, overrides: configResult.config.theme?.overrides },
         keybindingConfig: resolvedKeybindingConfig,
+        refresh: resolveRefreshProfile(process.env, configResult.config.refresh),
       }),
       {
         exitOnCtrlC: false,
@@ -836,17 +837,15 @@ async function runDoctor(): Promise<void> {
   // understood — resolveRefreshProfile falls back silently so a typo cannot
   // stop the CLI starting, which otherwise leaves no way to tell whether
   // HEIRLOOM_REFRESH took effect.
-  const refreshRaw = (process.env.HEIRLOOM_REFRESH ?? "").trim();
-  const refresh = resolveRefreshProfile();
-  const refreshName = REFRESH_PROFILE_NAMES.find(
-    (n) => JSON.stringify(resolveRefreshProfile({ HEIRLOOM_REFRESH: n })) === JSON.stringify(refresh),
-  );
-  const refreshNote = refreshRaw === ""
-    ? "(default)"
-    : refreshName === refreshRaw.toLowerCase()
-      ? `(from HEIRLOOM_REFRESH)`
-      : `(HEIRLOOM_REFRESH="${refreshRaw}" not recognised — using default)`;
-  console.log(`  refresh           ${refreshName} ${refreshNote}`);
+  const refresh = resolveRefreshProfile(process.env, loadConfig().config.refresh);
+  const source = refresh.source === "config"
+    ? "(from settings.json)"
+    : refresh.source === "env"
+      ? "(from HEIRLOOM_REFRESH)"
+      : refresh.invalid
+        ? `(HEIRLOOM_REFRESH="${refresh.invalid}" not recognised — using default)`
+        : "(default)";
+  console.log(`  refresh           ${refresh.name} ${source}`);
   console.log(`                    flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
 }
 
@@ -875,20 +874,18 @@ export async function handleSlashCore(
       // the session — the shell subcommand is intercepted before the UI starts,
       // so it was the one place you could not check the running session's own
       // settings.
-      const refreshRaw = (process.env.HEIRLOOM_REFRESH ?? "").trim();
-      const refresh = resolveRefreshProfile();
-      const refreshName = REFRESH_PROFILE_NAMES.find(
-        (n) => JSON.stringify(resolveRefreshProfile({ HEIRLOOM_REFRESH: n })) === JSON.stringify(refresh),
-      );
-      const note = refreshRaw === ""
-        ? "(default)"
-        : refreshName === refreshRaw.toLowerCase()
+      const refresh = resolveRefreshProfile(process.env, configResult.config.refresh);
+      const source = refresh.source === "config"
+        ? "(from settings.json)"
+        : refresh.source === "env"
           ? "(from HEIRLOOM_REFRESH)"
-          : `(HEIRLOOM_REFRESH="${refreshRaw}" not recognised — using default)`;
+          : refresh.invalid
+            ? `(HEIRLOOM_REFRESH="${refresh.invalid}" not recognised — using default)`
+            : "(default)";
       console.log(`provider   ${shared.providerName}`);
       console.log(`model      ${shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown"}`);
       console.log(`effort     ${shared.activeEffort ?? "(none)"}`);
-      console.log(`refresh    ${refreshName} ${note}`);
+      console.log(`refresh    ${refresh.name} ${source}`);
       console.log(`           flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
       console.log(`node       ${process.version}`);
       return;

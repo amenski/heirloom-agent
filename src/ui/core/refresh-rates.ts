@@ -40,18 +40,50 @@ const PROFILES: Record<string, RefreshProfile> = {
 
 const DEFAULT_PROFILE = "balanced";
 
+export type RefreshSource = "config" | "env" | "default";
+
+export type ResolvedRefresh = RefreshProfile & {
+  /** Which profile is active, for display. */
+  name: string;
+  /** Where the value came from, so `/doctor` can say. */
+  source: RefreshSource;
+  /** The raw value that was not understood, if any. */
+  invalid?: string;
+};
+
 /**
  * Resolve the active refresh profile.
  *
- * `HEIRLOOM_REFRESH` selects a named profile (fast | balanced | slow). An
- * unrecognised value falls back to the default rather than throwing — a typo
- * in an env var should not stop the CLI from starting.
+ * Precedence: settings.json `refresh` > `HEIRLOOM_REFRESH` > default.
+ *
+ * Config wins because it is the deliberate, per-project choice that travels
+ * with the repo; the env var stays as a per-invocation override for trying a
+ * profile without editing a file. An unrecognised env value falls back rather
+ * than throwing — a typo in a shell export should not stop the CLI starting —
+ * whereas an unrecognised settings.json value is a validation error, since the
+ * user edited config deliberately and expects it to apply.
  */
 export function resolveRefreshProfile(
   env: NodeJS.ProcessEnv = process.env,
-): RefreshProfile {
-  const name = (env.HEIRLOOM_REFRESH ?? "").trim().toLowerCase();
-  return PROFILES[name] ?? PROFILES[DEFAULT_PROFILE];
+  configured?: string,
+): ResolvedRefresh {
+  const fromConfig = (configured ?? "").trim().toLowerCase();
+  if (fromConfig && PROFILES[fromConfig]) {
+    return { ...PROFILES[fromConfig], name: fromConfig, source: "config" };
+  }
+
+  const raw = (env.HEIRLOOM_REFRESH ?? "").trim();
+  const fromEnv = raw.toLowerCase();
+  if (fromEnv && PROFILES[fromEnv]) {
+    return { ...PROFILES[fromEnv], name: fromEnv, source: "env" };
+  }
+
+  return {
+    ...PROFILES[DEFAULT_PROFILE],
+    name: DEFAULT_PROFILE,
+    source: "default",
+    ...(raw ? { invalid: raw } : {}),
+  };
 }
 
 /** The profile names a user can select, for help text and validation. */
