@@ -57,6 +57,7 @@ import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG, LIVE_LINE_BUDGET } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
+import { summarizeReasoning } from "./core/reasoning-echo.js";
 import {
   formatToolCallHeader,
   formatToolResultPreview,
@@ -514,18 +515,20 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       // text/tool block does not need to add its own leading blank.
       let needTextSeparator = false;
 
+      // The echo is a marker that reasoning happened, not a transcript of it —
+      // the full text is already in the model's context and is not addressed to
+      // the user. Emitting the whole buffer produced one ~1500-char line that
+      // wrapped to seven or more rows in a single commit, shifting every row
+      // below it at once; the incremental renderer can only reuse rows that keep
+      // their index, so the lower frame repainted in one jolt. Both modes now
+      // collapse to the same single row.
       function flushReasoning() {
         const { buffer, flushed } = reasoningRef.current;
-        if (flushed || !buffer.trim()) return;
+        if (flushed) return;
+        const summary = summarizeReasoning(buffer);
+        if (summary === null) return;
         reasoningRef.current.flushed = true;
-        if (rawMode.mode === "normal") {
-          const line = theme.colorEnabled ? `\x1b[2m✱ ${buffer.trim()}\x1b[0m` : `✱ ${buffer.trim()}`;
-          scheduleOutput(line);
-        } else {
-          const summary = buffer.trim().replace(/\s+/g, " ").slice(0, 100);
-          const line = theme.colorEnabled ? `\x1b[2m✱ ${summary}\x1b[0m` : `✱ ${summary}`;
-          scheduleOutput(line);
-        }
+        scheduleOutput(theme.colorEnabled ? `\x1b[2m✱ ${summary}\x1b[0m` : `✱ ${summary}`);
       }
 
       const callbacks = {
