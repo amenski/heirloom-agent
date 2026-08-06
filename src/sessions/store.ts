@@ -142,7 +142,7 @@ function generateId(): string {
   return `${ts}-${hex}`;
 }
 
-function slugify(cwd: string): string {
+export function slugify(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
 }
 
