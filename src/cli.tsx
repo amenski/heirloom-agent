@@ -18,6 +18,7 @@ import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
+import { startStallWatchdog } from "./diagnostics/stall-watchdog.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
 import { authWizard, authList, authLogout, authSaveKey } from "./auth/wizard.js";
@@ -46,6 +47,12 @@ import { loadFavoriteModels, loadRecentModels, persistRecentModel, persistToggle
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
+
+// Opt-in stall watchdog (HEIRLOOM_PROFILE=1|true): started before the Ink
+// render() call, stopped + reported inside logSessionEnd. Module-level so
+// both logSessionEnd and the /doctor slash command can read it without
+// threading a new field through `shared`'s type.
+let stallWatchdog: ReturnType<typeof startStallWatchdog> | null = null;
 
 // Guarded so tests can import handleSlashCore (below) without triggering the
 // real CLI startup (which reads real settings.json / calls process.exit on a
@@ -294,6 +301,15 @@ async function main() {
         });
       }
     } catch {}
+    if (stallWatchdog) {
+      try {
+        const report = await stallWatchdog.stop();
+        process.stderr.write(
+          `[profile] ${report.count} stalls ≥150ms (worst ${report.worstLagMs}ms) — ${report.profilePath ?? "lateness-only, no profile"}\n`,
+        );
+      } catch {}
+      stallWatchdog = null;
+    }
   }
 
   const skillLoader = new SkillLoader();
@@ -630,6 +646,10 @@ async function main() {
     await promptForPendingUpdate(packageInfo);
   }
 
+  if (process.env.HEIRLOOM_PROFILE === "1" || process.env.HEIRLOOM_PROFILE === "true") {
+    stallWatchdog = startStallWatchdog();
+  }
+
   startApp();
 
   checkForNpmUpdate(packageInfo).catch(() => {});
@@ -853,6 +873,9 @@ async function runDoctor(): Promise<void> {
           ? "no response (treated as unsupported)"
           : "skipped (not a TTY)";
   console.log(`  sync-output       ${syncOutputLine}`);
+  if (stallWatchdog) {
+    console.log(`  profiling  active — stalls so far: ${stallWatchdog.getStallCount()}`);
+  }
 }
 
 export async function handleSlashCore(
@@ -893,6 +916,9 @@ export async function handleSlashCore(
       // the probe ever saw them.
       const probeNote = "terminal probe: run `heirloom doctor` from a shell";
       console.log(colorEnabled ? `\x1b[2m${probeNote}\x1b[0m` : probeNote);
+      if (stallWatchdog) {
+        console.log(`profiling  active — stalls so far: ${stallWatchdog.getStallCount()}`);
+      }
       return;
     }
     case "/skills": {
