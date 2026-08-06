@@ -18,6 +18,14 @@
 // still advances 6.3 times a second — above 4 steps/sec, the minimum we chose
 // as a budget for the animation still reading as motion (a design choice,
 // not a measured perceptual constant).
+//
+// 2026-08-06: the numbers above predate the <Static> migration (see
+// OutputArea.tsx and FOLLOWUPS.md §0). Committed transcript lines now flush
+// once into terminal scrollback and are never repainted, so the live region
+// these profiles were tuned against has shrunk to ~6 rows (streaming tail,
+// composer, status, hints) — these profiles may be retirable, or at least
+// re-measurable at much higher default rates, but that hasn't been measured
+// yet. Values unchanged pending that measurement.
 
 export type RefreshProfile = {
   /** Interval for draining queued output lines into the transcript. */
