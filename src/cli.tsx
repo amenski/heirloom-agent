@@ -34,7 +34,7 @@ import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
 import { chip, meter } from "./ui/core/chips.js";
-import { resolveRefreshProfile, REFRESH_PROFILE_NAMES } from "./ui/core/refresh-rates.js";
+import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./ui/core/refresh-rates.js";
 import { probeSyncOutput } from "./terminal-probe.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
@@ -839,13 +839,7 @@ async function runDoctor(): Promise<void> {
   // stop the CLI starting, which otherwise leaves no way to tell whether
   // HEIRLOOM_REFRESH took effect.
   const refresh = resolveRefreshProfile(process.env, loadConfig().config.refresh);
-  const source = refresh.source === "config"
-    ? "(from settings.json)"
-    : refresh.source === "env"
-      ? "(from HEIRLOOM_REFRESH)"
-      : refresh.invalid
-        ? `(HEIRLOOM_REFRESH="${refresh.invalid}" not recognised — using default)`
-        : "(default)";
+  const source = describeRefreshSource(refresh);
   console.log(`  refresh           ${refresh.name} ${source}`);
   console.log(`                    flush ${refresh.flushMs}ms · indicator ${refresh.indicatorMs}ms · options: ${REFRESH_PROFILE_NAMES.join(" | ")}`);
   const syncOutput = await probeSyncOutput();
@@ -886,13 +880,7 @@ export async function handleSlashCore(
       // so it was the one place you could not check the running session's own
       // settings.
       const refresh = resolveRefreshProfile(process.env, configResult.config.refresh);
-      const source = refresh.source === "config"
-        ? "(from settings.json)"
-        : refresh.source === "env"
-          ? "(from HEIRLOOM_REFRESH)"
-          : refresh.invalid
-            ? `(HEIRLOOM_REFRESH="${refresh.invalid}" not recognised — using default)`
-            : "(default)";
+      const source = describeRefreshSource(refresh);
       console.log(`provider   ${shared.providerName}`);
       console.log(`model      ${shared.activeModel ?? getPreset(shared.providerName)?.defaultModel ?? "unknown"}`);
       console.log(`effort     ${shared.activeEffort ?? "(none)"}`);
