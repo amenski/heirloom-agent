@@ -175,4 +175,52 @@ describe("checkpoint secret handling", () => {
     expect(existsSync(join(workspaceDir, "created-later.txt"))).toBe(true);
     expect(readFileSync(join(workspaceDir, "app.ts"), "utf-8")).toContain("v2");
   });
+
+  it("undoes a file created THIS turn with no second save (the live /undo bug)", async () => {
+    // The actual live flow: checkpoints are taken at TURN START, not after
+    // every tool call. save#1 happens, then within the same turn a file is
+    // created and an existing file modified — with NO further save before
+    // /undo runs. The created file exists in the worktree but in no snapshot
+    // and not in the shadow index, so a plain `read-tree --reset -u <hash>`
+    // cannot delete it: git never saw it. restoreFrom must take its own
+    // pre-restore snapshot (which `add -A`s everything, indexed or not)
+    // before the read-tree so the deletion actually happens.
+    const mgr = await chkptManager();
+
+    const before = await mgr.save("turn-start-checkpoint");
+    expect(before).toBeTruthy();
+
+    // Same turn: create a new file and modify an existing one. No save call
+    // in between — this mirrors the live agent flow exactly.
+    writeFileSync(join(workspaceDir, "sample-undo-test.txt"), "created this turn\n");
+    writeFileSync(join(workspaceDir, "app.ts"), "console.log('changed this turn');\n");
+
+    const undo = await mgr.restoreFrom(before!);
+    expect(undo.restored).toBe(true);
+    expect(existsSync(join(workspaceDir, "sample-undo-test.txt"))).toBe(false);
+    expect(readFileSync(join(workspaceDir, "app.ts"), "utf-8")).toContain("hello");
+  });
+
+  it("the pre-restore auto-snapshot is redoable and untagged for conversation-rewind", async () => {
+    const mgr = await chkptManager();
+
+    const before = await mgr.save("turn-start-checkpoint");
+    expect(before).toBeTruthy();
+
+    writeFileSync(join(workspaceDir, "sample-undo-test.txt"), "created this turn\n");
+
+    const undo = await mgr.restoreFrom(before!);
+    expect(undo.restored).toBe(true);
+    expect(existsSync(join(workspaceDir, "sample-undo-test.txt"))).toBe(false);
+
+    const entries = await mgr.list();
+    const preRestore = entries.find((e) => e.message.startsWith("[pre-restore]"));
+    expect(preRestore).toBeTruthy();
+    expect(preRestore!.message).not.toMatch(/\[convLen:\d+\]/);
+
+    const redo = await mgr.restoreFrom(preRestore!.hash);
+    expect(redo.restored).toBe(true);
+    expect(existsSync(join(workspaceDir, "sample-undo-test.txt"))).toBe(true);
+    expect(readFileSync(join(workspaceDir, "sample-undo-test.txt"), "utf-8")).toBe("created this turn\n");
+  });
 });

@@ -147,8 +147,15 @@ export class CheckpointManager {
       return { restored: false };
     }
 
+    // See restoreFrom() for why this snapshot must happen first. Note it can
+    // itself move HEAD forward (a real commit, indexing this turn's
+    // untracked creations) — so the read-tree below targets the captured
+    // `hash`, not the literal ref "HEAD", or it would restore to the
+    // snapshot we just took instead of the intended checkpoint.
+    await this.save("[pre-restore] automatic snapshot");
+
     try {
-      await this.git(["read-tree", "--reset", "-u", "HEAD"]);
+      await this.git(["read-tree", "--reset", "-u", hash]);
     } catch {
       return { restored: false };
     }
@@ -158,6 +165,21 @@ export class CheckpointManager {
 
   async restoreFrom(hash: string): Promise<{ restored: boolean; checkpointHash?: string }> {
     await this.initialize();
+
+    // Checkpoints are taken at TURN START, not after every tool call. A file
+    // the agent creates THIS turn exists in the worktree but in no snapshot
+    // and never entered the shadow index — git simply never saw it, so a
+    // plain `read-tree --reset -u <hash>` cannot delete it (git can't delete
+    // what it never tracked). Taking a snapshot of the present RIGHT NOW,
+    // before the read-tree, runs `add -A` and indexes that file for the
+    // first time, so the read-tree below can finally remove it.
+    //
+    // Bonus: this pre-restore snapshot becomes a real listed checkpoint, so
+    // every undo is itself redoable by restoring forward to it. It carries no
+    // [convLen:N] tag on purpose — cli.tsx's conversation-rewind regex keys
+    // off that tag, and this snapshot should restore files only, leaving the
+    // conversation transcript untouched.
+    await this.save("[pre-restore] automatic snapshot");
 
     try {
       // read-tree --reset -u, NOT checkout <hash> -- . — checkout overlays the
