@@ -2,6 +2,8 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Box, Text, useInput } from "ink";
 import type { SkillDef } from "../../skills/index.js";
 import { useTheme } from "../contexts.js";
+import { fit, COLUMN_GAP } from "../core/picker-columns.js";
+import { keyCap } from "../core/chips.js";
 import { ansi256, type ThemeContextValue } from "../theme.js";
 import { fuzzyScore } from "../core/fuzzy.js";
 
@@ -113,6 +115,27 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
     }
   });
 
+  // Same treatment as the model picker: a full-width selection band rather
+  // than a "> " caret, and columns sized from the whole set so the name and
+  // description line up vertically instead of reading as prose.
+  const selectionBg = slotColor(theme, "selection");
+  const capStyle = {
+    fg: theme.theme.textDim,
+    bg: theme.theme.border,
+    colorEnabled: theme.colorEnabled,
+  };
+  // NOT computeColumns(): that helper gives the leftover width to the label,
+  // which is right when the secondary column is a short provider name and
+  // wrong here, where the description is a paragraph -- it consumed everything
+  // and clamped skill names to the 8-char floor. Skills need the inverse: the
+  // name column sized to its content, the description taking what remains.
+  const interior = width - 4 - 2;
+  const nameWidth = Math.min(
+    24,
+    filtered.reduce((max, s) => Math.max(max, s.name.length), 0),
+  );
+  const descWidth = Math.max(12, interior - nameWidth - COLUMN_GAP);
+
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} marginY={1} width={width}>
       <Box marginBottom={1}>
@@ -130,19 +153,26 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
           {visible.map((s, i) => {
             const globalIdx = scrollOffset + i;
             const isSelected = globalIdx === safeIndex;
-            // Name on its own line, description indented beneath it. The
-            // description sits in its own padded Box so wrapped continuation
-            // lines hang-indent under the name rather than running to the left
-            // margin and merging every skill into one text wall.
+            // One row per skill, in fixed columns. Descriptions here are
+            // paragraphs (median 327 chars, 20 of 22 over 60), so rendering
+            // them in full cost 7-11 rows EACH -- about two skills visible on a
+            // 24-row terminal. Measured: 35 characters is enough to
+            // disambiguate every colliding name in the set (app-*, clean-*,
+            // flutter-*), so the description earns one truncated column
+            // rather than a wrapped block.
+            const desc = (s.description || "").replace(/\s+/g, " ");
+            const body =
+              "  " + fit(s.name, nameWidth) +
+              " ".repeat(COLUMN_GAP) + fit(desc, descWidth);
             return (
-              <Box key={s.name} flexDirection="column" marginBottom={1}>
-                <Text color={isSelected ? accent : undefined} bold={isSelected}>
-                  {isSelected ? "> " : "  "}
-                  {s.name}
+              <Box key={s.name}>
+                <Text
+                  backgroundColor={isSelected ? selectionBg : undefined}
+                  color={isSelected ? accent : undefined}
+                  bold={isSelected}
+                >
+                  {body}
                 </Text>
-                <Box paddingLeft={4}>
-                  <Text dimColor wrap="wrap">{s.description || "no description"}</Text>
-                </Box>
               </Box>
             );
           })}
@@ -153,7 +183,11 @@ export default function SkillList({ skills, onSelect, onClose, width, height }: 
       )}
 
       <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>↑↓ navigate · Enter load · Esc close</Text>
+        <Text>
+          {keyCap("↑↓", capStyle)}<Text dimColor>{" move   "}</Text>
+          {keyCap("enter", capStyle)}<Text dimColor>{" select   "}</Text>
+          {keyCap("esc", capStyle)}<Text dimColor>{" close"}</Text>
+        </Text>
         {searchText && <Text dimColor>Search: {searchText}</Text>}
       </Box>
     </Box>
