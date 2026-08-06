@@ -31,6 +31,15 @@ that fold into a single element rather than being dropped. Measured 310ms → 11
 slices to the newest N and discards the rest, and with `<Static>` absent `outputLines` is
 the only copy of the transcript, so it would lose scrollback permanently.
 
+**2026-08-06 update:** the transcript now flushes through Ink's `<Static>` (the
+`liveLineBudget`/`foldOldLines` mechanism above is gone — superseded, not just extended).
+Committed lines write ONCE into native terminal scrollback and are never repainted; the live
+region left standing is ~6 rows (streaming tail, composer, status, hints). This removes the
+full-transcript-repaint class of suspects entirely, including `liveLineBudget`'s own folded
+block (still one live element, still re-laid-out every frame at large session sizes) — that
+concern no longer applies to anything Ink re-renders per frame, since nothing but the tail
+does. Awaiting live IntelliJ confirmation before closing §0.
+
 ## Needs your eyes (cannot be verified without a TTY)
 
 Nothing outstanding. All live-terminal checks are confirmed — see Closed.
