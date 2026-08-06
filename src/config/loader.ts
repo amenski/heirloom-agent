@@ -609,10 +609,14 @@ export function loadConfig(projectDir?: string): LoadResult {
     if (typeof merged.refresh === "string" && allowed.includes(merged.refresh)) {
       config.refresh = merged.refresh as "fast" | "balanced" | "slow";
     } else {
-      // Unlike the env var (which falls back silently so a typo cannot stop
-      // the CLI starting), a settings.json typo is worth surfacing — the user
-      // is editing config deliberately and expects it to take effect.
-      errors.push(`config.refresh: must be one of ${allowed.join(" | ")}`);
+      // refresh is a cosmetic display knob — it only affects repaint cadence,
+      // not correctness. A hard error here is disproportionate: it would take
+      // loadConfig's errors down the main() exit(1) path over a typo in a
+      // setting the user probably doesn't remember the exact spelling of.
+      // Warn and fall through to env/default resolution instead.
+      warnings.push(
+        `config.refresh: "${String(merged.refresh)}" is not one of ${allowed.join(" | ")} — using default`,
+      );
     }
   }
 
