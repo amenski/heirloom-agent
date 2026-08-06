@@ -92,7 +92,17 @@ const PromptInput = React.memo(function PromptInput({
 
   const slashToken = getCurrentSlashToken(buffer);
   const slashItems = useMemo(() => getSlashCommands(), []);
-  const slashMenu = useMemo(() => slashToken ? filterSlashCommands(slashItems, slashToken) : [], [slashToken, slashItems]);
+  // The completion menu is a TYPING aid — it must not exist while the user is
+  // walking history with the arrows. Gated HERE (not at showMenu) because the
+  // list feeds both the rendered <SlashCommandMenu> and the key handler; a
+  // display-only gate once silenced the keys while the panel kept rendering.
+  // Without this, recalling "/model" opened the menu, whose branch consumed
+  // the next Up-arrow for MENU navigation — history browsing silently stopped
+  // at the first command it hit. Any other key exits browsing and restores it.
+  const slashMenu = useMemo(
+    () => (slashToken && historyCursor === -1) ? filterSlashCommands(slashItems, slashToken) : [],
+    [slashToken, slashItems, historyCursor],
+  );
   const showMenu = slashMenu.length > 0;
 
   const lastCtrlDAt = useRef<number>(0);
