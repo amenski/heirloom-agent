@@ -14,12 +14,17 @@ import { render, Box, Text } from "ink";
  * These tests drive real Ink against a fake stdout and assert on the bytes, so
  * they fail if the option is dropped or if Ink changes its default.
  *
- * Frames are driven with explicit `rerender()` calls rather than a timer. An
- * earlier version rendered a 20ms <Ticker> and waited 120ms of wall-clock,
- * which passed locally but failed on CI: a loaded runner delivers fewer
- * effective ticks, so the second render produced no large writes at all and the
- * byte comparison degenerated to `91 < 91`. Nothing here now depends on how
- * fast the machine is.
+ * Two environment traps, both hit in this file before:
+ *
+ * 1. Frames are driven with explicit `rerender()` calls, never a timer. An
+ *    earlier version rendered a 20ms <Ticker> and waited 120ms of wall-clock,
+ *    so a loaded runner produced fewer repaints than expected.
+ * 2. `interactive: true` is passed explicitly. Ink infers interactivity from
+ *    `is-in-ci` (process.env.CI) and stdout.isTTY, and when non-interactive it
+ *    emits no ANSI at all — so assertions about escape sequences cannot pass
+ *    under CI without forcing it.
+ *
+ * Nothing here depends on machine speed or on ambient environment variables.
  */
 function fakeStdout() {
   const writes: string[] = [];
@@ -60,6 +65,14 @@ function captureRepaints(incrementalRendering: boolean, frames = 5) {
   const inst = render(<Frame tick={0} />, {
     stdout: stream,
     patchConsole: false,
+    // Force interactive mode. Ink decides this from `is-in-ci` (which reads
+    // process.env.CI) plus stdout.isTTY, and in non-interactive mode it
+    // disables ANSI erase sequences, cursor manipulation and synchronized
+    // output entirely — writing only the final frame at unmount. GitHub
+    // Actions always sets CI=true, so without this the escape sequences these
+    // tests exist to assert on are structurally absent and both assertions
+    // fail with the plain-text frame.
+    interactive: true,
     ...(incrementalRendering ? { incrementalRendering: true } : {}),
   });
 
