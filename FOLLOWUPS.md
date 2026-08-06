@@ -1,6 +1,6 @@
 # Heirloom — Follow-ups
 
-Open items parked for later. Captured 2026-08-04, revised 2026-08-05.
+Open items parked for later. Captured 2026-08-04, revised 2026-08-06.
 
 ## STILL BROKEN
 
@@ -33,24 +33,7 @@ the only copy of the transcript, so it would lose scrollback permanently.
 
 ## Needs your eyes (cannot be verified without a TTY)
 
-Still outstanding: `/skills`, `/effort`, `/model` (§1). Multi-line paste was confirmed
-working in a live terminal 2026-08-05 — see Closed.
-
-### 1. Confirm `/skills`, `/effort` and `/model` in a live terminal
-The command layer is now covered by logic + Ink render tests, but these three need
-a real terminal to confirm:
-- `/skills` — border/header follow the active theme; each skill shows name-on-its-own-line
-  with an indented description (the `594952c` layout fix).
-- `/skills` → select a skill → the model should now actually **follow** it. Selecting used
-  to only print the body locally; it now injects a `[skill: <name>]` user message into the
-  conversation. Confirm the confirmation line appears and the model's behavior changes.
-- `/effort` — should now open a real picker listing `low / high / max` on DeepSeek. After
-  `/effort max`, a turn should still succeed (this also exercises the temperature-omission
-  fix — DeepSeek rejects `temperature` while thinking mode is active).
-- `/model` — switch to a different **provider**, then `/resume` that session and confirm the
-  provider/model came back.
-- `--debug` JSONL is the ground truth for the wire: confirm `reasoning` is present on the
-  request and `temperature` is absent when an effort level is set.
+Nothing outstanding. All live-terminal checks are confirmed — see Closed.
 
 ## Deferred features
 
@@ -67,6 +50,16 @@ this is ever built, and the plan above is the whole design. (`getProviderModels`
 it is called at `cli.tsx:641`.)
 
 ---
+
+## Closed 2026-08-06
+
+- **`/skills`, `/effort` and `/model` confirmed in a live terminal.** All three are in
+  active use. The check was worth running: `/skills` rendered each entry as a name plus
+  its FULL wrapped description, and skill descriptions are paragraphs (median 327 chars),
+  so each entry cost 7-11 rows — about two skills visible on a 24-row terminal. Fixed in
+  `bec3370` (one row per entry, aligned columns, 198 rows -> 22). `/effort` and `/model`
+  behaved correctly, including a provider switch surviving `/resume`.
+  This closes the last item that could only be verified by a human at a TTY.
 
 ## Closed 2026-08-05
 
