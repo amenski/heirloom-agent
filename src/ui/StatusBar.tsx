@@ -10,7 +10,6 @@
  * - Effort level
  * - Git branch + status indicators (ahead/behind/dirty)
  * - Session duration timer (HH:MM:SS)
- * - Token counts for current session
  *
  * All colors are theme-driven via ThemeContext.
  */
@@ -29,8 +28,6 @@ interface StatusBarProps {
   showTimer?: boolean;
   /** Unix timestamp when the session started (ms) */
   sessionStart?: number;
-  /** Session token counts for display */
-  tokenCounts?: { input: number; output: number } | null;
 }
 
 /**
@@ -113,7 +110,6 @@ function StatusBar({
   gitStatus,
   showTimer = false,
   sessionStart,
-  tokenCounts,
 }: StatusBarProps) {
   const theme = useTheme();
   const term = useTerminalInfo();
@@ -127,7 +123,7 @@ function StatusBar({
   }, [showTimer, sessionStart]);
 
   // No segments + no git status + no timer + no tokens = nothing to show
-  if (segments.length === 0 && !gitStatus && !showTimer && !tokenCounts) return null;
+  if (segments.length === 0 && !gitStatus && !showTimer) return null;
 
   const t = theme.theme.statusBar;
   const dim = (s: string) => (theme.colorEnabled ? `\x1b[2m${s}\x1b[0m` : s);
@@ -199,14 +195,6 @@ function StatusBar({
     }
   }
 
-  // Token counts
-  let tokenStr = "";
-  if (tokenCounts && (tokenCounts.input > 0 || tokenCounts.output > 0)) {
-    const inK = (tokenCounts.input / 1000).toFixed(0);
-    const outK = (tokenCounts.output / 1000).toFixed(0);
-    tokenStr = dim(` \u0394${inK}k/\u2191${outK}k`);
-  }
-
   // A single status line (no extra horizontal rule \u2014 the input box above already
   // provides the visual divider). Fixed trailing info (git/timer/tokens) is
   // always kept; the model/mode/ctx/cost/effort segments fill the remaining
@@ -214,7 +202,7 @@ function StatusBar({
   const cleanLen = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").length;
   const sepLen = cleanLen(sep);
   const maxWidth = Math.max(term.columns - 1, 10);
-  const fixedLen = cleanLen(gitStr) + cleanLen(timerStr) + cleanLen(tokenStr);
+  const fixedLen = cleanLen(gitStr) + cleanLen(timerStr);
 
   const segBudget = maxWidth - fixedLen;
   const fullSegLen = cleanLen(statusLine);
@@ -245,7 +233,6 @@ function StatusBar({
         {segmentBody}
         {gitStr}
         {timerStr}
-        {tokenStr}
       </Text>
     </Box>
   );
