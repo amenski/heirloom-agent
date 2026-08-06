@@ -190,11 +190,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const [tokenCounts, setTokenCounts] = useState<{
-    input: number;
-    output: number;
-  } | null>(null);
-
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
 
   // Queue of user submissions (messages or slash commands) entered while a turn
@@ -625,11 +620,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         onMaxTurns: () => {
           scheduleOutput("[max turns reached. Session saved.]");
         },
-        onUsage: (input: number, output: number) => {
-          setTokenCounts((prev) => ({
-            input: (prev?.input ?? 0) + input,
-            output: (prev?.output ?? 0) + output,
-          }));
+        onUsage: () => {
+          // Usage totals live on ctx.mutable (sessionInput/sessionOutput) and
+          // feed the context meter and `getCostStr()`. Nothing needs to be
+          // mirrored into React state — this only refreshes the bar so the ctx
+          // meter reflects the new totals.
           setStatusLine(ctx.buildStatusBar());
         },
         onNewMessages: async (userInput: string, newMessages: any[]) => {
@@ -1601,7 +1596,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
                   : statusLine
               }
               gitStatus={gitStatus}
-              tokenCounts={tokenCounts}
             />
           }
         />
