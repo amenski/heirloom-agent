@@ -1,6 +1,6 @@
 {
   "name": "heirloom",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -13,7 +13,8 @@
     "resume:last": "tsx src/cli.tsx --last",
     "test": "vitest run",
     "test:watch": "vitest",
-    "eval": "tsx scripts/eval.ts"
+    "eval": "tsx scripts/eval.ts",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.23",
@@ -36,5 +37,23 @@
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
-  }
+  },
+  "description": "Heirloom \u2014 a terminal AI coding agent you own: bring your own key, readable codebase, no telemetry.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amenski/heirloom-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/amenski/heirloom-agent/issues"
+  },
+  "homepage": "https://github.com/amenski/heirloom-agent#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ]
 }
