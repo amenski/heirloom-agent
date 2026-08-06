@@ -58,6 +58,7 @@ import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/in
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG, LIVE_LINE_BUDGET } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
+import { resolveRefreshProfile } from "./core/refresh-rates.js";
 import {
   formatToolCallHeader,
   formatToolResultPreview,
@@ -88,6 +89,11 @@ function formatQueueTime(at: number): string {
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `[${hh}:${mm}]`;
 }
+
+// Repaint cadence for the whole UI. Resolved once at module load — these are
+// process-lifetime settings, not per-render state. See core/refresh-rates for
+// the measured traffic each profile produces.
+const REFRESH = resolveRefreshProfile();
 
 function InnerApp({ ctx }: { ctx: AppContext }) {
   const { exit } = useApp();
@@ -354,7 +360,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // terminal (visible flicker in Terminal.app). `activeLineRef` always holds
   // the freshest text for the places that read it synchronously (tool-start
   // flush, turn-end commit); only the rendered value lags by up to one
-  // interval, matching the flush timer's cadence.
+  // interval. The interval comes from the active refresh profile, so a slow
+  // terminal can trade streaming smoothness for a stable frame.
   const activeLineFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function setActiveLineBoth(v: string) {
@@ -363,7 +370,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     activeLineFlushRef.current = setTimeout(() => {
       activeLineFlushRef.current = null;
       setActiveLine(activeLineRef.current);
-    }, 50);
+    }, REFRESH.activeLineMs);
   }
 
   function setFirstTokenBoth(v: boolean) {
@@ -379,7 +386,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   function startFlushTimer() {
     stopFlushTimer();
-    flushTimerRef.current = setInterval(flushOutputQueue, 50);
+    flushTimerRef.current = setInterval(flushOutputQueue, REFRESH.flushMs);
   }
 
   function stopFlushTimer() {

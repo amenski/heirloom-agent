@@ -2,9 +2,16 @@ import React, { memo, useEffect, useState } from "react";
 import { Box, Text } from "ink";
 import { useTheme, useTerminalInfo } from "./contexts.js";
 import { chip } from "./core/chips.js";
+import { resolveRefreshProfile } from "./core/refresh-rates.js";
 
 /** Width of the working-indicator field, reserved whether or not it animates. */
 const DOTS_WIDTH = 8;
+
+/**
+ * How often the working indicator advances. Sourced from the shared refresh
+ * profile so all three repaint timers move together — see core/refresh-rates.
+ */
+const TICK_MS = resolveRefreshProfile().indicatorMs;
 
 export interface Hint {
   /** The key chord, rendered bright (e.g. "esc", "ctrl+shift+p"). */
@@ -42,7 +49,7 @@ function HintBar({ left, right = [], working = false }: HintBarProps) {
   useEffect(() => {
     if (!working) return;
     setFrame(0);
-    const timer = setInterval(() => setFrame((f) => f + 1), 80);
+    const timer = setInterval(() => setFrame((f) => f + 1), TICK_MS);
     return () => clearInterval(timer);
   }, [working]);
 
