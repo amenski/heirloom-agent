@@ -1,17 +1,13 @@
 import React, { memo, useEffect, useState } from "react";
 import { Box, Text } from "ink";
-import { useTheme, useTerminalInfo } from "./contexts.js";
+import { useTheme, useTerminalInfo, useRefresh } from "./contexts.js";
 import { chip } from "./core/chips.js";
-import { resolveRefreshProfile } from "./core/refresh-rates.js";
+
 
 /** Width of the working-indicator field, reserved whether or not it animates. */
 const DOTS_WIDTH = 8;
 
-/**
- * How often the working indicator advances. Sourced from the shared refresh
- * profile so all three repaint timers move together — see core/refresh-rates.
- */
-const TICK_MS = resolveRefreshProfile().indicatorMs;
+
 
 export interface Hint {
   /** The key chord, rendered bright (e.g. "esc", "ctrl+shift+p"). */
@@ -42,6 +38,8 @@ function HintBar({ left, right = [], working = false }: HintBarProps) {
   const theme = useTheme();
   const term = useTerminalInfo();
   const [frame, setFrame] = useState(0);
+  // Advances on the shared refresh cadence so all repaint timers move together.
+  const TICK_MS = useRefresh().indicatorMs;
 
   // The animation frame is LOCAL state, like <Spinner>'s was: a tick here must
   // re-render only this one row, never App's subtree (which would re-lay-out the
@@ -51,7 +49,7 @@ function HintBar({ left, right = [], working = false }: HintBarProps) {
     setFrame(0);
     const timer = setInterval(() => setFrame((f) => f + 1), TICK_MS);
     return () => clearInterval(timer);
-  }, [working]);
+  }, [working, TICK_MS]);
 
   const dim = (s: string) => (theme.colorEnabled ? `\x1b[2m${s}\x1b[0m` : s);
   // The chord renders as a key-cap (filled chip) and the description stays dim

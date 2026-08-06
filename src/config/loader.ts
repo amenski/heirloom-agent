@@ -46,6 +46,12 @@ export interface DeepCodeSettings {
   model?: string;
   /** Enable thinking mode (default true for DeepSeek V4) */
   thinkingEnabled?: boolean;
+  /**
+   * How often the UI repaints. Slower emulators (IntelliJ's terminal, tmux
+   * over a slow link) paint every write, so a high refresh rate reads as
+   * continuous flicker. See ui/core/refresh-rates for measured traffic.
+   */
+  refresh?: "fast" | "balanced" | "slow";
   /** Reasoning effort: "high" or "max" (default "max") */
   reasoningEffort?: "high" | "max";
 
@@ -201,6 +207,7 @@ const KNOWN_KEYS = new Set([
   "model",
   "thinkingEnabled",
   "reasoningEffort",
+  "refresh",
   "permissions",
   "mcpServers",
   "notify",
@@ -593,6 +600,19 @@ export function loadConfig(projectDir?: string): LoadResult {
       config.model = merged.model;
     } else {
       errors.push("config.model: must be a string");
+    }
+  }
+
+  // ── refresh ──
+  if ("refresh" in merged) {
+    const allowed = ["fast", "balanced", "slow"];
+    if (typeof merged.refresh === "string" && allowed.includes(merged.refresh)) {
+      config.refresh = merged.refresh as "fast" | "balanced" | "slow";
+    } else {
+      // Unlike the env var (which falls back silently so a typo cannot stop
+      // the CLI starting), a settings.json typo is worth surfacing — the user
+      // is editing config deliberately and expects it to take effect.
+      errors.push(`config.refresh: must be one of ${allowed.join(" | ")}`);
     }
   }
 

@@ -5,6 +5,7 @@
  */
 
 import React, { createContext, useContext, useMemo, useState } from "react";
+import { resolveRefreshProfile, type ResolvedRefresh } from "./core/refresh-rates.js";
 import {
   ThemeContextValue,
   createDefaultTheme,
@@ -240,4 +241,22 @@ export function RawModeProvider({ children }: { children: React.ReactNode }) {
 
 export function useRawMode(): RawModeState {
   return useContext(RawModeContext);
+}
+
+// ── Refresh cadence ──
+//
+// How often the UI repaints. Provided through context rather than resolved at
+// module load, because the value comes from settings.json — which is not
+// available until after config is loaded, long after module evaluation.
+
+const RefreshContext = React.createContext<ResolvedRefresh>(resolveRefreshProfile());
+
+export function RefreshProvider(
+  { value, children }: { value: ResolvedRefresh; children: React.ReactNode },
+) {
+  return <RefreshContext.Provider value={value}>{children}</RefreshContext.Provider>;
+}
+
+export function useRefresh(): ResolvedRefresh {
+  return useContext(RefreshContext);
 }

@@ -53,14 +53,35 @@ describe("resolveRefreshProfile", () => {
     }
   });
 
-  it("makes an unrecognised value distinguishable from the default", () => {
-    // `heirloom doctor` reports which profile is active and whether an env
-    // value was understood. That relies on a typo resolving to exactly the
-    // default profile, so the reporting can compare and say so rather than
-    // leaving the user unable to tell whether their setting took effect.
+  it("reports an unrecognised env value rather than silently ignoring it", () => {
+    // The intervals fall back to the default (a typo must not stop the CLI
+    // starting), but the raw value is carried through so /doctor can say the
+    // setting was not understood.
     const typo = resolveRefreshProfile({ HEIRLOOM_REFRESH: "slowww" });
     const fallback = resolveRefreshProfile({});
-    expect(typo).toEqual(fallback);
+    expect(typo.flushMs).toBe(fallback.flushMs);
+    expect(typo.indicatorMs).toBe(fallback.indicatorMs);
+    expect(typo.source).toBe("default");
+    expect(typo.invalid).toBe("slowww");
+    expect(fallback.invalid).toBeUndefined();
+  });
+
+  it("prefers settings.json over the environment variable", () => {
+    // Config is the deliberate, per-project choice and travels with the repo;
+    // the env var is a per-invocation override for trying a profile.
+    const r = resolveRefreshProfile({ HEIRLOOM_REFRESH: "fast" }, "slow");
+    expect(r.name).toBe("slow");
+    expect(r.source).toBe("config");
+  });
+
+  it("falls back to the env var when config is absent or unknown", () => {
+    expect(resolveRefreshProfile({ HEIRLOOM_REFRESH: "slow" }, undefined).source).toBe("env");
+    expect(resolveRefreshProfile({ HEIRLOOM_REFRESH: "slow" }, "bogus").source).toBe("env");
+  });
+
+  it("labels the default so /doctor can distinguish it from an explicit choice", () => {
+    expect(resolveRefreshProfile({}).source).toBe("default");
+    expect(resolveRefreshProfile({}, "balanced").source).toBe("config");
   });
 
   it("exposes its profile names for help text", () => {

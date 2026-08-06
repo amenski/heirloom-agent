@@ -25,6 +25,8 @@ import {
   useAccessibility,
   RawModeProvider,
   useRawMode,
+  RefreshProvider,
+  useRefresh,
 } from "./contexts.js";
 import ErrorBoundary from "./ErrorBoundary.js";
 import HelpOverlay from "./HelpOverlay.js";
@@ -58,7 +60,7 @@ import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/in
 import { USER_ECHO_TAG, COMMAND_ECHO_TAG, LIVE_LINE_BUDGET } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
-import { resolveRefreshProfile } from "./core/refresh-rates.js";
+import { resolveRefreshProfile, type ResolvedRefresh } from "./core/refresh-rates.js";
 import {
   formatToolCallHeader,
   formatToolResultPreview,
@@ -90,11 +92,6 @@ function formatQueueTime(at: number): string {
   return `[${hh}:${mm}]`;
 }
 
-// Repaint cadence for the whole UI. Resolved once at module load — these are
-// process-lifetime settings, not per-render state. See core/refresh-rates for
-// the measured traffic each profile produces.
-const REFRESH = resolveRefreshProfile();
-
 function InnerApp({ ctx }: { ctx: AppContext }) {
   const { exit } = useApp();
   const theme = useTheme();
@@ -102,6 +99,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const accessibility = useAccessibility();
   const bindings = useKeybindings();
   const rawMode = useRawMode();
+  // Repaint cadence, from settings.json / env. See core/refresh-rates.
+  const REFRESH = useRefresh();
 
   const [outputLines, setOutputLines] = useState<string[]>([]);
   const [activeLine, setActiveLine] = useState("");
@@ -1640,12 +1639,15 @@ interface AppProps {
   ctx: AppContext;
   themeConfig?: ThemeProviderOptions;
   keybindingConfig?: KeybindingConfig;
+  /** Resolved repaint cadence (settings.json > HEIRLOOM_REFRESH > default). */
+  refresh?: ResolvedRefresh;
 }
 
 export default function App({
   ctx,
   themeConfig,
   keybindingConfig,
+  refresh,
 }: AppProps) {
   const colorEnabled = ctx.getColorEnabled();
 
@@ -1663,7 +1665,9 @@ export default function App({
           <TerminalProvider>
             <AccessibilityProvider>
               <RawModeProvider>
-              <InnerApp ctx={ctx} />
+              <RefreshProvider value={refresh ?? resolveRefreshProfile()}>
+                <InnerApp ctx={ctx} />
+              </RefreshProvider>
               </RawModeProvider>
             </AccessibilityProvider>
           </TerminalProvider>
