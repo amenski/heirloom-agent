@@ -16,8 +16,11 @@ const src = (p: string) => readFileSync(join(process.cwd(), "src", p), "utf-8");
  *   ctrl+shift+p — shift is not encoded in the legacy scheme — so the
  *   shift-qualified binding could never match. PromptInput also claims ctrl+p
  *   for history navigation before App's useInput would see it.
- * - "^M model" worked, but not via the binding it appeared to use: App's
- *   openModelPicker action is shadowed by PromptInput's own ctrl+m handler.
+ * - "^M model" NEVER worked at all (an earlier version of this comment
+ *   claimed it did): Ctrl+M is byte 0x0D — identical to Enter — consumed by
+ *   the parser as `return` before ctrl detection. Pressing it SUBMITTED the
+ *   prompt. The hint, the handler, and the default binding are all removed;
+ *   the aliasing tests below keep the whole class out.
  */
 describe("hint bar chords are reachable", () => {
   it("cannot distinguish ctrl+p from ctrl+shift+p", () => {
@@ -67,5 +70,27 @@ describe("hint bar chords are reachable", () => {
     const hints = [...app.matchAll(/\{ key: "([^"]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
     expect(hints.length).toBeGreaterThan(0);
     expect(hints).not.toContain("^⇧P");
+  });
+
+  it("byte-aliased chords can never arrive as ctrl combinations", () => {
+    // Ctrl+M === Enter (0x0D) and Ctrl+I === Tab (0x09) at the byte level.
+    // The parser rightly consumes them as return/tab, so any handler or hint
+    // for ctrl+m / ctrl+i is dead on arrival.
+    const cr = parseTerminalInput("\x0d").keys[0];
+    expect(cr.return).toBe(true);
+    expect(cr.ctrl).toBe(false);
+    const tab = parseTerminalInput("\x09").keys[0];
+    expect(tab.tab).toBe(true);
+    expect(tab.ctrl).toBe(false);
+  });
+
+  it("advertises no byte-aliased chord in the hint bar", () => {
+    const app = src("ui/App.tsx");
+    const hints = [...app.matchAll(/\{ key: "([^"]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
+    expect(hints.length).toBeGreaterThan(0);
+    for (const h of hints) {
+      expect(h, `hint "${h}" uses a chord that is byte-identical to Enter/Tab`)
+        .not.toMatch(/\^(?:⇧)?[MI]$/);
+    }
   });
 });

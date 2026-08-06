@@ -306,8 +306,11 @@ const PromptInput = React.memo(function PromptInput({
     if (key.ctrl && key.value === "k") { updateBuffer((s) => killLine(s)); return; }
     if (key.ctrl && key.value === "u") { updateBuffer(() => EMPTY_BUFFER); return; }
     if (key.ctrl && key.value === "w") { updateBuffer((s) => deleteWordBefore(s)); return; }
+    // ctrl+j (0x0A) genuinely arrives as a ctrl chord. Its neighbours do NOT:
+    // Ctrl+M is 0x0D (Enter) and Ctrl+I is 0x09 (Tab) — the parser consumes
+    // both before ctrl detection, so handlers for them are unreachable. A
+    // ctrl+m model-picker handler sat here dead until 2026-08-06.
     if (key.ctrl && key.value === "j") { updateBuffer((s) => insertText(s, "\n")); return; }
-    if (key.ctrl && key.value === "m") { onModelPickerOpen?.(); return; }
 
     if (key.ctrl && key.value === "v") {
       setStatusMessage("Reading clipboard image…");
