@@ -49,23 +49,22 @@ describe("SkillList", () => {
     expect(lastFrame()).toBeTruthy();
   });
 
-  it("renders each skill's name and description on separate lines (no wall-of-text)", () => {
+  it("renders each skill on one row without wrapping into a wall of text", () => {
+    // Regression context (594952c): descriptions used to wrap into a block
+    // that merged every skill into unreadable prose. The fix at the time was
+    // to put the description on its own indented line — but skill
+    // descriptions are paragraphs (median 327 chars), so that cost 7-11 rows
+    // EACH and only ~2 skills fit on a 24-row terminal.
+    //
+    // Now name and description share ONE row in aligned columns, with the
+    // description truncated. The property that matters is unchanged: no skill
+    // may span multiple rows, and text must never wrap.
     const { lastFrame } = setup();
-    const frame = stripAnsi(lastFrame() ?? "");
-    const lines = frame.split("\n");
+    const lines = stripAnsi(lastFrame() ?? "").split("\n");
 
     for (const s of skills) {
-      const nameLine = lines.find((l) => l.includes(s.name));
-      expect(nameLine, `expected a line containing name "${s.name}"`).toBeDefined();
-
-      const descLine = lines.find((l) => l.includes(s.description));
-      expect(descLine, `expected a line containing description for "${s.name}"`).toBeDefined();
-
-      // The anti-wall-of-text assertion: the name must NOT share its line with
-      // the description (that's the bug from commit 594952c — "name —
-      // description" wrapping into one unreadable block).
-      expect(nameLine).not.toBe(descLine);
-      expect(nameLine?.includes(s.description)).toBe(false);
+      const matching = lines.filter((l) => l.includes(s.name));
+      expect(matching, `expected exactly one row for "${s.name}"`).toHaveLength(1);
     }
   });
 
