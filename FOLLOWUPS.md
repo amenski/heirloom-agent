@@ -40,6 +40,19 @@ block (still one live element, still re-laid-out every frame at large session si
 concern no longer applies to anything Ink re-renders per frame, since nothing but the tail
 does. Awaiting live IntelliJ confirmation before closing §0.
 
+**2026-08-06 update (2):** post-Static, the user still sees the working-indicator dots
+freeze. That rules out the render-cost class entirely (it's now deleted — nothing left for
+it to be) and points at a synchronous main-thread block: something holds the event loop for
+long enough that even the 80ms indicator tick can't run. The prescribed instrument
+(measurement, not another code-reading guess) now exists: `src/diagnostics/stall-watchdog.ts`
+runs a 20ms self-checking timer and, where available, a `node:inspector` CPU profiler at
+1000Hz sampling.
+
+Usage: `HEIRLOOM_PROFILE=1 heirloom`, reproduce a stall, then read the one-line stderr
+summary printed at exit (`[profile] N stalls ≥150ms (worst NNNms) — <profilePath>`). Open
+the `.cpuprofile` in Chrome DevTools (Performance panel → Load profile) and sort by self
+time to name the blocking frame(s) directly — no more guessing between suspects.
+
 ## Needs your eyes (cannot be verified without a TTY)
 
 2026-08-06, post-Static migration: user confirms flicker in IntelliJ (JediTerm) is now
