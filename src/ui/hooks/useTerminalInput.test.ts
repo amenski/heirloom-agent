@@ -63,6 +63,33 @@ describe("parseTerminalInput", () => {
   it("parses a lone escape key", () => {
     expect(parseTerminalInput("\x1b").keys[0].escape).toBe(true);
   });
+
+  describe("SS3 arrow keys (application cursor key mode / DECCKM)", () => {
+    const cases: Array<[string, keyof InputKey, string]> = [
+      ["\x1bOA", "upArrow", "\x1b[A"],
+      ["\x1bOB", "downArrow", "\x1b[B"],
+      ["\x1bOC", "rightArrow", "\x1b[C"],
+      ["\x1bOD", "leftArrow", "\x1b[D"],
+    ];
+
+    it.each(cases)("parses SS3 %s to exactly one key with the correct arrow flag and no stray chars", (seq, flag) => {
+      const { keys } = parseTerminalInput(seq);
+      expect(keys).toHaveLength(1);
+      expect(keys[0][flag]).toBe(true);
+      expect(keys[0].escape).toBe(false);
+    });
+
+    it.each(cases)("SS3 %s matches its CSI equivalent exactly (parity across terminal modes)", (seq, _flag, csiEquivalent) => {
+      const ss3Key = parseTerminalInput(seq).keys[0];
+      const csiKey = parseTerminalInput(csiEquivalent).keys[0];
+      expect(ss3Key).toEqual(csiKey);
+    });
+
+    it("regression: SS3 down arrow must not fire escape semantics", () => {
+      const { keys } = parseTerminalInput("\x1bOB");
+      expect(keys.some((k) => k.escape)).toBe(false);
+    });
+  });
 });
 
 describe("input wire (single module-level listener)", () => {
