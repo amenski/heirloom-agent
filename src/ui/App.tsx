@@ -39,7 +39,7 @@ import HintBar from "./HintBar.js";
 import StatusBar from "./StatusBar.js";
 import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
 import { explainToolAction } from "./explain-action.js";
-import WelcomeScreen from "./views/WelcomeScreen.js";
+import { buildWelcomeLines } from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
@@ -103,7 +103,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // Repaint cadence, from settings.json / env. See core/refresh-rates.
   const REFRESH = useRefresh();
 
-  const [outputLines, setOutputLines] = useState<string[]>([]);
+  // Seeded with the welcome banner so it's the first thing ever committed to
+  // scrollback — with committed output flushing through <Static> (see
+  // OutputArea.tsx), there is no more separate pinned banner region above it;
+  // the banner is just ordinary transcript content. The initializer runs once
+  // at mount, so this freezes model/thinking/cwd at their mount-time values —
+  // matching the old pinned WelcomeScreen, which never live-updated either.
+  // The replay/initialNotice effects (below) APPEND to this state, so seeding
+  // here preserves "banner first" ordering on resume.
+  const [outputLines, setOutputLines] = useState<string[]>(() =>
+    buildWelcomeLines(theme, {
+      model: ctx.modelDisplayName?.() ?? ctx.activeModel ?? ctx.providerName,
+      thinkingEnabled: true,
+      reasoningEffort: undefined,
+      cwd: process.cwd(),
+    }),
+  );
   const [activeLine, setActiveLine] = useState("");
   const [busy, setBusy] = useState(false);
   // Shell-style ↑/↓ recall of what the user has typed. Kept in React state
@@ -159,8 +174,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // The theme name active when the /theme picker opened — the revert target if
   // the user presses Esc after live-previewing other themes.
   const themeBeforePreviewRef = useRef<string>("dark");
-  const [thinkingEnabled, setThinkingEnabled] = useState(true);
-  const [reasoningEffort, setReasoningEffort] = useState<"high" | "max" | undefined>(undefined);
   const [askQuestionPrompt, setAskQuestionPrompt] = useState<{
     questions: AskQuestionItem[];
     resolve: (answers: Record<string, string> | null) => void;
@@ -1324,15 +1337,6 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   return (
     <Box flexDirection="column" width={term.columns}>
-      {/* Banner stays pinned at the top of the frame for the whole session;
-          the conversation renders below it rather than replacing it. */}
-      <WelcomeScreen
-        model={ctx.modelDisplayName?.() ?? ctx.activeModel ?? ctx.providerName}
-        thinkingEnabled={thinkingEnabled}
-        reasoningEffort={reasoningEffort}
-        cwd={process.cwd()}
-        width={term.columns}
-      />
       <OutputArea
         lines={outputLines}
         activeLine={activeLine}
