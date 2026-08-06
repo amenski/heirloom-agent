@@ -82,9 +82,10 @@ describe("WelcomeScreen", () => {
   });
 
   it("renders no multi-row ASCII banner", () => {
-    // The old banner was 61 columns of mixed block/box glyphs across six rows.
-    // At that width a 0.4% advance-width drift between glyph families
-    // compounds into visible row-to-row skew.
+    // The old banner was 61 columns of block/box glyphs across six rows,
+    // shredded in IntelliJ's JediTerm. Its glyphs measured identical advance
+    // widths, so font-metric drift wasn't the cause — likely renderer-side
+    // (JediTerm custom-painting those glyph ranges), unverified.
     const frame = strip(setup().lastFrame() ?? "");
     const blockRows = frame.split("\n").filter((l) => /█{4,}/.test(l));
     expect(blockRows).toHaveLength(0);
