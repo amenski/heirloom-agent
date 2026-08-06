@@ -42,7 +42,13 @@ does. Awaiting live IntelliJ confirmation before closing §0.
 
 ## Needs your eyes (cannot be verified without a TTY)
 
-Nothing outstanding. All live-terminal checks are confirmed — see Closed.
+2026-08-06, post-Static migration: user confirms flicker in IntelliJ (JediTerm) is now
+"very minimal" — down from unusable. Residual shimmer is the ~6-row live region, which
+cannot paint atomically if the terminal lacks DEC 2026 (probe result still unreported).
+The FREEZE (§0: input stalls, catch-up) is a distinct symptom — keep §0 open until a
+long session passes without one.
+
+Nothing else outstanding. All live-terminal checks are confirmed — see Closed.
 
 ## Deferred features
 
