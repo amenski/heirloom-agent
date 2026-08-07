@@ -142,7 +142,7 @@ results than either alone. Every major coding agent uses this pattern.
 **Design decisions:**
 - The agent loop takes a `Provider` interface, not a concrete client. This is
   the dependency inversion that makes the whole architecture work.
-- `maxTurns` (default 20) prevents infinite tool-calling loops. opencode calls
+- `maxTurns` (default 100, matching Claude Code's per-turn tool-call budget) prevents infinite tool-calling loops. opencode calls
   this `steps`; it's the same concept.
 
 **References:**
