@@ -19,18 +19,22 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.23",
     "@ai-sdk/openai": "^4.0.23",
+    "@mozilla/readability": "^0.6.0",
     "@types/react": "^19.2.17",
     "ai": "^7.0.41",
     "ignore": "^7.0.6",
     "ink": "^7.1.1",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
+    "linkedom": "^0.18.13",
     "react": "^19.2.8",
+    "turndown": "^7.2.4",
     "yargs": "^18.1.0"
   },
   "devDependencies": {
     "@types/json-schema": "^7.0.15",
     "@types/node": "^22.0.0",
+    "@types/turndown": "^5.0.6",
     "@types/yargs": "^17.0.35",
     "ink-testing-library": "^4.0.0",
     "tsup": "^8.5.1",
@@ -38,7 +42,7 @@
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   },
-  "description": "Heirloom \u2014 a terminal AI coding agent you own: bring your own key, readable codebase, no telemetry.",
+  "description": "Heirloom — a terminal AI coding agent you own: bring your own key, readable codebase, no telemetry.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

@@ -562,6 +562,37 @@ describe("PermissionEngine.resolve", () => {
     });
   });
 
+  describe("web_fetch domain scoping", () => {
+    it("asks for web_fetch by default with no config", () => {
+      expect(engine.resolve("web_fetch", { url: "https://example.com/page" }).action).toBe("ask");
+    });
+
+    it("buildDefaultRule scopes to the hostname, not the full URL", () => {
+      const built = engine.buildDefaultRule("web_fetch", { url: "https://example.com/some/deep/path?x=1" });
+      expect(built).toEqual({ tool: "web_fetch", kind: "exact", pattern: "example.com", action: "allow", origin: "config" });
+    });
+
+    it("approving the built default rule for session allows any other path on the same domain", () => {
+      const built = engine.buildDefaultRule("web_fetch", { url: "https://example.com/page-a" });
+      engine.approveForSession(built);
+      expect(engine.resolve("web_fetch", { url: "https://example.com/page-a" }).action).toBe("allow");
+      expect(engine.resolve("web_fetch", { url: "https://example.com/totally/different/page" }).action).toBe("allow");
+    });
+
+    it("approving one domain does not approve a different domain", () => {
+      const built = engine.buildDefaultRule("web_fetch", { url: "https://example.com/page" });
+      engine.approveForSession(built);
+      expect(engine.resolve("web_fetch", { url: "https://other.com/page" }).action).toBe("ask");
+    });
+
+    it("approving one subdomain does not approve a different subdomain", () => {
+      const built = engine.buildDefaultRule("web_fetch", { url: "https://docs.example.com/page" });
+      engine.approveForSession(built);
+      expect(engine.resolve("web_fetch", { url: "https://example.com/page" }).action).toBe("ask");
+      expect(engine.resolve("web_fetch", { url: "https://api.example.com/page" }).action).toBe("ask");
+    });
+  });
+
   describe("glob rules against absolute paths (relativize-to-workingDir)", () => {
     it("a './**' glob rule matches a real absolute in-cwd path (this is what migrateLegacyPermissions emits for read-in-cwd)", () => {
       engine = new PermissionEngine(

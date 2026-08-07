@@ -8,6 +8,7 @@ import { registerSearch } from "./search.js";
 import { registerEdits } from "./edit.js";
 import { registerAskUserQuestion } from "./ask_user_question.js";
 import { registerDocsSearch } from "./docs-search.js";
+import { registerWebFetch } from "./web-fetch.js";
 
 const registry = new ToolRegistry();
 registerFiles(registry);
@@ -16,6 +17,7 @@ registerSearch(registry);
 registerEdits(registry);
 registerAskUserQuestion(registry);
 registerDocsSearch(registry);
+registerWebFetch(registry);
 
 export { registry };
 export const TOOL_DEFS = registry.getAllDefs();
