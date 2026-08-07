@@ -104,7 +104,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<AgentResult> {
-  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 20, effort, thinkingEnabled } = options;
+  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 100, effort, thinkingEnabled } = options;
 
   const promptCtx: PromptContext = {
     mode: options.mode,
