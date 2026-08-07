@@ -1555,10 +1555,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               const result = await ctx.restoreCheckpoint(hash, restoreCode);
               if (result.restored) {
                 setShowUndoSelector(false);
-                // Not a re-seed — the restored checkpoint's own state (plus
-                // any prompt draft below) is what should appear next, not a
-                // fresh-session banner.
-                wipeScrollback([]);
+                // Unlike /new and /resume, /undo deliberately leaves the
+                // visible transcript alone — the user needs to see the
+                // conversation they just rewound into, not a blanked
+                // screen. Append a confirmation instead of wiping.
+                const shortHash = hash.slice(0, 7);
+                const confirmation = restoreCode
+                  ? `Restored checkpoint ${shortHash} — files and conversation`
+                  : `Restored checkpoint ${shortHash} — conversation only`;
+                pushOutput(theme.colorEnabled ? `\x1b[2m${confirmation}\x1b[0m` : confirmation);
                 if (result.promptDraft) {
                   draftNonceRef.current += 1;
                   setPromptDraft({ nonce: draftNonceRef.current, text: result.promptDraft });
