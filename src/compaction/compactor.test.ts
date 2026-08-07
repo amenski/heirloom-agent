@@ -50,3 +50,32 @@ describe("Compactor auto gate (compaction.auto)", () => {
     expect(summary).toBe("summary");
   });
 });
+
+describe("Compactor tool-pair boundary", () => {
+  it("never leaves an orphaned tool message at the start of the kept tail", async () => {
+    const c = new Compactor(stubProvider, 100, 0.7);
+    const pad = "x".repeat(200);
+    // slice(-4) would start at the first tool result, splitting it from its
+    // assistant tool_calls message — a hard 400 on strict providers.
+    const msgs: Message[] = [
+      { role: "user", content: pad + " task" },
+      { role: "assistant", content: pad + " reply" },
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [
+          { id: "a", name: "read_file", arguments: {} },
+          { id: "b", name: "read_file", arguments: {} },
+        ],
+      },
+      { role: "tool", toolCallId: "a", content: pad },
+      { role: "tool", toolCallId: "b", content: pad },
+      { role: "assistant", content: pad + " done" },
+      { role: "user", content: pad + " next" },
+    ];
+    const out = await c.compact(msgs);
+    const firstNonSummary = out[1];
+    expect(firstNonSummary.role).toBe("assistant");
+    expect((firstNonSummary as { toolCalls?: unknown[] }).toolCalls).toHaveLength(2);
+  });
+});

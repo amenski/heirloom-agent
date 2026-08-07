@@ -1007,7 +1007,11 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   }
   shared.sessionUserInputs.push(input);
   const processed = await processAtMentions(input);
-  const tools = shared.activeMode?.groups ? registry.getByMode(shared.activeMode.groups) : registry.getAllDefs();
+  // Plan mode is read-only: offer only read-group tools so the model cannot
+  // call an edit/command tool the plan-mode instruction forbids.
+  const tools = planMode
+    ? registry.getByMode(["read"])
+    : shared.activeMode?.groups ? registry.getByMode(shared.activeMode.groups) : registry.getAllDefs();
 
   // Research notes are plan-mode-only context: load them lazily when in plan
   // mode so the per-turn file walk costs nothing in normal conversation.

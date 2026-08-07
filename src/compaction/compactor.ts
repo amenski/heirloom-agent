@@ -3,15 +3,24 @@ import type { Provider } from "../providers/types.js";
 import { shouldCompact } from "./budget.js";
 
 const COMPACTION_PROMPT = `Summarize the following conversation between an AI agent and a user.
-Extract and preserve:
-- The user's original task and goals
-- Key decisions made and why
-- Files that were read, modified, or created (with paths)
-- Errors encountered and how they were resolved
-- Any unfinished work or pending items
+Structure the summary under these headings, omitting any heading with nothing to report:
 
-Format your summary as a single paragraph that captures the essential context.
-Be concise. Omit tool output details — just note what was done and the outcome.`;
+## Task
+The user's original request and goals. Quote the most recent user instruction verbatim — the resumed agent acts on it next.
+
+## Decisions
+Key decisions made and why.
+
+## Files
+Files that were read, modified, or created (with paths).
+
+## Errors
+Errors encountered and how they were resolved.
+
+## Pending
+Unfinished work, next steps, and anything the user asked for that has not been done yet.
+
+Omit tool output details — just note what was done and the outcome.`;
 
 export class Compactor {
   private lastChangedFiles: Set<string> = new Set();
@@ -43,7 +52,18 @@ export class Compactor {
   async compact(messages: Message[]): Promise<Message[]> {
     if (!this.needsCompaction(messages)) return messages;
 
-    const keepCount = Math.min(4, messages.length);
+    let keepCount = Math.min(4, messages.length);
+    // Never split an assistant tool-call message from its tool results: if the
+    // kept tail would start with a "tool" message, widen it until the paired
+    // assistant message (the nearest preceding non-tool message) is included.
+    // An orphaned tool message is a hard 400 on strict providers ("Messages
+    // with role 'tool' must be a response to ... 'tool_calls'").
+    while (
+      keepCount < messages.length &&
+      messages[messages.length - keepCount].role === "tool"
+    ) {
+      keepCount++;
+    }
     const recent = messages.slice(-keepCount);
     const old = messages.slice(0, messages.length - keepCount);
 
