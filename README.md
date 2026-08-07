@@ -88,6 +88,12 @@ Check your setup any time with `heirloom doctor`.
 
 ---
 
+<p align="center">
+  <img src="assets/prompt-screen.png" alt="Heirloom TUI screenshot" width="720">
+</p>
+
+---
+
 ## Everyday use
 
 ```

@@ -27,6 +27,13 @@ function permissionSubjectText(toolName: string, args: Record<string, unknown>):
 // a hang (spinner + elapsed clock both stalling).
 const TOOL_ARGS_SIZE_DIAGNOSTIC_THRESHOLD = 256 * 1024; // 256KB
 
+// Tools that carry no side-effects and are safe to execute in parallel. These
+// match the "read" group in the tool registry. `ask_user_question` is excluded
+// deliberately — it interacts with the user and must remain sequential.
+const READ_TOOLS = new Set([
+  "read_file", "list_files", "glob", "search", "docs_search", "web_fetch",
+]);
+
 // Rebuilding the stable preamble is pure string concatenation, but it's still
 // wasted work every turn when nothing it depends on has changed — and more
 // importantly, recomputing it is how a would-be-stable prefix accidentally
@@ -291,6 +298,88 @@ export async function runAgent(
 
     await diagnostics?.snapshot();
 
+    // Fast path: when every tool call is a read-only operation with
+    // pre-resolved allow/deny permissions (no askUser prompts), execute
+    // them in parallel. Multi-file reads are the common case — without
+    // this, three read_file calls take 3×RTT serially.
+    const allReads = toolCalls.length > 1 &&
+      toolCalls.every(tc => READ_TOOLS.has(tc.name));
+
+    let tookParallelPath = false;
+
+    if (allReads) {
+      // Pre-resolve permissions: bail to sequential if any call needs askUser.
+      let hasAsk = false;
+      for (const tc of toolCalls) {
+        if (permissions) {
+          const { action } = permissions.resolve(tc.name, tc.arguments);
+          if (action === "ask") { hasAsk = true; break; }
+        }
+      }
+
+      if (!hasAsk) {
+        tookParallelPath = true;
+
+        // Fire all onToolStart at once so the UI sees the batch.
+        for (const tc of toolCalls) {
+          options.onToolStart?.(tc.name, tc.arguments);
+        }
+
+        // Handle denies first — no execution needed.
+        for (const tc of toolCalls) {
+          if (!permissions) continue;
+          const { action } = permissions.resolve(tc.name, tc.arguments);
+          if (action === "deny") {
+            options.onDiagnostic?.("denied");
+            messages.push({
+              role: "tool",
+              toolCallId: tc.id,
+              content: `Permission denied for ${tc.name}`,
+            });
+          }
+        }
+
+        // Execute every allow call concurrently via Promise.allSettled.
+        const toRun = toolCalls.filter(tc => {
+          if (!permissions) return true;
+          const { action } = permissions.resolve(tc.name, tc.arguments);
+          return action !== "deny";
+        });
+
+        if (toRun.length > 0) {
+          const results = await Promise.allSettled(
+            toRun.map(tc => executeTool(tc)),
+          );
+
+          for (let i = 0; i < toRun.length; i++) {
+            const tc = toRun[i];
+            const r = results[i];
+            const output: ToolOutput = r.status === "fulfilled"
+              ? r.value
+              : { content: "", error: (r.reason as Error)?.message ?? "Unknown error" };
+
+            options.onToolResult?.(tc.name, output);
+
+            const callKey = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+            seenCalls.set(callKey, (seenCalls.get(callKey) || 0) + 1);
+
+            if (output.error) {
+              failedStreak++;
+            } else {
+              failedStreak = 0;
+            }
+
+            messages.push({
+              role: "tool",
+              toolCallId: tc.id,
+              content: output.error ? `Error: ${output.error}` : output.content,
+            });
+          }
+        }
+      }
+    }
+
+    if (!tookParallelPath) {
     for (const tc of toolCalls) {
       options.onToolStart?.(tc.name, tc.arguments);
 
@@ -399,6 +488,7 @@ export async function runAgent(
         turnEnded = true;
         break;
       }
+    }
     }
 
     if (diagnostics?.available) {
