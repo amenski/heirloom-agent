@@ -60,6 +60,42 @@ describe("parseTerminalInput", () => {
     expect(parseTerminalInput("\x1b[1;5D").keys[0].leftArrow).toBe(true);
   });
 
+  it("parses modified arrow keys with the modifier bit intact", () => {
+    // Regression: the CSI parser only pushed a digit group into `params` on
+    // ";", so the modifier param (e.g. the "5" in "1;5D") was silently
+    // dropped when it was the *last* group before the terminating letter.
+    const ctrlLeft = parseTerminalInput("\x1b[1;5D").keys[0];
+    expect(ctrlLeft.leftArrow).toBe(true);
+    expect(ctrlLeft.ctrl).toBe(true);
+
+    const altLeft = parseTerminalInput("\x1b[1;3D").keys[0];
+    expect(altLeft.leftArrow).toBe(true);
+    expect(altLeft.meta).toBe(true);
+
+    const altRight = parseTerminalInput("\x1b[1;3C").keys[0];
+    expect(altRight.rightArrow).toBe(true);
+    expect(altRight.meta).toBe(true);
+  });
+
+  it("parses ESC b / ESC f as meta+word-jump arrows, not a bare escape", () => {
+    // Some terminal configs (e.g. iTerm2 "Natural Text Editing") send
+    // Option+Left/Right as the readline convention ESC b / ESC f instead of a
+    // CSI modified-arrow sequence.
+    const left = parseTerminalInput("\x1bb");
+    expect(left.keys).toHaveLength(1);
+    expect(left.keys[0]).toMatchObject({ meta: true, leftArrow: true, escape: false });
+
+    const right = parseTerminalInput("\x1bf");
+    expect(right.keys).toHaveLength(1);
+    expect(right.keys[0]).toMatchObject({ meta: true, rightArrow: true, escape: false });
+  });
+
+  it("parses ESC+DEL as meta+backspace (Option+Backspace word-delete)", () => {
+    const { keys } = parseTerminalInput("\x1b\x7f");
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatchObject({ meta: true, backspace: true, escape: false });
+  });
+
   it("parses a lone escape key", () => {
     expect(parseTerminalInput("\x1b").keys[0].escape).toBe(true);
   });
