@@ -2,78 +2,37 @@
 
 [![Build](https://github.com/amenski/heirloom-agent/actions/workflows/build.yml/badge.svg)](https://github.com/amenski/heirloom-agent/actions/workflows/build.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+[![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org)
 
-A personal AI coding agent for the terminal — provider-agnostic, mode-gated,
-and permission-first. No framework, no magic: one TypeScript codebase you can
-fully read, with every design decision written down in [`docs/`](./docs/)
-alongside its rationale. The name is the point — something you build once,
-understand completely, and keep.
-
-It started as a fix for an agent that broke inside IntelliJ's embedded
-terminal, and grew into a full agent by deliberately combining the proven
-parts of opencode, RooCode, Aider, and SWE-agent — modes, checkpoints, repo
-map, pattern permissions, layered error recovery — with no telemetry and no
-privileged vendor. The research trail, papers included, is in
-[`docs/architecture.md`](./docs/architecture.md).
-
-> **Status: working, daily-driven, looking for testers.** I use it every day
-> with **DeepSeek**, the best-tested path. Other provider presets are untested
-> in the real world — [a "works" or "breaks" issue](https://github.com/amenski/heirloom-agent/issues)
-> is genuinely useful.
+A personal AI coding agent for the terminal — bring your own key, use any model,
+readable codebase.
 
 ---
 
-## Highlights
-
-- **Any model, chosen in config** — presets for DeepSeek (the daily driver),
-  OpenAI, OpenRouter, Groq, and local Ollama; any other OpenAI-compatible
-  provider is configuration, not code.
-- **ReAct agent loop** with self-reflection, layered error recovery, and loop
-  detection — streams responses, runs tools, and verifies its own edits.
-- **Modes (personas)** — `code`, `ask` (read-only), `architect`, `debug`,
-  `orchestrator`; each gates which tools the model can even see.
-- **Permission-first** — `allow` / `ask` / `deny` pattern rules plus a session
-  posture, with every decision recorded (`/permissions`). You at the prompt
-  are the firewall.
-- **Grounded, safe edits** — a ranked repo map injected into the system
-  prompt; stale-file detection so the agent can't blind-overwrite a file it
-  hasn't read; shadow-Git checkpoints with `/undo`.
-- **Resumable sessions** — append-only JSONL with auto-compaction for
-  arbitrarily long conversations; resume by ID, picker, or `--last`.
-- **Extensible** — MCP servers via config, the cross-tool
-  [Agent Skills](https://agentskills.io) format, and a headless mode (`-x`)
-  with fail-closed permissions for scripting.
-
-There's more (themes, statusline plugins, notify hook, built-in docs search,
-`/cost`) — `/help` and the [docs](#documentation) cover it.
-
----
-
-## Quickstart
-
-Requires **Node 20+** and an API key for at least one provider.
+## Install
 
 ```bash
 git clone https://github.com/amenski/heirloom-agent.git
 cd heirloom-agent
 npm install
+npm run build && npm link
 ```
 
-Connect a provider (stores a key in `~/.heirloom/credentials.yaml`, `chmod 600`):
+Then add an API key:
 
 ```bash
-npm start -- auth
+heirloom auth                    # guided setup (stores in ~/.heirloom/credentials.yaml)
+export DEEPSEEK_API_KEY=...      # or set an env var
 ```
 
-…or just export an env var — e.g. `export DEEPSEEK_API_KEY=...`.
-
-Then launch:
+Launch:
 
 ```bash
-npm start                              # interactive TUI
-npm start -- -p "explain src/agent.ts" # launch with a prompt
-npm start -- -l                        # resume the last session here
-npm start -- -x -p "summarize the diff"# headless one-shot, no TUI
+heirloom                         # interactive
+heirloom -p "explain src/foo.ts" # start with a prompt
+heirloom -l                      # resume last session
+heirloom -x -p "..."             # one-shot, no TUI (for scripts)
+heirloom doctor                  # verify your setup
 ```
 
 Prefer a real binary? Build once and link it:
@@ -137,10 +96,8 @@ cat error.log | heirloom -x -p "Explain this error"
 
 ## Configuration
 
-Settings live in JSON, merged global → project (project wins):
-
-- `~/.heirloom/settings.json` — user-level
-- `./.heirloom/settings.json` — per-project
+Create `~/.heirloom/settings.json` (or `./.heirloom/settings.json` per project;
+project wins when both exist):
 
 ```jsonc
 {
@@ -160,83 +117,139 @@ Settings live in JSON, merged global → project (project wins):
 }
 ```
 
-- **Keep API keys out of config where you can.** The canonical store is the
-  `auth`-managed credentials file (`~/.heirloom/credentials.yaml`, `chmod 600`),
-  or a provider env var. A key set at `env.API_KEY` in `settings.json` does work,
-  but is discouraged — settings.json is meant to be shareable/committable.
-- **Use the `rules` permission shape** shown above. The old
-  `allow`/`deny` scope-array form still loads, but triggers a migration warning
-  on every launch until you rewrite it.
-- **Per-repo instructions** for the agent: `.heirloom/instructions.md` (or
-  `AGENTS.md`).
-- **Custom personas**: drop a YAML into `~/.heirloom/modes/`.
+- Store API keys in `~/.heirloom/credentials.yaml` (via `heirloom auth`) or env
+  vars — not in settings.json.
+- Project instructions: `.heirloom/instructions.md` (or `AGENTS.md`).
+- Custom modes: drop a YAML file into `~/.heirloom/modes/`.
 
-See [`docs/config-spec.md`](./docs/config-spec.md) for the full schema.
+Full schema: [`docs/config-spec.md`](./docs/config-spec.md).
 
 ---
 
-## Security posture (please read)
+## Features
 
-Heirloom executes LLM-chosen commands on your machine. The design treats
-everything reaching the model — repo files, command output, third-party
-skills — as untrusted input, and **you at the permission prompt are the
-firewall**. There is no sandbox; sessions are plaintext files under your home
-directory. The full threat model, including known defects and their status, is
-documented honestly in
-[`docs/security-spec.md`](./docs/security-spec.md). Read it before running with
-`allowAll` on a repo you didn't write.
+### Persona modes
 
-Heirloom collects **no telemetry** and phones home for nothing — there is no
-telemetry subsystem and no config key that enables one.
+`code` (read/write/run), `ask` (read-only), `architect` (plan in docs),
+`debug` (investigate), `orchestrator` (delegate tasks). Each mode gates which
+tools the model sees. Switch anytime with `/mode <slug>`.
+
+### Permission rules
+
+Allow, ask, or deny tools by name and pattern. Shortcut: `Shift+Tab` cycles
+`normal → auto-approve → plan`. Every decision is recorded (`/permissions`).
+
+### Checkpoints
+
+Every file edit is backed up in a shadow Git repo. `/undo` rewinds code,
+conversation, or both.
+
+### Resumable sessions
+
+Conversations are append-only JSONL files. Long chats stay usable through
+automatic compaction. Resume with `--last`, `--resume <id>`, or `/resume`.
+
+### Skills & MCP
+
+Install [Agent Skills](https://agentskills.io) or connect MCP servers. Browse
+with `/skills` and `/mcp`.
+
+### Stale-file detection
+
+The agent tracks when it last read each file and refuses to overwrite changes
+you made outside it.
+
+### Streaming & observability
+
+Replies stream as they generate. `/cost` shows session token usage. `/theme`
+switches color schemes with a live preview. `/doctor` runs diagnostics.
+
+## Supported models
+
+- `deepseek-v4-pro` (primary, best tested)
+- `deepseek-v4-flash`
+- Any DeepSeek, OpenAI, OpenRouter, Groq, or Ollama model
+- Any OpenAI-compatible provider via config
 
 ---
 
-## Documentation
+## FAQ
 
-Every subsystem has a spec. Start with the architecture overview, then dive
-into whatever you're touching.
+### Why another AI coding agent?
 
-| Doc | Contents |
+Heirloom started as a fix for an agent that broke inside IntelliJ's embedded
+terminal. It grew into a full tool by combining the best ideas from opencode,
+RooCode, Aider, and SWE-agent — modes, checkpoints, permission rules — with
+zero telemetry and no vendor lock-in. Every design decision is documented in
+[`docs/`](./docs/).
+
+### Does it send my data anywhere?
+
+No. Heirloom sends nothing anywhere except to the model provider you configured.
+There is no telemetry, no analytics, no phoning home.
+
+### Is it safe to use on production code?
+
+Heirloom executes model-chosen commands on your machine. The permission system
+is the safety net — read [`docs/security-spec.md`](./docs/security-spec.md)
+before enabling auto-approve on code you didn't write.
+
+### How do I configure MCP?
+
+Add `mcpServers` to settings.json (see Configuration above), then use `/mcp` to
+inspect connected servers. See [`docs/config-spec.md`](./docs/config-spec.md).
+
+### How do I get notified when a task completes?
+
+Set `notify` in settings.json to the path of a notification script.
+See [`docs/notify-spec.md`](./docs/notify-spec.md).
+
+### Does it support images?
+
+Yes — paste an image with `Ctrl+V`. The model must support multimodal input.
+
+### Does it support Thinking mode?
+
+Yes. Set `thinkingEnabled: true` in settings.json. DeepSeek models support
+reasoning effort control (`/effort`).
+
+---
+
+## Docs
+
+| | |
 |---|---|
-| [architecture.md](./docs/architecture.md) | The layers, tradeoffs, research foundation |
-| [subsystems.md](./docs/subsystems.md) | Memory, context tiers, ReAct variant, compaction, failure modes |
-| [tool-spec.md](./docs/tool-spec.md) | Tool contracts: params, truncation, error codes |
-| [provider-spec.md](./docs/provider-spec.md) | Adapter contract; adapters vs providers |
-| [config-spec.md](./docs/config-spec.md) | Config schema, providers, credentials |
-| [mode-spec.md](./docs/mode-spec.md) | Persona schema + built-ins |
-| [permission-spec.md](./docs/permission-spec.md) | Rules, approval modes, the ask prompt |
-| [session-spec.md](./docs/session-spec.md) | JSONL format, resume, compaction markers |
-| [skill-spec.md](./docs/skill-spec.md) | Agent Skills format, search paths, triggers |
-| [cli-spec.md](./docs/cli-spec.md) | Invocation, flags, commands, keybindings |
-| [security-spec.md](./docs/security-spec.md) | Threat model, mitigations, non-goals |
-| [conventions.md](./docs/conventions.md) | Code style, testing strategy, doc workflow |
+| [architecture.md](./docs/architecture.md) | Design layers and tradeoffs |
+| [subsystems.md](./docs/subsystems.md) | Memory, context, failure modes |
+| [tool-spec.md](./docs/tool-spec.md) | Built-in tool contracts |
+| [provider-spec.md](./docs/provider-spec.md) | Model adapter interface |
+| [config-spec.md](./docs/config-spec.md) | Settings reference |
+| [mode-spec.md](./docs/mode-spec.md) | Persona definitions |
+| [permission-spec.md](./docs/permission-spec.md) | Rules, approvals, prompts |
+| [session-spec.md](./docs/session-spec.md) | Conversation storage format |
+| [skill-spec.md](./docs/skill-spec.md) | Skill format and loading |
+| [cli-spec.md](./docs/cli-spec.md) | Flags, commands, keybindings |
+| [security-spec.md](./docs/security-spec.md) | Threat model and mitigations |
+| [conventions.md](./docs/conventions.md) | Code style and testing |
 
 ---
 
 ## Contributing
 
-Contributions are genuinely welcome — bug reports, docs fixes, new provider
-presets, and features all help.
-
-**Get set up:**
-
 ```bash
+git clone https://github.com/amenski/heirloom-agent.git
+cd heirloom-agent
 npm install
-npm test              # vitest — edit strategies, permissions, registry, compaction, sessions
-npx tsc --noEmit      # type gate (also runs in CI)
+npm test              # vitest — 1,059 tests
+npx tsc --noEmit      # type gate
 npm run build         # bundle with tsup
 ```
 
-Then read **[CONTRIBUTING.md](./CONTRIBUTING.md)** for the PR checklist, a map
-of the source tree, and good first contributions. All participation is governed
-by our [Code of Conduct](./CODE_OF_CONDUCT.md).
-
-Not sure where to start? Open an issue describing what you'd like to do and
-we'll point you at the right layer.
+See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for the PR checklist, code map,
+and good first contributions. [Code of Conduct](./CODE_OF_CONDUCT.md) applies.
 
 ---
 
 ## License
 
-Licensed under the [Apache License 2.0](./LICENSE). By contributing, you agree
-that your contributions will be licensed under the same terms.
+[Apache 2.0](./LICENSE)
