@@ -1,6 +1,9 @@
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 
 function detectLinter(workingDir: string): string | null {
   const pkgPath = join(workingDir, "package.json");
@@ -17,9 +20,9 @@ function detectLinter(workingDir: string): string | null {
   return null;
 }
 
-function runLinter(cmd: string, cwd: string): string {
+async function runLinter(cmd: string, cwd: string): Promise<string> {
   try {
-    execSync(cmd, { cwd, stdio: "pipe", encoding: "utf-8", timeout: 30000 });
+    await execAsync(cmd, { cwd, encoding: "utf-8", timeout: 30000 });
     return "";
   } catch (err: any) {
     if (err.killed) return "";
@@ -51,9 +54,9 @@ export class DiagnosticRunner {
     return this.linter !== null;
   }
 
-  snapshot(): void {
+  async snapshot(): Promise<void> {
     if (!this.linter) return;
-    this.baseline = runLinter(this.linter, this.workingDir);
+    this.baseline = await runLinter(this.linter, this.workingDir);
   }
 
   async check(): Promise<string | null> {
@@ -61,7 +64,7 @@ export class DiagnosticRunner {
 
     await new Promise((r) => setTimeout(r, 500));
 
-    const current = runLinter(this.linter, this.workingDir);
+    const current = await runLinter(this.linter, this.workingDir);
 
     if (!this.baseline || current === this.baseline) return null;
 

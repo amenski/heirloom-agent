@@ -155,6 +155,10 @@ export async function runAgent(
   let stopReason: "done" | "aborted" | "max_turns" = "done";
   let turn = 0;
   let turnEnded = false;
+  // One-shot guard for the empty-response retry below: a stream that ends with
+  // no text, no reasoning, and no tool calls is a transient provider hiccup,
+  // not a finished turn — retry once before giving up.
+  let emptyResponseRetried = false;
   while (turn < maxTurns && !turnEnded) {
     if (options.signal?.aborted) {
       stopReason = "aborted";
@@ -237,6 +241,14 @@ export async function runAgent(
     };
 
     if (pendingCalls.size === 0) {
+      if (!content && !reasoning) {
+        if (!emptyResponseRetried) {
+          emptyResponseRetried = true;
+          options.onDiagnostic?.("empty response from provider — retrying once");
+          continue;
+        }
+        options.onText?.("[empty response from provider]\n");
+      }
       if (content) messages.push({ role: "assistant", content });
       await recordTokens();
       break;
@@ -277,7 +289,7 @@ export async function runAgent(
 
     await recordTokens();
 
-    diagnostics?.snapshot();
+    await diagnostics?.snapshot();
 
     for (const tc of toolCalls) {
       options.onToolStart?.(tc.name, tc.arguments);
