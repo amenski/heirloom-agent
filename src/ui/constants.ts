@@ -16,3 +16,26 @@ export const USER_ECHO_TAG = "\u0001\u0003";
  * a visible record of what was typed \u2014 it is not counted toward context usage.
  */
 export const COMMAND_ECHO_TAG = "\u0001\u0004";
+
+/**
+ * Sentinel prefixed onto the first committed line of an assistant answer block
+ * so OutputArea renders the dim bullet as its own element beside
+ * <MarkdownText>, instead of the raw markdown line being string-prefixed with
+ * the bullet. Block-level markdown (headings, lists, blockquotes) is anchored
+ * at the start of the line, so prepending the bullet directly defeated that
+ * parsing (e.g. a heading line no longer matched the heading regex).
+ */
+export const BULLET_TAG = "\u0001\u0005";
+
+/**
+ * Sentinel prefixed onto a committed line to mark it "verbatim" -- never run
+ * through OutputArea's progressive-disclosure summarizer (needsSummary /
+ * summarizeText). Progressive disclosure is right for a huge tool result
+ * streaming by mid-turn, but wrong for a resumed transcript: the user asked
+ * to reload their own prior conversation and it must come back intact, not
+ * truncated to a stub. buildReplayLines (src/ui/core/replay.ts) prefixes
+ * every line it produces with this tag. It composes with the other tags --
+ * always placed outermost (first), so OutputArea strips it before detecting
+ * USER_ECHO_TAG / COMMAND_ECHO_TAG / BULLET_TAG underneath.
+ */
+export const VERBATIM_TAG = "\u0001\u0006";

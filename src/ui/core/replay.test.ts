@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildReplayLines } from "./replay.js";
-import { USER_ECHO_TAG } from "../constants.js";
+import { USER_ECHO_TAG, VERBATIM_TAG } from "../constants.js";
 import type { Message } from "../../types.js";
 import { stripAnsi } from "../test-helpers.js";
 
@@ -8,13 +8,13 @@ describe("buildReplayLines", () => {
   it("renders a user turn with the echo gutter tag", () => {
     const msgs: Message[] = [{ role: "user", content: "fix the bug" }];
     const lines = buildReplayLines(msgs, false);
-    expect(lines).toContain(USER_ECHO_TAG + "fix the bug");
+    expect(lines).toContain(VERBATIM_TAG + USER_ECHO_TAG + "fix the bug");
   });
 
   it("bullets assistant text", () => {
     const msgs: Message[] = [{ role: "assistant", content: "Done." }];
     const lines = buildReplayLines(msgs, false);
-    expect(lines.some((l) => l.startsWith("● Done."))).toBe(true);
+    expect(lines.some((l) => l.startsWith(VERBATIM_TAG + "● Done."))).toBe(true);
   });
 
   it("renders a visible tool call and its result", () => {
@@ -27,8 +27,19 @@ describe("buildReplayLines", () => {
       { role: "tool", toolCallId: "c1", content: "file-a\nfile-b" },
     ];
     const lines = buildReplayLines(msgs, false).map(stripAnsi);
-    expect(lines.some((l) => l.startsWith("⏺ Bash"))).toBe(true);
+    expect(lines.some((l) => l.startsWith(VERBATIM_TAG + "⏺ Bash"))).toBe(true);
     expect(lines.some((l) => l.includes("file-a"))).toBe(true);
+  });
+
+  it("tags every non-blank line as verbatim so OutputArea never summarizes replay", () => {
+    const msgs: Message[] = [
+      { role: "user", content: "fix the bug" },
+      { role: "assistant", content: "Done." },
+    ];
+    const lines = buildReplayLines(msgs, false);
+    const nonBlank = lines.filter((l) => l !== "");
+    expect(nonBlank.length).toBeGreaterThan(0);
+    expect(nonBlank.every((l) => l.startsWith(VERBATIM_TAG))).toBe(true);
   });
 
   it("suppresses silent (read-only) tool calls AND their results", () => {
@@ -57,7 +68,7 @@ describe("buildReplayLines", () => {
     // summary is surfaced
     expect(lines.some((l) => l.includes("Did X and Y."))).toBe(true);
     // real user turn keeps its gutter
-    expect(lines).toContain(USER_ECHO_TAG + "now do Z");
+    expect(lines).toContain(VERBATIM_TAG + USER_ECHO_TAG + "now do Z");
   });
 
   it("marks permission-denied tool results as errors (ANSI red) when color is on", () => {
