@@ -16,7 +16,7 @@ import {
   formatToolResultPreview,
   SILENT_TOOLS,
 } from "../ToolCallFormatter.js";
-import { USER_ECHO_TAG } from "../constants.js";
+import { USER_ECHO_TAG, VERBATIM_TAG } from "../constants.js";
 
 const withBullet = (line: string): string => {
   const [first, ...rest] = line.split("\n");
@@ -29,7 +29,20 @@ const dim = (colorEnabled: boolean, s: string): string =>
 /**
  * Build the scrollback lines for a resumed transcript. Silent (context-only)
  * tool calls and their results are dropped, matching live rendering.
+ *
+ * Every line pushed here is tagged VERBATIM_TAG so OutputArea never runs it
+ * through progressive-disclosure summarization: the user asked to reload
+ * their history, and got back an unreadable truncated stub of their own
+ * prior messages (a 1421-char message rendered as ~300 chars). Progressive
+ * disclosure is right for a huge tool result streaming by mid-turn; it is
+ * wrong for restored conversation, since there is no way to ever see the
+ * missing text again. VERBATIM_TAG composes with the other sentinel tags
+ * (USER_ECHO_TAG, BULLET_TAG) via the `tag` helper below — always placed
+ * outermost so OutputArea strips it first and still detects the tag
+ * underneath for gutter/bullet rendering.
  */
+const tag = (line: string): string => VERBATIM_TAG + line;
+
 export function buildReplayLines(messages: Message[], colorEnabled: boolean): string[] {
   const out: string[] = [];
   // Tool-call ids whose call header was suppressed (silent tool) — their result
@@ -42,7 +55,7 @@ export function buildReplayLines(messages: Message[], colorEnabled: boolean): st
       // per-turn system prompt is noise. Show summaries dimmed.
       if (msg.content.startsWith("[Previous conversation summary]")) {
         out.push("");
-        out.push(dim(colorEnabled, msg.content));
+        out.push(tag(dim(colorEnabled, msg.content)));
         out.push("");
       }
       continue;
@@ -53,19 +66,19 @@ export function buildReplayLines(messages: Message[], colorEnabled: boolean): st
       // a dim summary rather than user input.
       if (msg.content.startsWith("[Previous conversation summary]")) {
         out.push("");
-        out.push(dim(colorEnabled, msg.content));
+        out.push(tag(dim(colorEnabled, msg.content)));
         out.push("");
         continue;
       }
       out.push("");
-      out.push(USER_ECHO_TAG + msg.content);
+      out.push(tag(USER_ECHO_TAG + msg.content));
       out.push("");
       continue;
     }
 
     if (msg.role === "assistant") {
       if (msg.content && msg.content.trim() !== "") {
-        out.push(withBullet(msg.content));
+        out.push(tag(withBullet(msg.content)));
       }
       for (const call of msg.toolCalls ?? []) {
         if (SILENT_TOOLS.has(call.name)) {
@@ -73,7 +86,7 @@ export function buildReplayLines(messages: Message[], colorEnabled: boolean): st
           continue;
         }
         out.push("");
-        out.push(formatToolCallHeader(call.name, call.arguments));
+        out.push(tag(formatToolCallHeader(call.name, call.arguments)));
       }
       continue;
     }
@@ -86,7 +99,7 @@ export function buildReplayLines(messages: Message[], colorEnabled: boolean): st
         content.startsWith("PERMISSION_DENIED") || content.startsWith("COMMAND_FAILED");
       for (const line of formatToolResultPreview(content)) {
         out.push(
-          colorEnabled ? (isError ? `\x1b[31m${line}\x1b[0m` : `\x1b[2m${line}\x1b[0m`) : line,
+          tag(colorEnabled ? (isError ? `\x1b[31m${line}\x1b[0m` : `\x1b[2m${line}\x1b[0m`) : line),
         );
       }
       continue;

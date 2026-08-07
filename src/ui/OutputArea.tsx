@@ -15,7 +15,7 @@ import { Box, Static, Text } from "ink";
 import MarkdownText from "./MarkdownText.js";
 import { useTheme } from "./contexts.js";
 import { ansi256 } from "./theme.js";
-import { USER_ECHO_TAG, COMMAND_ECHO_TAG } from "./constants.js";
+import { USER_ECHO_TAG, COMMAND_ECHO_TAG, BULLET_TAG, VERBATIM_TAG } from "./constants.js";
 import { formatEcho } from "./core/echo-format.js";
 import type { TabDefinition } from "./types.js";
 
@@ -54,6 +54,15 @@ function needsSummary(text: string): string | null {
 
 /**
  * Collapse a long text to a preview.
+ *
+ * The inline marker and the needsSummary() footer used to report two
+ * different figures for the same block \u2014 the marker counted chars dropped
+ * from a fixed 300-char slice, the footer reported the total length \u2014 so a
+ * summarized block read as internally inconsistent (e.g. "... (1121 more
+ * chars)" next to a footer saying "1421 chars" for the same text, with no
+ * way to tell those numbers described the same thing). Both now cite the
+ * same total, just phrased for their position: the inline marker says how
+ * much is showing out of that total, the footer states the total.
  */
 function summarizeText(text: string): string {
   const clean = text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -64,7 +73,7 @@ function summarizeText(text: string): string {
     );
   }
   if (clean.length > 1000) {
-    return clean.slice(0, 300) + `\n  ... (${clean.length - 300} more chars)`;
+    return clean.slice(0, 300) + `\n  ... (showing 300 of ${clean.length} chars)`;
   }
   return text;
 }
@@ -77,16 +86,62 @@ const OutputLine = memo(function OutputLine({
   line: string;
 }) {
   const theme = useTheme();
-  const summary = useMemo(() => needsSummary(line), [line]);
+
+  // A verbatim-tagged line (tagged with VERBATIM_TAG) comes from resumed-
+  // session replay (buildReplayLines) rather than live streaming. Progressive
+  // disclosure — collapsing long blocks — is right for a huge tool result
+  // streaming by mid-turn, where the model already saw the full text; it is
+  // wrong for restored conversation, where the user explicitly asked to see
+  // their own history again and truncating it destroys their only view of
+  // it. VERBATIM_TAG is stripped first, ahead of the other tags, so a
+  // replayed USER_ECHO_TAG or BULLET_TAG line is still detected and gets its
+  // normal gutter/bullet — it just skips summarization underneath.
+  const verbatim = line.startsWith(VERBATIM_TAG);
+  const untagged = verbatim ? line.slice(VERBATIM_TAG.length) : line;
+
+  // A bullet-tagged line (tagged with BULLET_TAG) marks the first line of a
+  // fresh assistant answer block. The dim "●" renders as its own element
+  // beside <MarkdownText> rather than being string-prepended to the markdown
+  // — prepending "● " would defeat block-level markdown regexes anchored at
+  // the start of the line (e.g. a heading or list item).
+  const hasBullet = untagged.startsWith(BULLET_TAG);
+  const body = hasBullet ? untagged.slice(BULLET_TAG.length) : untagged;
+  const summary = useMemo(() => (verbatim ? null : needsSummary(body)), [body, verbatim]);
+
+  if (hasBullet) {
+    const bulletEl = <Text dimColor>{"● "}</Text>;
+    if (summary) {
+      return (
+        <Box flexDirection="column">
+          <Box>
+            {bulletEl}
+            <MarkdownText>{summarizeText(body)}</MarkdownText>
+          </Box>
+          <Text dimColor>{summary}</Text>
+        </Box>
+      );
+    }
+    return (
+      <Box>
+        {bulletEl}
+        <MarkdownText>{body}</MarkdownText>
+      </Box>
+    );
+  }
 
   // A user-echo line (tagged with USER_ECHO_TAG) renders with a blue gutter bar
   // on the left and plain text — the gutter is what marks input, so assistant
   // replies can stay plain flush-left text. (A full-width background fill was
   // tried and read as heavier/noisier, so this uses a subtle left rule instead.)
-  if (line.startsWith(USER_ECHO_TAG)) {
+  if (untagged.startsWith(USER_ECHO_TAG)) {
     // Draw the gutter on every line rather than flattening the message: the
-    // echo must show what was actually submitted, newlines included.
-    const { lines: msgLines, truncated } = formatEcho(line.slice(USER_ECHO_TAG.length));
+    // echo must show what was actually submitted, newlines included. A
+    // verbatim (replayed) echo is exempt from formatEcho's own line/char caps
+    // for the same reason it is exempt from needsSummary — it is restored
+    // history, not a live paste that might bury the transcript.
+    const { lines: msgLines, truncated } = verbatim
+      ? formatEcho(untagged.slice(USER_ECHO_TAG.length), Infinity, Infinity)
+      : formatEcho(untagged.slice(USER_ECHO_TAG.length));
     const gutter = theme.colorEnabled ? ansi256(theme.theme.promptFg) : undefined;
     return (
       <Box flexDirection="column">
@@ -110,8 +165,10 @@ const OutputLine = memo(function OutputLine({
   // "›" line — a lightweight record of what was typed. Unlike the user-echo bar
   // it gets no background fill, marking it as out-of-band (it makes no model
   // call and is not counted toward context usage).
-  if (line.startsWith(COMMAND_ECHO_TAG)) {
-    const { lines: msgLines, truncated } = formatEcho(line.slice(COMMAND_ECHO_TAG.length));
+  if (untagged.startsWith(COMMAND_ECHO_TAG)) {
+    const { lines: msgLines, truncated } = verbatim
+      ? formatEcho(untagged.slice(COMMAND_ECHO_TAG.length), Infinity, Infinity)
+      : formatEcho(untagged.slice(COMMAND_ECHO_TAG.length));
     return (
       <Box flexDirection="column">
         {msgLines.map((msg, i) => (
@@ -125,13 +182,13 @@ const OutputLine = memo(function OutputLine({
   if (summary) {
     return (
       <Box flexDirection="column">
-        <MarkdownText>{summarizeText(line)}</MarkdownText>
+        <MarkdownText>{summarizeText(untagged)}</MarkdownText>
         <Text dimColor>{summary}</Text>
       </Box>
     );
   }
 
-  return <MarkdownText>{line}</MarkdownText>;
+  return <MarkdownText>{untagged}</MarkdownText>;
 });
 
 // ── Main OutputArea ──
