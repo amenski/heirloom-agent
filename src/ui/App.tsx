@@ -35,6 +35,7 @@ import CommandPalette, {
 } from "./CommandPalette.js";
 
 import OutputArea from "./OutputArea.js";
+import { inlineSpanOpen } from "./MarkdownText.js";
 import HintBar from "./HintBar.js";
 import StatusBar from "./StatusBar.js";
 import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
@@ -57,7 +58,7 @@ import type { AskQuestionItem } from "../tools/types.js";
 import { setAskQuestion } from "../tools/index.js";
 import { ModelsDropdown, EffortSelector } from "./components/index.js";
 import ThemeDropdown, { persistThemeChoice } from "./components/ThemeDropdown/index.js";
-import { USER_ECHO_TAG, COMMAND_ECHO_TAG, ANSI_CLEAR_SCREEN } from "./constants.js";
+import { USER_ECHO_TAG, COMMAND_ECHO_TAG, BULLET_TAG, ANSI_CLEAR_SCREEN } from "./constants.js";
 import { seedPromptHistory } from "./core/prompt-history.js";
 import { loadPromptHistory, appendPromptHistory } from "./core/history-store.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
@@ -584,15 +585,37 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       // a fresh answer block; continuation lines stay plain. `atBlockStart` is
       // true until the first non-empty text line of the current block is
       // emitted, then resets after each tool call so the next answer re-bullets.
+      // The bullet is a TAG, not a string prefix on the markdown itself — a
+      // prepended "● " would defeat block-level markdown regexes anchored at
+      // the start of the line (e.g. "● ## Plan" no longer looks like a
+      // heading). OutputArea strips the tag and renders the bullet as a
+      // separate element beside <MarkdownText>.
       let atBlockStart = true;
-      const bullet = theme.colorEnabled ? "\x1b[2m●\x1b[0m " : "● ";
       const withBullet = (line: string): string =>
-        atBlockStart ? bullet + line : line;
+        atBlockStart ? BULLET_TAG + line : line;
 
       let textBuffer = "";
       // The blank line after the echo already separates the reply, so the first
       // text/tool block does not need to add its own leading blank.
       let needTextSeparator = false;
+      // Lines of the current inline paragraph waiting for their emphasis/code
+      // spans to close (see inlineSpanOpen in MarkdownText.tsx). Committed as a
+      // SINGLE output entry so a span split across streamed lines renders
+      // correctly — a held line can rejoin with its closer on a later line.
+      // Flushed at a blank line (a span can't cross a paragraph boundary in
+      // CommonMark), a code fence, a tool call, or turn end.
+      let pendingParagraph: string[] = [];
+      const flushPendingParagraph = () => {
+        if (pendingParagraph.length === 0) return;
+        scheduleOutput(withBullet(pendingParagraph.join("\n")));
+        pendingParagraph = [];
+        atBlockStart = false;
+      };
+      // If an inline span never closes (e.g. literal "python **kwargs" outside
+      // a fence), the hold would otherwise block every completed line behind it
+      // for the rest of the turn. This caps how many held lines can queue up
+      // before giving up and committing the paragraph as literal text.
+      const MAX_HELD_LINES = 3;
 
       // The echo is a marker that reasoning happened, not a transcript of it —
       // the full text is already in the model's context and is not addressed to
@@ -630,10 +653,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           }
           textBuffer += c;
           const rawLines = textBuffer.split("\n");
+          let consumed = 0;
           for (let i = 0; i < rawLines.length - 1; i++) {
             const line = rawLines[i];
 
+            // A code fence boundary ends any held inline paragraph — a span
+            // cannot continue into a fence.
             if (line.startsWith("```")) {
+              flushPendingParagraph();
               if (codeBlockRef.current.active) {
                 codeBlockRef.current.lines.push(line);
                 const block = codeBlockRef.current.lines.join("\n");
@@ -643,20 +670,44 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
               } else {
                 codeBlockRef.current = { active: true, lines: [line] };
               }
-              textBuffer = "";
+              consumed = i + 1;
               continue;
             }
 
             if (codeBlockRef.current.active) {
               codeBlockRef.current.lines.push(line);
-              textBuffer = "";
+              consumed = i + 1;
               continue;
             }
 
-            scheduleOutput(withBullet(line));
-            atBlockStart = false;
+            // Blank line = paragraph boundary. Commit any held paragraph
+            // (unclosed spans render as literal markers — a span can't cross a
+            // blank line in CommonMark) and pass the blank through for spacing.
+            if (line.trim() === "") {
+              flushPendingParagraph();
+              scheduleOutput("");
+              consumed = i + 1;
+              continue;
+            }
+
+            // Append to the current inline paragraph, then hold while a span is
+            // still open: an unclosed **/`/~~ (per the parser's flanking rules,
+            // so "* item", "2 * 3 * 4" and "foo_bar_baz" never hold) means the
+            // closer may arrive on a later streamed line. The whole paragraph
+            // commits as ONE entry once closed, so bold/code renders across
+            // newlines. A line inside a code fence never reaches this branch.
+            pendingParagraph.push(line);
+            if (
+              inlineSpanOpen(pendingParagraph.join("\n")) &&
+              pendingParagraph.length < MAX_HELD_LINES
+            ) {
+              consumed = i + 1;
+              break;
+            }
+            flushPendingParagraph();
+            consumed = i + 1;
           }
-          textBuffer = rawLines[rawLines.length - 1];
+          textBuffer = rawLines.slice(consumed).join("\n");
           if (codeBlockRef.current.active) {
             const preview =
               codeBlockRef.current.lines.join("\n") +
@@ -668,6 +719,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         },
         onToolStart: (name: string, args: Record<string, unknown>) => {
           flushReasoning();
+          // Commit any held paragraph — its lines are complete, only their
+          // closing marker may have been pending.
+          flushPendingParagraph();
           if (activeLineRef.current) scheduleOutput(activeLineRef.current);
           setActiveLineBoth("");
           textBuffer = "";
@@ -775,6 +829,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       try {
         const result = await ctx.runAgentTurnCore(input, callbacks, imageUrls, planMode);
 
+        // A reasoning-only turn (no text, no tool calls) never hits the
+        // onText/onToolStart flush sites — surface its ✱ summary here so the
+        // turn doesn't end with just the footer.
+        flushReasoning();
+        flushPendingParagraph();
         flushOutputQueue(true);
 
         if (
@@ -816,6 +875,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
         announceToScreenReader("Heirloom has finished processing", "polite");
       } catch (err) {
+        flushPendingParagraph();
         flushOutputQueue(true);
         pushOutput(`Error: ${(err as Error).message}`);
         announceToScreenReader(
@@ -1181,7 +1241,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   function handlePermissionDecision(decision: PermissionDecision): void {
     if (!askPrompt) return;
 
-    const rawSubject = askPrompt.args?.command ?? askPrompt.args?.path ?? askPrompt.args?.filePath;
+    const rawSubject = askPrompt.args?.command ?? askPrompt.args?.path ?? askPrompt.args?.filePath ?? askPrompt.args?.url;
     const subject = typeof rawSubject === "string" ? rawSubject : "";
     void ctx.sessionStore.appendPermission(ctx.sessionId, {
       tool: askPrompt.toolName,
