@@ -5,6 +5,7 @@ import {
   globSpecificity,
   matchesTool,
   buildSubject,
+  extractHostname,
   parseRulePattern,
   serializeRulePattern,
   type PermissionRule,
@@ -132,6 +133,23 @@ describe("buildSubject", () => {
     expect(s.tool).toBe("read_file");
     expect(s.text).toBe("/tmp/x.txt");
     expect(s.resolvedPath).toBe("/tmp/x.txt");
+  });
+
+  it("builds a web_fetch subject with resolvedPath set to the hostname, not the full URL", () => {
+    const s = buildSubject("web_fetch", { url: "https://example.com/some/path?x=1" });
+    expect(s.tool).toBe("web_fetch");
+    expect(s.text).toBe("https://example.com/some/path?x=1");
+    expect(s.resolvedPath).toBe("example.com");
+  });
+});
+
+describe("extractHostname", () => {
+  it("extracts a lowercased hostname from a URL", () => {
+    expect(extractHostname("https://Example.COM/path")).toBe("example.com");
+  });
+
+  it("returns undefined for an unparsable URL", () => {
+    expect(extractHostname("not a url")).toBeUndefined();
   });
 });
 

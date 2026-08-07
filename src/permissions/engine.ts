@@ -2,7 +2,7 @@ import { join, relative, isAbsolute, resolve, dirname } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { PermissionAction, PermissionRule, PermissionSubject } from "./rules.js";
-import { buildSubject, patternMatches, specificity, serializeRulePattern } from "./rules.js";
+import { buildSubject, patternMatches, specificity, serializeRulePattern, extractHostname } from "./rules.js";
 import { buildBashSubject } from "./bash-normalize.js";
 import { BUILTIN_DESTRUCTIVE_RULES } from "./destructive.js";
 import { BUILTIN_GUARDED_RULES } from "./guarded.js";
@@ -99,7 +99,9 @@ export class PermissionEngine {
 
     const internal = toolName === "run_bash"
       ? this.resolveBash(String(a.command ?? ""))
-      : this.resolveSubject(toolName, this.relativizeSubject(buildSubject(toolName, a)));
+      : toolName === "web_fetch"
+        ? this.resolveSubject(toolName, buildSubject(toolName, a))
+        : this.resolveSubject(toolName, this.relativizeSubject(buildSubject(toolName, a)));
 
     return { ...internal, isGuarded: internal.winningRule?.origin === "builtin-guarded" };
   }
@@ -244,6 +246,13 @@ export class PermissionEngine {
     const a = args ?? {};
     if (toolName === "run_bash") {
       return { tool: "run_bash", kind: "exact", pattern: String(a.command ?? ""), action: "allow", origin: "config" };
+    }
+    if (toolName === "web_fetch") {
+      // Domain-scoped: approving one URL approves the whole hostname, so
+      // "allow for session/always" covers future fetches to the same site
+      // rather than re-prompting per exact URL.
+      const hostname = extractHostname(String(a.url ?? ""));
+      return { tool: "web_fetch", kind: "exact", pattern: hostname ?? "", action: "allow", origin: "config" };
     }
     const raw = a.path ?? a.filePath;
     const rawPath = typeof raw === "string" ? raw : "";

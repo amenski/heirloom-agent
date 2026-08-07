@@ -236,13 +236,30 @@ export function extractToolSubject(toolName: string, args: Record<string, unknow
     const q = args?.query;
     return typeof q === "string" ? q : "";
   }
+  if (toolName === "web_fetch") {
+    const u = args?.url;
+    return typeof u === "string" ? u : "";
+  }
   const raw = args?.path ?? args?.filePath;
   return typeof raw === "string" ? raw : "";
+}
+
+/** Best-effort hostname extraction for web_fetch's domain-scoped permission rules. Returns undefined for an unparsable URL rather than throwing — matching just falls through to "no match" in that case. */
+export function extractHostname(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildSubject(tool: string, args: Record<string, unknown>): PermissionSubject {
   if (tool === "run_bash" || tool === "docs_search") {
     return { tool, text: extractToolSubject(tool, args) };
+  }
+  if (tool === "web_fetch") {
+    const text = extractToolSubject(tool, args);
+    return { tool, text, resolvedPath: extractHostname(text) };
   }
   const text = extractToolSubject(tool, args);
   return { tool, text, resolvedPath: text || undefined };
