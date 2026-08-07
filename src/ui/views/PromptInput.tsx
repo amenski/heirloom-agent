@@ -299,6 +299,7 @@ const PromptInput = React.memo(function PromptInput({
     if (key.return) { submitCurrent(); return; }
 
     if (key.delete) { updateBuffer((s) => deleteForward(s)); return; }
+    if (key.meta && key.backspace) { updateBuffer((s) => deleteWordBefore(s)); return; }
     if (key.backspace) { updateBuffer((s) => backspace(s)); return; }
 
     if ((key.ctrl || key.meta) && key.leftArrow) { updateBuffer((s) => moveWordLeft(s)); return; }

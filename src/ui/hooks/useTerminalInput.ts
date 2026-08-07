@@ -72,6 +72,12 @@ function parseCsi(buf: string, offset: number): [InputKey, number] | null {
       if (p1 === 8) return [makeKey("", { end: true }), i + 1];
       return null;
     }
+    // The terminating letter ends whatever digit group was still accumulating
+    // (e.g. the "3" in "1;3D", a modifier parameter) — only ";" pushed
+    // completed groups into `params` above, so without this the modifier
+    // param was silently dropped and modified arrows (Option+Left, etc.)
+    // never carried their modifier bits.
+    if (currentNum) { params.push(parseInt(currentNum, 10)); currentNum = ""; }
     const p1 = params[0] || 0;
     const p2 = params[1] || 0;
     const mod = p2 > 0 ? p2 - 1 : 0;
@@ -161,6 +167,16 @@ export function parseTerminalInput(buf: string, pendingPaste: string | null = nu
         const parsed = parseOseq(buf, i + 1);
         if (parsed) { results.push(parsed[0]); i = parsed[1]; continue; }
       }
+      // "Meta sends escape" word-jump: some terminal configs (e.g. iTerm2's
+      // "Natural Text Editing" preset) send Option+Left/Right as the readline
+      // convention ESC b / ESC f instead of a CSI modified-arrow sequence.
+      // Without this, the escape and the letter would fall through as two
+      // separate events below — an `escape:true` key (which triggers
+      // interrupt/dismiss handling) followed by a plain "b"/"f" character.
+      if (buf[i + 1] === "b") { results.push(makeKey("", { meta: true, leftArrow: true })); i += 2; continue; }
+      if (buf[i + 1] === "f") { results.push(makeKey("", { meta: true, rightArrow: true })); i += 2; continue; }
+      // Option+Backspace (word-delete): macOS terminals send ESC + DEL.
+      if (buf.charCodeAt(i + 1) === 0x7f) { results.push(makeKey("", { meta: true, backspace: true })); i += 2; continue; }
       results.push(makeKey("", { escape: true }));
       i++;
       continue;
