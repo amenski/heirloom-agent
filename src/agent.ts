@@ -166,6 +166,11 @@ export async function runAgent(
   // no text, no reasoning, and no tool calls is a transient provider hiccup,
   // not a finished turn — retry once before giving up.
   let emptyResponseRetried = false;
+  // Cross-turn dedup for ask_user_question: the model sometimes repeats the
+  // same question in a later turn. Track the exact question+options key and
+  // inject a system note if it's asked again — the note tells the model it
+  // already asked and got an answer, preventing redundant prompts.
+  const askedQuestions = new Set<string>();
   while (turn < maxTurns && !turnEnded) {
     if (options.signal?.aborted) {
       stopReason = "aborted";
@@ -452,6 +457,18 @@ export async function runAgent(
       } else {
         failedStreak = 0;
         warnedFailures = false;
+      }
+
+      // Prevent the model from asking the same question again in a later turn.
+      if (tc.name === "ask_user_question" && !result.error) {
+        const qKey = JSON.stringify(tc.arguments);
+        if (askedQuestions.has(qKey)) {
+          messages.push({
+            role: "system",
+            content: "You already asked this exact question and received an answer. Do not ask it again.",
+          });
+        }
+        askedQuestions.add(qKey);
       }
 
       if (result.error && errorReflector?.canRetry(tc.name, result.error)) {
