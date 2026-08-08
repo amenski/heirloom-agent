@@ -35,7 +35,11 @@ import CommandPalette, {
 } from "./CommandPalette.js";
 
 import OutputArea from "./OutputArea.js";
-import { inlineSpanOpen } from "./MarkdownText.js";
+import {
+  streamTextChunk,
+  createStreamBlockState,
+  type StreamBlockState,
+} from "./core/stream-blocks.js";
 import HintBar from "./HintBar.js";
 import StatusBar from "./StatusBar.js";
 import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
@@ -398,10 +402,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const outputQueueRef = useRef<string[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const codeBlockRef = useRef<{
-    active: boolean;
-    lines: string[];
-  }>({ active: false, lines: [] });
+  // Streaming line/paragraph state (core/stream-blocks.ts): the unconsumed
+  // chunk tail, the held paragraph (open span or list block), and any open
+  // fence. Survives across onText calls within a turn; reset at turn end.
+  const streamStateRef = useRef<StreamBlockState>(createStreamBlockState());
 
   const reasoningRef = useRef<{ buffer: string; flushed: boolean }>({ buffer: "", flushed: false });
 
@@ -594,28 +598,46 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       const withBullet = (line: string): string =>
         atBlockStart ? BULLET_TAG + line : line;
 
-      let textBuffer = "";
-      // The blank line after the echo already separates the reply, so the first
-      // text/tool block does not need to add its own leading blank.
-      let needTextSeparator = false;
-      // Lines of the current inline paragraph waiting for their emphasis/code
-      // spans to close (see inlineSpanOpen in MarkdownText.tsx). Committed as a
-      // SINGLE output entry so a span split across streamed lines renders
-      // correctly — a held line can rejoin with its closer on a later line.
-      // Flushed at a blank line (a span can't cross a paragraph boundary in
-      // CommonMark), a code fence, a tool call, or turn end.
-      let pendingParagraph: string[] = [];
-      const flushPendingParagraph = () => {
-        if (pendingParagraph.length === 0) return;
-        scheduleOutput(withBullet(pendingParagraph.join("\n")));
-        pendingParagraph = [];
-        atBlockStart = false;
+      // Feed for the streaming state machine (core/stream-blocks.ts): the
+      // chunk stream is buffered into complete lines, held while a span or
+      // list block may still rejoin, and committed as whole entries (a span
+      // closed across newlines renders bold; a wrapped list item stays one
+      // bullet). The machine's own `activeLine` is the live preview.
+      const consumeStream = (c: string) => {
+        const { lines: emitted, activeLine, state: next } = streamTextChunk(
+          streamStateRef.current,
+          c,
+        );
+        // streamTextChunk is pure: it copies the input state and returns the
+        // advanced one. Without storing it back, every chunk restarts from the
+        // empty state and held paragraphs (open span, list block, fence) are
+        // silently dropped — the closing marker or continuation never joins
+        // the line it belongs to.
+        streamStateRef.current = next;
+        for (const l of emitted) scheduleOutput(withBullet(l));
+        if (emitted.length > 0) atBlockStart = false;
+        return activeLine;
       };
-      // If an inline span never closes (e.g. literal "python **kwargs" outside
-      // a fence), the hold would otherwise block every completed line behind it
-      // for the rest of the turn. This caps how many held lines can queue up
-      // before giving up and committing the paragraph as literal text.
-      const MAX_HELD_LINES = 3;
+      const flushStream = () => {
+        // A flush site (tool boundary, turn end, blank line inside the chunk
+        // stream, error path) commits any held paragraph — its lines are
+        // complete, only their closing marker/continuation may have been
+        // pending. Unclosed spans render as literal markers (MAX_HELD_LINES
+        // bounds how long a literal "**kwargs" can stall a turn).
+        const s = streamStateRef.current;
+        if (s.buffer !== "" || s.pending.length > 0 || s.fence) {
+          const { lines: emitted, state: next } = streamTextChunk(s, "\n");
+          streamStateRef.current = next;
+          for (const l of emitted) scheduleOutput(withBullet(l));
+          if (emitted.length > 0) atBlockStart = false;
+        }
+      };
+
+      let needTextSeparator = false;
+      let textBuffer = "";
+      // True while the machine holds a paragraph (span/list) or an open fence
+      // — the active line is live-previewed rather than committed yet.
+      let holding = false;
 
       // The echo is a marker that reasoning happened, not a transcript of it —
       // the full text is already in the model's context and is not addressed to
@@ -647,83 +669,39 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             setFirstTokenBoth(true);
             setBusy(false);
           }
-          if (needTextSeparator && textBuffer === "" && c.trim() !== "") {
+          // Feed the chunk through the stream state machine. Complete lines
+          // are committed (whole paragraphs, completed fences, blanks); the
+          // machine's activeLine is the live preview of what is still held.
+          const prevHolding = holding;
+          const active = consumeStream(c);
+          holding = active !== "";
+          if (active !== "" && !prevHolding) {
+            setActiveLineBoth(withBullet(active));
+          } else if (active !== "" && prevHolding) {
+            // A line already on screen (held) is being extended — update the
+            // rendered line in place rather than committing the older text.
+            setActiveLineBoth(withBullet(active));
+          } else if (active === "") {
+            setActiveLineBoth("");
+          }
+          if (
+            needTextSeparator &&
+            streamStateRef.current.buffer === "" &&
+            streamStateRef.current.pending.length === 0
+          ) {
             needTextSeparator = false;
             scheduleOutput("");
           }
-          textBuffer += c;
-          const rawLines = textBuffer.split("\n");
-          let consumed = 0;
-          for (let i = 0; i < rawLines.length - 1; i++) {
-            const line = rawLines[i];
-
-            // A code fence boundary ends any held inline paragraph — a span
-            // cannot continue into a fence.
-            if (line.startsWith("```")) {
-              flushPendingParagraph();
-              if (codeBlockRef.current.active) {
-                codeBlockRef.current.lines.push(line);
-                const block = codeBlockRef.current.lines.join("\n");
-                codeBlockRef.current = { active: false, lines: [] };
-                scheduleOutput(withBullet(block));
-                atBlockStart = false;
-              } else {
-                codeBlockRef.current = { active: true, lines: [line] };
-              }
-              consumed = i + 1;
-              continue;
-            }
-
-            if (codeBlockRef.current.active) {
-              codeBlockRef.current.lines.push(line);
-              consumed = i + 1;
-              continue;
-            }
-
-            // Blank line = paragraph boundary. Commit any held paragraph
-            // (unclosed spans render as literal markers — a span can't cross a
-            // blank line in CommonMark) and pass the blank through for spacing.
-            if (line.trim() === "") {
-              flushPendingParagraph();
-              scheduleOutput("");
-              consumed = i + 1;
-              continue;
-            }
-
-            // Append to the current inline paragraph, then hold while a span is
-            // still open: an unclosed **/`/~~ (per the parser's flanking rules,
-            // so "* item", "2 * 3 * 4" and "foo_bar_baz" never hold) means the
-            // closer may arrive on a later streamed line. The whole paragraph
-            // commits as ONE entry once closed, so bold/code renders across
-            // newlines. A line inside a code fence never reaches this branch.
-            pendingParagraph.push(line);
-            if (
-              inlineSpanOpen(pendingParagraph.join("\n")) &&
-              pendingParagraph.length < MAX_HELD_LINES
-            ) {
-              consumed = i + 1;
-              break;
-            }
-            flushPendingParagraph();
-            consumed = i + 1;
-          }
-          textBuffer = rawLines.slice(consumed).join("\n");
-          if (codeBlockRef.current.active) {
-            const preview =
-              codeBlockRef.current.lines.join("\n") +
-              (textBuffer ? "\n" + textBuffer : "");
-            setActiveLineBoth(withBullet(preview));
-          } else {
-            setActiveLineBoth(textBuffer === "" ? "" : withBullet(textBuffer));
-          }
+          textBuffer = "";
         },
         onToolStart: (name: string, args: Record<string, unknown>) => {
           flushReasoning();
           // Commit any held paragraph — its lines are complete, only their
-          // closing marker may have been pending.
-          flushPendingParagraph();
+          // closing marker/continuation may have been pending.
+          flushStream();
           if (activeLineRef.current) scheduleOutput(activeLineRef.current);
           setActiveLineBoth("");
+          holding = false;
           textBuffer = "";
           atBlockStart = true; // next answer block re-bullets after this tool call
           scheduleOutput("");
@@ -833,18 +811,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         // onText/onToolStart flush sites — surface its ✱ summary here so the
         // turn doesn't end with just the footer.
         flushReasoning();
-        flushPendingParagraph();
+        flushStream();
         flushOutputQueue(true);
 
-        if (
-          codeBlockRef.current.active &&
-          codeBlockRef.current.lines.length > 0
-        ) {
-          pushOutput(withBullet(codeBlockRef.current.lines.join("\n")));
-          codeBlockRef.current = { active: false, lines: [] };
-        }
         if (activeLineRef.current) pushOutput(activeLineRef.current);
         setActiveLineBoth("");
+        holding = false;
         textBuffer = "";
 
         // Per-turn completion footer: "✳ Worked for Ns" (dim), mirroring Claude
@@ -875,7 +847,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
         announceToScreenReader("Heirloom has finished processing", "polite");
       } catch (err) {
-        flushPendingParagraph();
+        flushStream();
         flushOutputQueue(true);
         pushOutput(`Error: ${(err as Error).message}`);
         announceToScreenReader(
@@ -888,7 +860,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         stopFlushTimer();
         setBusy(false);
         setTurnActive(false);
-        codeBlockRef.current = { active: false, lines: [] };
+        // The stream state is turn-scoped: reset so the next turn starts clean
+        // (a leftover buffer/pending/fence must never leak across turns).
+        streamStateRef.current = createStreamBlockState();
         ctx.renewAbortController();
         setStatusLine(ctx.buildStatusBar());
         turnActiveRef.current = false;

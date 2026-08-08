@@ -25,4 +25,39 @@ describe("MarkdownText block rendering", () => {
     expect(frame).toContain("bold");
     expect(frame).toContain("continues");
   });
+
+  it("renders a wrapped unordered list item as one bullet with its continuation", () => {
+    // The streamer commits a held list block as a single "\n"-joined entry.
+    const md = "- first item\n  wrapped under it\n- second item";
+    const { lastFrame } = render(<MarkdownText>{md}</MarkdownText>);
+    const frame = stripAnsi(lastFrame() ?? "");
+    // Continuation lines stay under the bullet, not re-bulleted.
+    expect(frame).toContain("first item");
+    expect(frame).toContain("wrapped under it");
+    expect(frame).toContain("second item");
+    const bullets = frame.split("\n").filter((l) => l.includes("•")).length;
+    expect(bullets).toBe(2);
+  });
+
+  it("renders a wrapped ordered list item with its own number", () => {
+    const md = "1. first\n   continuation\n2. second";
+    const { lastFrame } = render(<MarkdownText>{md}</MarkdownText>);
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("first");
+    expect(frame).toContain("continuation");
+    expect(frame).toContain("second");
+    expect(frame).toMatch(/1\./);
+    expect(frame).toMatch(/2\./);
+  });
+
+  it("renders a multi-line blockquote with a ▎ marker per line", () => {
+    const md = "> line one\n> line two";
+    const { lastFrame } = render(<MarkdownText>{md}</MarkdownText>);
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("line one");
+    expect(frame).toContain("line two");
+    // Both lines carry the marker, and the raw ">" never leaks.
+    expect(frame.split("\n").filter((l) => l.includes("▎")).length).toBe(2);
+    expect(frame).not.toContain("> line");
+  });
 });

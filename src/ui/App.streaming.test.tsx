@@ -1,0 +1,177 @@
+import React from "react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render } from "ink-testing-library";
+import App from "./App.js";
+import type { AppContext } from "./types.js";
+import { __resetInputWireForTests } from "./hooks/useTerminalInput.js";
+import { stripAnsi } from "./test-helpers.js";
+
+// ── Test doubles ──
+//
+// history-store writes to ~/.heirloom; App's promptHistory initializer calls it
+// at mount. Point it at a throwaway temp dir so App-level tests never touch the
+// developer's real prompt history. Accessibility announcements early-return
+// without a TTY, so they are safe to leave live.
+vi.mock("./core/history-store.js", () => ({
+  loadPromptHistory: () => [],
+  appendPromptHistory: () => Promise.resolve(),
+  HISTORY_CAP: 1000,
+}));
+
+// A /raw toggle writes to process.stdout when raw mode is on — App defaults to
+// normal mode and these tests never switch it, but stub stdout to keep any
+// stray write out of the test runner's output.
+const { fakeStdout } = await import("./test-helpers.js");
+// A /raw toggle writes to process.stdout when raw mode is on — App defaults to
+// normal mode and these tests never switch it, but keep a fake TTY stream
+// around (the same helper incremental-render.test.tsx uses) so any stray write
+// has a sink instead of reaching the test runner's output.
+const { writes, stream } = fakeStdout();
+
+// ── Fake AppContext ──
+
+function makeCtx(
+  runAgentTurnCore: AppContext["runAgentTurnCore"],
+): AppContext {
+  return {
+    mutable: {
+      conversationHistory: [],
+      sessionInput: 0,
+      sessionOutput: 0,
+      lastContextTokens: 0,
+      sessionUserInputs: [],
+    },
+    getProvider: () => ({}) as any,
+    sessionId: "test-session",
+    activeMode: null,
+    permissions: {
+      resolve: () => ({ action: "allow", winningRule: null, wasUnresolved: false, isGuarded: false }),
+      buildDefaultRule: () => null,
+      folderScopeRule: () => null,
+      approveForSession: () => {},
+      approveAlways: () => {},
+    } as any,
+    toolRegistry: null,
+    compactor: null,
+    diagnostics: null,
+    skills: [],
+    memoryInjection: undefined,
+    memoryStore: null,
+    sessionStore: {
+      appendMessage: () => Promise.resolve(),
+      appendPermission: () => Promise.resolve(),
+    },
+    checkpoints: { list: () => Promise.resolve([]) },
+    modeLoader: null,
+    skillLoader: null,
+    providerName: "test",
+    activeModel: "test-model",
+    effortValues: () => [],
+    provideAbortController: () => new AbortController(),
+    renewAbortController: () => {},
+    processAtMentions: async (s: string) => s,
+    completer: () => [[], ""],
+    buildStatusBar: () => [],
+    getPromptStr: () => "❯",
+    getColorEnabled: () => false,
+    logSessionEnd: async () => null,
+    onExit: () => {},
+    handleSlash: async () => [],
+    getModelEntries: () => [],
+    runAgentTurnCore,
+    theme: undefined,
+    keybindings: undefined,
+    keybindingConfig: undefined,
+    workflowConfig: undefined,
+    gitStatus: null,
+  } as any as AppContext;
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 60));
+
+// useTerminalInput keeps ONE module-level stdin listener for the process, so a
+// component left mounted from a previous test keeps ownership of the wire and
+// the next render's keys go nowhere. Unmount and reset between tests.
+const mounted: Array<{ unmount: () => void }> = [];
+
+afterEach(() => {
+  while (mounted.length) mounted.pop()!.unmount();
+  __resetInputWireForTests();
+});
+
+/**
+ * Drive a full agent turn through App: render it, type a prompt, press Enter,
+ * and let the fake provider stream its response through the same onText/
+ * onToolStart/onToolResult callbacks the real bridge uses.
+ */
+async function runTurn(
+  prompt: string,
+  chunks: string[],
+): Promise<{ lastFrame: () => string | undefined; inst: ReturnType<typeof render> }> {
+  let callbacks: any = null;
+  const ctx = makeCtx(async (_input: string, cb: any) => {
+    callbacks = cb;
+    for (const c of chunks) cb.onText(c);
+    cb.onToolStart("run_bash", { command: "echo hi" });
+    cb.onToolResult("run_bash", { content: "hi" });
+    cb.onToolStart("run_bash", { command: "echo bye" });
+    cb.onToolResult("run_bash", { content: "bye" });
+    return {
+      stopReason: "done",
+      messages: [],
+      newMessages: [],
+    };
+  });
+
+  const inst = render(<App ctx={ctx} />);
+  mounted.push(inst);
+  inst.stdin.write(prompt);
+  await flush();
+  inst.stdin.write("\r");
+  await flush();
+  // Give the streamed state a beat to flush through React.
+  await flush();
+  await flush();
+  return { lastFrame: () => inst.lastFrame(), inst };
+}
+
+describe("App streaming markdown", () => {
+  it("merges a span split across streamed lines into bold", async () => {
+    const { lastFrame } = await runTurn("hi", ["**bold\n", "continues**"]);
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("bold");
+    expect(frame).toContain("continues");
+    expect(frame).not.toContain("**");
+  });
+
+  it("keeps a wrapped list item under one bullet", async () => {
+    const { lastFrame } = await runTurn("hi", ["- item one\n", "  wrapped\n", "plain\n"]);
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("item one");
+    expect(frame).toContain("wrapped");
+    expect(frame).toContain("plain");
+    const bullets = frame.split("\n").filter((l) => l.includes("•")).length;
+    // "item one" and its wrapped continuation share one bullet; "plain" is a
+    // plain line.
+    expect(bullets).toBe(1);
+  });
+
+  it("keeps a multi-line blockquote as one block", async () => {
+    const { lastFrame } = await runTurn("hi", ["> line one\n", "> line two\n", "plain\n"]);
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("line one");
+    expect(frame).toContain("line two");
+    expect(frame).toContain("plain");
+    // Both quote lines carry the ▎ marker and the raw ">" never leaks; the
+    // following "plain" line is a separate paragraph, not a lazy continuation.
+    expect(frame.split("\n").filter((l) => l.includes("▎")).length).toBe(2);
+    expect(frame).not.toContain("> line");
+  });
+
+  it("commits an unclosed fence as a code block at turn end", async () => {
+    const { lastFrame } = await runTurn("hi", ["```ts\n", "const x = 1;\n", "```\n"]);
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("const x = 1;");
+    expect(frame).not.toContain("```");
+  });
+});
