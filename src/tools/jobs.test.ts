@@ -1,0 +1,151 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ToolRegistry } from "./registry.js";
+import { registerJobs, jobManager } from "./jobs.js";
+import type { JobStatusReport } from "./jobs.js";
+import type { ToolContext } from "./types.js";
+
+const mockCtx: ToolContext = {
+  workingDir: process.cwd(),
+  sessionId: "test",
+  signal: new AbortController().signal,
+};
+
+async function waitFor(predicate: () => boolean, timeoutMs = 8000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+async function checkDone(jobId: string): Promise<JobStatusReport> {
+  await waitFor(() => jobManager.check(jobId)!.status !== "running");
+  return jobManager.check(jobId)!;
+}
+
+describe("registerJobs", () => {
+  let registry: ToolRegistry;
+
+  beforeEach(() => {
+    registry = new ToolRegistry();
+    registerJobs(registry);
+  });
+
+  it("registers all three tools under the command group", () => {
+    const names = registry.getByMode(["command"]).map((d) => d.name).sort();
+    expect(names).toEqual(["check_job", "kill_job", "run_bash_background"]);
+  });
+
+  it("defines JSON parameters matching the plan", () => {
+    const bg = registry.getAllDefs().find((d) => d.name === "run_bash_background")!;
+    expect(bg.parameters.required).toEqual(["command"]);
+    expect(Object.keys(bg.parameters.properties)).toEqual(["command", "cwd", "timeout"]);
+    const check = registry.getAllDefs().find((d) => d.name === "check_job")!;
+    expect(check.parameters.required).toEqual(["job_id"]);
+  });
+});
+
+describe("JobManager", () => {
+  beforeEach(() => {
+    jobManager.cleanup();
+  });
+
+  afterEach(() => {
+    jobManager.killAll();
+  });
+
+  it("returns a job id immediately and check_job reports done with stdout", async () => {
+    const result = jobManager.start("echo hello-from-bg", process.cwd(), 5000);
+    expect(result.ok).toBe(true);
+    const jobId = result.ok ? result.id : "";
+    expect(jobId).toMatch(/^[0-9a-f-]{36}$/);
+
+    const report = await checkDone(jobId);
+    expect(report.status).toBe("done");
+    expect(report.exitCode).toBe(0);
+    expect(report.stdout).toContain("hello-from-bg");
+  });
+
+  it("reports failed with the exit code for a failing command", async () => {
+    const result = jobManager.start("echo boom >&2; exit 3", process.cwd(), 5000);
+    expect(result.ok).toBe(true);
+    const report = await checkDone(result.ok ? result.id : "");
+    expect(report.status).toBe("failed");
+    expect(report.exitCode).toBe(3);
+    expect(report.stderr).toContain("boom");
+  });
+
+  it("kill_job terminates a running job", async () => {
+    const result = jobManager.start("sleep 30", process.cwd(), 60_000);
+    expect(result.ok).toBe(true);
+    const jobId = result.ok ? result.id : "";
+    await waitFor(() => jobManager.check(jobId)!.status === "running");
+
+    const kill = jobManager.kill(jobId);
+    expect(kill.ok).toBe(true);
+    await waitFor(() => jobManager.check(jobId)!.status === "killed");
+  });
+
+  it("kill on an already-finished job is a no-op success", async () => {
+    const result = jobManager.start("true", process.cwd(), 5000);
+    const jobId = result.ok ? result.id : "";
+    await checkDone(jobId);
+    expect(jobManager.kill(jobId).ok).toBe(true);
+  });
+
+  it("unknown job_id is an error for both check and kill", () => {
+    expect(jobManager.check("nope")).toBeNull();
+    expect(jobManager.kill("nope").ok).toBe(false);
+  });
+
+  it("times out a long-running job and marks it failed", async () => {
+    const result = jobManager.start("sleep 30", process.cwd(), 150);
+    expect(result.ok).toBe(true);
+    const jobId = result.ok ? result.id : "";
+    await waitFor(() => jobManager.check(jobId)!.status !== "running");
+    const report = jobManager.check(jobId)!;
+    expect(report.status).toBe("failed");
+    expect(report.stderr).toContain("timed out");
+  });
+
+  it("rejects a nonexistent working directory without spawning", () => {
+    const result = jobManager.start("echo hi", "/nonexistent/heirloom-jobs-test", 5000);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Working directory");
+  });
+
+  it("rejects a 11th concurrent job beyond the cap of 10", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const r = jobManager.start("sleep 30", process.cwd(), 60_000);
+      expect(r.ok).toBe(true);
+      if (r.ok) ids.push(r.id);
+    }
+    const eleventh = jobManager.start("echo nope", process.cwd(), 5000);
+    expect(eleventh.ok).toBe(false);
+    if (!eleventh.ok) expect(eleventh.error).toContain("max 10");
+
+    // The cap counts only *running* jobs — killing one frees the slot.
+    expect(jobManager.kill(ids[0]).ok).toBe(true);
+    await waitFor(() => jobManager.check(ids[0])!.status === "killed");
+    const retry = jobManager.start("echo ok", process.cwd(), 5000);
+    expect(retry.ok).toBe(true);
+  });
+
+  it("cleanup removes only completed jobs past the TTL, never running ones", async () => {
+    const finished = jobManager.start("true", process.cwd(), 5000);
+    const running = jobManager.start("sleep 30", process.cwd(), 60_000);
+    expect(finished.ok && running.ok).toBe(true);
+    const finishedId = finished.ok ? finished.id : "";
+    const runningId = running.ok ? running.id : "";
+    await checkDone(finishedId);
+
+    // Rewrite the finished job's endTime to look 10 minutes old.
+    const job = (jobManager as unknown as { jobs: Map<string, { endTime: number | null }> }).jobs.get(finishedId)!;
+    job.endTime = Date.now() - 10 * 60_000;
+
+    jobManager.cleanup();
+    expect(jobManager.check(finishedId)).toBeNull();
+    expect(jobManager.check(runningId)).not.toBeNull();
+  });
+});
