@@ -37,6 +37,7 @@ import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/
 import { chip, meter } from "./ui/core/chips.js";
 import { ANSI_CLEAR_SCREEN } from "./ui/constants.js";
 import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./ui/core/refresh-rates.js";
+import { installResizeRepaintFix } from "./ui/core/resize-repaint.js";
 import { probeSyncOutput } from "./terminal-probe.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
@@ -628,6 +629,12 @@ async function main() {
         incrementalRendering: true,
       },
     );
+
+    // Ink's own resize handler erases its old frame using a line count that
+    // ignores terminal re-wrapping, stranding frame copies when the window
+    // narrows. Swap in a wrap-aware repaint (no-op fallback to stock behavior
+    // if Ink's internals ever change shape). See core/resize-repaint.ts.
+    void installResizeRepaintFix(process.stdout);
 
     const exitPromise = inkInstance.waitUntilExit();
     restartRef.current = () => {

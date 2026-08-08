@@ -141,6 +141,13 @@ const TerminalContext = createContext<TerminalInfo>({
   rows: 24,
 });
 
+/**
+ * How long the resize burst must go quiet before the new size is applied.
+ * Long enough to swallow a drag gesture's SIGWINCH storm, short enough that
+ * a deliberate resize still feels immediate.
+ */
+export const RESIZE_SETTLE_MS = 120;
+
 export function TerminalProvider({
   children,
 }: {
@@ -152,14 +159,36 @@ export function TerminalProvider({
   }));
 
   React.useEffect(() => {
-    const onResize = () => {
-      setInfo({
-        columns: process.stdout.columns || 80,
-        rows: process.stdout.rows || 24,
-      });
+    // Dragging a window edge emits a SIGWINCH burst — dozens of events for one
+    // gesture. Every one of them re-renders the live frame, and Ink erases its
+    // previous frame using the row count from the OLD width, so a mid-drag
+    // repaint clears too few rows and strands a copy of the frame on screen.
+    // Coalesce the burst into one update at the settled size, and skip updates
+    // where nothing actually changed (the old handler allocated a fresh object
+    // every event, so the context value was always referentially new).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const apply = () => {
+      const columns = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      // No screen writes here — erasing from the React layer proved unfixable
+      // both after Ink's paint (wipes the fresh frame, desyncs Ink's cursor
+      // bookkeeping) and before it (erases visible transcript that isn't in
+      // scrollback yet, and Ink never reprints <Static> content). The frame
+      // artifact itself is corrected at the source in core/resize-repaint.ts.
+      setInfo((prev) =>
+        prev.columns === columns && prev.rows === rows ? prev : { columns, rows },
+      );
     };
+
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(apply, RESIZE_SETTLE_MS);
+    };
+
     process.stdout.on("resize", onResize);
     return () => {
+      if (timer) clearTimeout(timer);
       process.stdout.off("resize", onResize);
     };
   }, []);
