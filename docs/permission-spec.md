@@ -61,6 +61,15 @@ pattern can only match a relative-looking subject. Paths outside the working
 directory are left absolute, so a `./**`-rooted rule doesn't spuriously match
 them; an absolute glob can still be authored to cover them explicitly.
 
+**`web_fetch` is domain-scoped, not path-scoped.** Its `text` is the full URL
+and its `resolvedPath` is the URL's lowercased **hostname**, so approving
+`https://docs.python.org/3/library/os.html` for the session also allows any
+other path on `docs.python.org` — but not `evil.com`, and not a different
+subdomain. It is also exempt from the working-directory `relativizeSubject`
+step above, which would otherwise mangle a hostname into a path-relative
+string. `buildDefaultRule` builds the "allow for session/always" rule on the
+hostname for the same reason.
+
 ## `run_bash` Command Normalization
 
 Raw `command` text is never compared directly:

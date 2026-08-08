@@ -220,7 +220,7 @@ reasoning effort control (`/effort`).
 | | |
 |---|---|
 | [architecture.md](./docs/architecture.md) | Design layers and tradeoffs |
-| [subsystems.md](./docs/subsystems.md) | Memory, context, failure modes |
+| [subsystems.md](./docs/subsystems.md) | Index: memory, context, ReAct, failure modes |
 | [tool-spec.md](./docs/tool-spec.md) | Built-in tool contracts |
 | [provider-spec.md](./docs/provider-spec.md) | Model adapter interface |
 | [config-spec.md](./docs/config-spec.md) | Settings reference |

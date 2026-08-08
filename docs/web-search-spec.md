@@ -6,6 +6,15 @@ query per source (plus the pypi-404 case) returns plausible results. This doc
 remains the binding design for future changes — the **Anti-drift rules** at
 the bottom are hard constraints, not suggestions.
 
+> **Scope note (2026-08-07).** This doc governs **search** — finding pages you
+> don't have a URL for. It no longer governs *all* network access: `web_fetch`
+> (tool-spec.md) now fetches a **user- or model-supplied URL** and converts
+> HTML to text, which required new dependencies and arbitrary-URL fetching.
+> That was a deliberate, approved reversal of anti-drift rules 1, 3, and 4
+> **for `web_fetch` only**. The rules below still bind `docs_search` and any
+> future search work: Heirloom still ships no search index, no SERP scraper,
+> and no API keys.
+
 ## Decision
 
 Heirloom does **not** integrate a search provider, does **not** ship a
@@ -173,6 +182,9 @@ by the existing `mcp__*` permission rules.
 ---
 
 ## Anti-drift rules (hard constraints for any implementing agent)
+
+Scope: these bind **`docs_search` and future search work**. `web_fetch` is
+explicitly carved out of rules 1, 3, and 4 — see the scope note at the top.
 
 1. **No new dependencies.** Global `fetch` only.
 2. **No hosts beyond the six pinned endpoints.** Adding a host requires
