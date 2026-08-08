@@ -4,6 +4,7 @@ import { render } from "ink-testing-library";
 import PromptInput, { type PromptSubmission } from "./PromptInput.js";
 import { __resetInputWireForTests } from "../hooks/useTerminalInput.js";
 import { stripAnsi } from "../test-helpers.js";
+import { BUILTIN_SLASH_COMMANDS } from "../core/slash-commands.js";
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
@@ -86,12 +87,15 @@ describe("PromptInput slash menu Enter-to-select", () => {
     const { stdin, lastFrame } = setup();
     stdin.write("/");
     await flush();
+    // Derive the total from the command list rather than hardcoding it, so
+    // adding a builtin command doesn't fail this navigation test.
+    const total = BUILTIN_SLASH_COMMANDS.length;
     let frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("Enter select");
-    expect(frame).toMatch(/1\/16/);
+    expect(frame).toContain(`(1/${total})`);
     stdin.write(DOWN);
     await flush();
     frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toMatch(/2\/16/);
+    expect(frame).toContain(`(2/${total})`);
   });
 });

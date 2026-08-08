@@ -21,17 +21,17 @@ const MODAL = [
 
 // Commands that mutate state / start or end the session — must stay queueable
 // behind an active turn.
-const STATEFUL = ["new", "clear", "plan", "exit", "raw"];
+const STATEFUL = ["new", "clear", "compact", "plan", "exit", "raw"];
 
 describe("slash-command layer (integration)", () => {
   it("every builtin command exists and is discoverable by exact match", () => {
     for (const item of items) {
       expect(findExactSlashCommand(items, `/${item.name}`)).toBe(item);
     }
-    // Sanity: the builtin set is the 16 we expect.
+    // Sanity: the builtin set is the 17 we expect.
     expect(items.map((i) => i.name).sort()).toEqual(
       [
-        "clear", "continue", "doctor", "effort", "exit", "help", "mcp", "model",
+        "clear", "compact", "continue", "doctor", "effort", "exit", "help", "mcp", "model",
         "new", "permissions", "plan", "raw", "resume", "skills", "theme", "undo",
       ].sort(),
     );

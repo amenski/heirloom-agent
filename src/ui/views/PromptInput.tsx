@@ -181,6 +181,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "model") { onModelPickerOpen?.(); return; }
     if (item.kind === "effort") { onSubmit({ text: "/effort" }); resetInput(); return; }
     if (item.kind === "raw") { onSubmit({ text: item.label }); resetInput(); return; }
+    if (item.kind === "compact") { onSubmit({ text: item.label }); resetInput(); return; }
   }
 
   function submitCurrent(): void {

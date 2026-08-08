@@ -31,7 +31,7 @@ Launch:
 heirloom                         # interactive
 heirloom -p "explain src/foo.ts" # start with a prompt
 heirloom -l                      # resume last session
-heirloom -x -p "..."             # one-shot, no TUI (for scripts)
+heirloom -p "..."                # one-shot, no TUI (for scripts)
 heirloom doctor                  # verify your setup
 ```
 
@@ -80,16 +80,16 @@ heirloom [ask ⚡] >
 
 | Flag | Meaning |
 |---|---|
-| `-p, --prompt <text>` | submit a prompt on launch |
-| `-x, --exec` | run one prompt non-interactively (needs `--prompt`) |
+| `[prompt]` | positional prompt to submit on launch |
+| `-p, --print` | print the response and exit, non-interactive (needs a prompt) |
 | `-r, --resume [id]` | resume a session by ID, or open the picker |
-| `-l, --last` | resume the most recent session for this directory |
+| `-c, --continue` | continue the most recent session for this directory |
 | `--model <provider/model>` | override the configured model |
 | `--mode <name>` | start in a given mode |
-| `--debug` | write redacted request/response JSONL |
+| `-d, --debug` | write redacted request/response JSONL |
 
 ```bash
-cat error.log | heirloom -x -p "Explain this error"
+cat error.log | heirloom -p "Explain this error"
 ```
 
 ---
@@ -147,7 +147,7 @@ conversation, or both.
 ### Resumable sessions
 
 Conversations are append-only JSONL files. Long chats stay usable through
-automatic compaction. Resume with `--last`, `--resume <id>`, or `/resume`.
+automatic compaction. Resume with `--continue`, `--resume <id>`, or `/resume`.
 
 ### Skills & MCP
 

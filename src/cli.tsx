@@ -108,7 +108,7 @@ async function main() {
   let initialPrompt = parsed.prompt;
   let resumeSessionId: string | true | undefined = parsed.resume;
 
-  if (parsed.exec) {
+  if (parsed.print) {
     process.exitCode = await runExecMode({
       prompt: parsed.prompt!,
       projectRoot: process.cwd(),
@@ -213,7 +213,7 @@ async function main() {
       process.stderr.write(`Session not found: ${resumeSessionId}\n`);
       process.exit(1);
     }
-  } else if (parsed.last) {
+  } else if (parsed.continueLast) {
     const sessions = await sessionStore.list();
     if (sessions.length > 0) {
       sessionId = sessions[0].id;
@@ -313,7 +313,7 @@ async function main() {
   }
 
   const skillLoader = new SkillLoader();
-  let skills = await skillLoader.load({ headless: !!parsed.prompt, enabledSkills: configResult.config.enabledSkills });
+  let skills = await skillLoader.load({ headless: !!parsed.print, enabledSkills: configResult.config.enabledSkills });
   const { def: loadSkillDef, handler: loadSkillHandler } = createLoadSkillTool(skills);
   registry.register({ def: loadSkillDef, handler: loadSkillHandler, groups: ["read"], always: true });
 
@@ -642,7 +642,7 @@ async function main() {
 
   const packageInfo = { name: pkg.name, version: pkg.version, private: pkg.private };
 
-  if (!parsed.exec && !parsed.resume) {
+  if (!parsed.print && !parsed.resume) {
     await promptForPendingUpdate(packageInfo);
   }
 

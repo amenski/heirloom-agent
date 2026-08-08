@@ -1,5 +1,5 @@
 export type SlashCommandKind =
-  | "model" | "effort" | "theme" | "new" | "resume" | "continue" | "undo" | "mcp" | "permissions" | "exit" | "help" | "clear" | "skills" | "plan" | "raw" | "doctor";
+  | "model" | "effort" | "theme" | "new" | "resume" | "continue" | "undo" | "mcp" | "permissions" | "exit" | "help" | "clear" | "skills" | "plan" | "raw" | "doctor" | "compact";
 
 export interface SlashCommandItem {
   kind: SlashCommandKind;
@@ -22,6 +22,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommandItem[] = [
   { kind: "plan", name: "plan", label: "/plan", description: "Toggle plan mode (propose before implementing)" },
   { kind: "raw", name: "raw", label: "/raw", description: "Cycle display mode (lite | normal | raw-scrollback)" },
   { kind: "clear", name: "clear", label: "/clear", description: "Clear conversation history" },
+  { kind: "compact", name: "compact", label: "/compact", description: "Summarize older turns to free context" },
   { kind: "doctor", name: "doctor", label: "/doctor", description: "Show provider, model, and refresh settings" },
   { kind: "help", name: "help", label: "/help", description: "Show help" },
   { kind: "exit", name: "exit", label: "/exit", description: "Quit" },

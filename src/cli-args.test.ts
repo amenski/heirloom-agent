@@ -43,10 +43,12 @@ describe("isValidSessionId", () => {
   });
 });
 
-describe("parseArguments --resume validation", () => {
+describe("parseArguments validation", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  // --- --resume ---
 
   it("accepts a real generated ID passed to --resume", async () => {
     const id = generateId();
@@ -59,7 +61,7 @@ describe("parseArguments --resume validation", () => {
     expect(parsed.resume).toBe(true);
   });
 
-  it("rejects an invalid ID passed to --resume with a non-UUID error", async () => {
+  it("rejects an invalid ID passed to --resume", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const exit = vi.spyOn(process, "exit").mockImplementation(((): never => {
       throw new Error("exit");
@@ -71,31 +73,97 @@ describe("parseArguments --resume validation", () => {
     expect(exit).toHaveBeenCalled();
   });
 
-  it("--resume with an ID together with --prompt is allowed (unchanged)", async () => {
+  // --- positional prompt ---
+
+  it("positional [prompt] is captured as parsed.prompt", async () => {
+    const parsed = await parseArguments(["hello world"]);
+    expect(parsed.prompt).toBe("hello world");
+    expect(parsed.print).toBe(false);
+  });
+
+  it("no positional prompt leaves parsed.prompt undefined", async () => {
+    const parsed = await parseArguments([]);
+    expect(parsed.prompt).toBeUndefined();
+  });
+
+  it("--resume with an ID together with a positional prompt is allowed", async () => {
     const id = generateId();
-    const parsed = await parseArguments(["--resume", id, "--prompt", "hello"]);
+    const parsed = await parseArguments(["--resume", id, "hello"]);
     expect(parsed.resume).toBe(id);
     expect(parsed.prompt).toBe("hello");
   });
 
-  it("--resume without an ID together with --prompt is rejected (unchanged)", async () => {
+  // --- --print / -p ---
+
+  it("--print requires a prompt", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     vi.spyOn(process, "exit").mockImplementation(((): never => {
       throw new Error("exit");
     }) as never);
-    await parseArguments(["--resume", "--prompt", "hello"]).catch(() => {});
+    await parseArguments(["--print"]).catch(() => {});
     const written = stderr.mock.calls.map((c) => String(c[0])).join("");
-    expect(written).toContain("Cannot use --resume without a session ID together with --prompt.");
+    expect(written).toContain("--print / -p requires a non-empty prompt.");
   });
 
-  it("--last together with --resume is rejected (unchanged)", async () => {
+  it("--print with a prompt sets print=true and captures prompt", async () => {
+    const parsed = await parseArguments(["--print", "explain this"]);
+    expect(parsed.print).toBe(true);
+    expect(parsed.prompt).toBe("explain this");
+  });
+
+  it("short -p flag works", async () => {
+    const parsed = await parseArguments(["-p", "summarize"]);
+    expect(parsed.print).toBe(true);
+    expect(parsed.prompt).toBe("summarize");
+  });
+
+  // --- --continue / -c ---
+
+  it("--continue sets continueLast=true", async () => {
+    const parsed = await parseArguments(["--continue"]);
+    expect(parsed.continueLast).toBe(true);
+  });
+
+  it("short -c flag works", async () => {
+    const parsed = await parseArguments(["-c"]);
+    expect(parsed.continueLast).toBe(true);
+  });
+
+  it("--continue together with --resume is rejected", async () => {
     const id = generateId();
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     vi.spyOn(process, "exit").mockImplementation(((): never => {
       throw new Error("exit");
     }) as never);
-    await parseArguments(["--last", "--resume", id]).catch(() => {});
+    await parseArguments(["--continue", "--resume", id]).catch(() => {});
     const written = stderr.mock.calls.map((c) => String(c[0])).join("");
-    expect(written).toContain("Cannot use --last together with --resume.");
+    expect(written).toContain("Cannot use --continue together with --resume.");
+  });
+
+  // --- --model / --mode / --debug ---
+
+  it("--model is captured", async () => {
+    const parsed = await parseArguments(["--model", "openai/gpt-4.1"]);
+    expect(parsed.model).toBe("openai/gpt-4.1");
+  });
+
+  it("--mode is captured", async () => {
+    const parsed = await parseArguments(["--mode", "architect"]);
+    expect(parsed.mode).toBe("architect");
+  });
+
+  it("--debug is captured", async () => {
+    const parsed = await parseArguments(["--debug"]);
+    expect(parsed.debug).toBe(true);
+  });
+
+  // --- combined ---
+
+  it("combined flags work together", async () => {
+    const parsed = await parseArguments(["-p", "hello", "--model", "openai/gpt-4.1", "--debug"]);
+    expect(parsed.print).toBe(true);
+    expect(parsed.prompt).toBe("hello");
+    expect(parsed.model).toBe("openai/gpt-4.1");
+    expect(parsed.debug).toBe(true);
   });
 });

@@ -27,6 +27,7 @@ const ROUTED_KINDS: ReadonlySet<SlashCommandKind> = new Set<SlashCommandKind>([
   "plan",
   "raw",
   "doctor",
+  "compact",
 ]);
 
 describe("/theme slash command registration", () => {
@@ -86,7 +87,7 @@ describe("slash command registry routing", () => {
 
   it("does not register the removed dead commands", () => {
     const names = getSlashCommands().map((c) => c.name);
-    for (const dead of ["compact", "checkpoint", "checkpoints", "restore", "approve"]) {
+    for (const dead of ["checkpoint", "checkpoints", "restore", "approve"]) {
       expect(names).not.toContain(dead);
     }
   });

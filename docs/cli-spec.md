@@ -13,7 +13,7 @@ handlers).
 ```
 heirloom [flags]                        # interactive TUI (the normal case)
 heirloom -p "<prompt>" [flags]          # launch the TUI and submit one prompt
-heirloom -x -p "<prompt>" [flags]       # headless: run one task, print, exit
+heirloom -p "<prompt>" [flags]          # headless: run one task, print, exit
 heirloom auth                           # interactive provider setup wizard
 heirloom auth list                      # show configured providers + key sources
 heirloom auth logout <provider>         # remove a credential
@@ -65,26 +65,23 @@ added by yargs):
 
 | Flag | Effect |
 |------|--------|
-| `-p`, `--prompt <text>` | Submit a prompt on launch. With `-x`, the headless prompt; without, prefills the first TUI turn. |
-| `-x`, `--exec` | Run one prompt non-interactively, then exit. **Requires** a non-empty `--prompt`. |
+| `[prompt]` | Positional prompt. With `-p`, the headless prompt; without, prefills the first TUI turn. |
+| `-p`, `--print` | Print the response and exit, non-interactively. **Requires** a non-empty positional prompt. |
 | `-r`, `--resume [id]` | Resume a specific session by its ID. Use with no ID (`-r`) to open the session picker. |
-| `-l`, `--last` | Resume the most recent session for the current project directory. |
+| `-c`, `--continue` | Continue the most recent session for the current project directory. |
 | `--model <provider/model>` | Override the configured model (split on the first `/`). |
-| `--mode <slug>` | Start in the given mode. On the headless (`-x`) path an unknown slug is validated and rejected with a clean error (`src/exec-runner.ts`). On the interactive path an unknown slug is not rejected — it silently falls back to the default `code` mode. |
-| `--debug` | Write redacted request/response JSONL. |
+| `--mode <slug>` | Start in the given mode. On the headless (`-p`) path an unknown slug is validated and rejected with a clean error (`src/exec-runner.ts`). On the interactive path an unknown slug is not rejected — it silently falls back to the default `code` mode. |
+| `-d`, `--debug` | Write redacted request/response JSONL. |
 | `-h`, `--help` | Show help and the epilog, exit 0. |
 | `-v`, `--version` | Print version (`1.0.0`), exit 0. |
 
-There is **no** `-c`/`--continue`, `--session`, `--print`, or `--approve` flag.
-A positional `query` (a bare prompt with no `-p`) is also accepted.
+There is also an `auth` subcommand and a `doctor` subcommand. There is **no**
+`--session` or `--approve` flag.
 
 ### Flag validation (`.check()` in `src/cli-args.ts`)
 
-- `-p` together with a positional prompt → error (use one or the other).
-- `-x` without a non-empty `-p` → error.
-- `-p ""` (empty/whitespace) → error.
-- `-r <id>` with `-p` → error (resume-with-picker is interactive).
-- `-l` together with `-r` → error.
+- `-p` without a non-empty positional prompt → error.
+- `-c` together with `-r` → error.
 - `-r <id>` where `<id>` fails the session-ID check → `Invalid session ID`.
 
 **Session-ID format.** `-r <id>` accepts the IDs the session store actually
@@ -96,10 +93,10 @@ pattern (`/^\d{4}-\d{2}-\d{2}T\d{4}-[0-9a-f]{4}$/`), and session files are store
 as `<id>.jsonl`, so the filename *is* the ID. Resume-by-ID works. (Legacy UUID
 IDs are intentionally not accepted — the app has never generated them.)
 
-## Headless Mode (`-x -p`)
+## Headless Mode (`-p`)
 
 Runs one task non-interactively: streams output to stdout, exits when the agent
-completes. `-x` requires `-p`. Errors go to stderr so stdout stays pipeable.
+completes. `-p` requires a prompt. Errors go to stderr so stdout stays pipeable.
 
 - **Permissions fail closed.** There is no user to ask, so any tool call that
   resolves to `ask` is denied (permission-spec.md). Headless runs need explicit
@@ -184,7 +181,7 @@ From the epilog in `src/cli-args.ts` and the TUI input handlers.
 ## Output Conventions
 
 - Assistant text streams to stdout.
-- Errors and warnings go to **stderr**, so `-x` stdout stays pipeable.
+- Errors and warnings go to **stderr**, so `-p` stdout stays pipeable.
 - The interactive UI is an Ink TUI and requires a TTY; launching the interactive
   path without a TTY prints `heirloom requires an interactive terminal (TTY)...`
-  and exits 1. (`-x` headless mode does not need a TTY.)
+  and exits 1. (`-p` headless mode does not need a TTY.)
