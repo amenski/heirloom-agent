@@ -10,7 +10,14 @@ import type { Message } from "../types.js";
 // Math.ceil(total / 4) stays byte-identical to computing from scratch.
 const rawCharCache = new WeakMap<Message, number>();
 
-function messageRawChars(m: Message): number {
+export interface TokenBreakdown {
+  role: string;
+  tokens: number;
+  chars: number;
+}
+
+/** Exported so `messageRawChars` is visible to tests and the /context command. */
+export function messageRawChars(m: Message): number {
   const cached = rawCharCache.get(m);
   if (cached !== undefined) return cached;
   let total = m.content?.length ?? 0;
@@ -29,6 +36,13 @@ export function estimateTokens(messages: Message[]): number {
     total += messageRawChars(m);
   }
   return Math.ceil(total / 4);
+}
+
+export function estimateTokensDetailed(messages: Message[]): TokenBreakdown[] {
+  return messages.map((m) => {
+    const chars = messageRawChars(m);
+    return { role: m.role, tokens: Math.ceil(chars / 4), chars };
+  });
 }
 
 export function shouldCompact(

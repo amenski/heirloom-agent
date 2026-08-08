@@ -1094,6 +1094,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         execute: () => handleSlashCommand("/cost"),
       },
       {
+        id: "cmd-context",
+        label: "/context",
+        description: "Show context budget breakdown",
+        category: "command",
+        execute: () => handleSlashCommand("/context"),
+      },
+      {
         id: "cmd-mode",
         label: "/mode",
         description: "Switch persona (code/ask/architect/debug/orchestrator)",

@@ -10,6 +10,7 @@ import { initPresets, createProvider, getPreset, getKnownProviderNames, getProvi
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap, loadProjectResearch } from "./prompt.js";
+import { estimateTokens, estimateTokensDetailed } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
@@ -753,7 +754,7 @@ function completer(line: string, knownModeSlugs: string[]): [string[], string] {
     const hits = knownModeSlugs.filter(s => s.startsWith(partial));
     return [hits, line.slice(0, line.length - partial.length)];
   }
-  const SLASH_COMMANDS = ["/help", "/exit", "/clear", "/mode", "/compact", "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new", "/skills", "/skill", "/modes", "/model", "/effort"];
+  const SLASH_COMMANDS = ["/help", "/exit", "/clear", "/mode", "/compact", "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new", "/skills", "/skill", "/modes", "/model", "/effort", "/context"];
   if (line.startsWith("/")) {
     const hits = SLASH_COMMANDS.filter(c => c.startsWith(line));
     if (hits.length === 1) return [hits.map(h => h + " "), line];
@@ -897,12 +898,42 @@ export async function handleSlashCore(
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
     case "/help": {
-      console.log("Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /skills, /skill <name>, /model <p/m>, /cost, /effort\nUse `heirloom auth` to configure a provider.");
+      console.log("Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /skills, /skill <name>, /model <p/m>, /cost, /context, /effort\nUse `heirloom auth` to configure a provider.");
       return;
     }
     case "/cost": {
       console.log(`Session: ${(shared.sessionInput / 1000).toFixed(1)}k in / ${(shared.sessionOutput / 1000).toFixed(1)}k out`);
       const cost = getCostStr(); console.log(`Estimated cost: $${cost ?? "0.0000"}`);
+      return;
+    }
+    case "/context": {
+      const preset = getPreset(shared.providerName);
+      const caps = preset?.models[shared.activeModel ?? preset.defaultModel];
+      const cw = caps?.contextWindow ?? 128000;
+      const threshold = configResult.config.compaction?.threshold ?? 0.7;
+
+      const breakdown = estimateTokensDetailed(shared.conversationHistory);
+      const sysTokens = breakdown.filter(b => b.role === "system").reduce((s, b) => s + b.tokens, 0);
+      const userTokens = breakdown.filter(b => b.role === "user").reduce((s, b) => s + b.tokens, 0);
+      const asstTokens = breakdown.filter(b => b.role === "assistant").reduce((s, b) => s + b.tokens, 0);
+      const toolTokens = breakdown.filter(b => b.role === "tool").reduce((s, b) => s + b.tokens, 0);
+      const convTokens = userTokens + asstTokens + toolTokens;
+      const totalUsed = sysTokens + convTokens;
+      const remaining = Math.max(0, cw - totalUsed);
+      const pct = (v: number) => ((v / cw) * 100).toFixed(1);
+      const bar = (v: number, width: number) => `${"\u2501".repeat(Math.round((v / cw) * width))}`;
+
+      console.log(`Context Window: ${cw.toLocaleString()} tokens`);
+      console.log(`\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
+      console.log(`System Prompt     ${String(sysTokens).padStart(6)}  (${pct(sysTokens).padStart(5)}%)`);
+      console.log(`Conversation      ${String(convTokens).padStart(6)}  (${pct(convTokens).padStart(5)}%)`);
+      console.log(`  \u251C User msgs    ${String(userTokens).padStart(6)}`);
+      console.log(`  \u251C Assistant    ${String(asstTokens).padStart(6)}`);
+      console.log(`  \u2514 Tool results  ${String(toolTokens).padStart(6)}`);
+      console.log(`\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
+      console.log(`Total Used        ${String(totalUsed).padStart(6)}  (${pct(totalUsed).padStart(5)}%)`);
+      console.log(`Remaining         ${String(remaining).padStart(6)}  (${pct(remaining).padStart(5)}%)`);
+      console.log(`Compaction @      ${String(Math.round(cw * threshold)).padStart(6)}  (${String(Math.round(threshold * 100)).padStart(3)}%)`);
       return;
     }
     case "/doctor": {
