@@ -1,12 +1,23 @@
 # Improvement Roadmap
 
-Status: **planning doc, not a spec, nothing implemented.** A review of several
-`lessweb/deepcode-cli` PRs for ideas worth bringing into Heirloom, adapted to
-its architecture and ethos. **We are not doing all of this** — the table below
-sorts each idea into **do-now / roadmap / reject**. Detailed per-PR analysis
-follows; once an item is picked up and built, its behavior moves into the
-matching subsystem spec (e.g. [session-spec.md](./session-spec.md),
+Status (**refreshed 2026-08-08**): **the entire do-now tier and the whole
+in-flight wave have shipped.** What remains is the design-first tier — items
+that need a decision or a design doc before any code, plus a handful of small
+follow-ons. This started as a review of several `lessweb/deepcode-cli` PRs for
+ideas worth bringing into Heirloom, adapted to its architecture and ethos.
+**We are not doing all of this** — the table below sorts each idea into
+**do-now / roadmap / reject**. Detailed per-PR analysis follows; once an item
+is picked up and built, its behavior moves into the matching subsystem spec
+(e.g. [session-spec.md](./session-spec.md),
 [permission-spec.md](./permission-spec.md)).
+
+> **Blind spot worth naming.** This doc was derived from reviewing *other
+> people's PRs*, so it tracks what deepcode-cli built — not what Heirloom's own
+> use surfaces. Two of the highest-value gaps found from real usage appear
+> nowhere below: **mid-turn steering** (inject a message into a running turn
+> instead of losing it to Esc) and **background/streaming command output** (a
+> dev server or long test run currently ties up the tool call). Treat the
+> roadmap tier as "ideas borrowed", not "everything worth doing".
 
 PRs reviewed: [#266](https://github.com/lessweb/deepcode-cli/pull/266) ·
 [#263](https://github.com/lessweb/deepcode-cli/pull/263) ·
@@ -55,7 +66,9 @@ architectural swings on the roadmap; drop the rest.
 | **Sub-task orchestration** (`new_task` tool, `src/orchestrator/`) | — | L | Deferred — intentional future work. The built subsystem stays in-tree unwired; before mounting `new_task` it needs a design doc covering permission inheritance (how a sub-task's rules derive from the parent) and recursion limits (depth/fan-out bounds). |
 | ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** (`7290aab`) | #266 | M | Additive to `instructions.md`/`AGENTS.md`; landed — promoted to Do-now shipped list. |
 | **Auto error-fix loop + `<error_analysis>`** | #266 | M | Must first audit overlap with existing `errorrecovery/` + `selfreflection/`. |
-| **Lifecycle hooks** (shell on events) | #263 | M | Powerful but another untrusted-exec surface — opt-in + security-spec first. |
+| **Lifecycle hooks** (shell on events) | #263 | M | Powerful but another untrusted-exec surface — opt-in + security-spec first. Highest-leverage of the remaining roadmap tier. |
+| **Mid-turn steering** | local (usage) | M | Inject a message typed during a running turn into the live agent loop, instead of the user losing the turn to Esc. Pairs with input queueing (buffer a message typed mid-turn, send it next). Not from any PR — surfaced by real use. |
+| **Background / streaming command output** | local (usage) | M | Long `run_bash` calls (test suites, builds, dev servers) need live output in the transcript and a background+poll mode; today a dev server ties up or times out the tool call. Not from any PR — surfaced by real use. |
 | **`/usage` balance command** (generalized adapter method) | #216 | M | Only worth it provider-agnostic (`getBalance()` on the adapter), else DeepSeek-only special-case. |
 | **React exit-summary view** | #132 | S–M | Robustness fix (survives scroll); orthogonal to everything else. |
 | **SQLite log backend** | #266 | L | Only if JSONL logs prove they need cross-session SQL. Off-ethos (opaque binary sessions). |
@@ -96,17 +109,32 @@ handles, so this doc reflects reality rather than intent:
 This closes **Phases 1–3** of the logging plan below (audit trail, token-usage
 log, hierarchical rules) plus the entire `/theme` phasing from the #132 section.
 
-## 🚧 In-flight — the current wave (being built now)
+## ✅ Shipped — the 2026-08-02 → 08-08 wave
 
-Landing across parallel worktrees as this doc is written; not yet all merged:
+The previous "in-flight" wave has landed in full, plus a second wave of local
+findings. Verified against the code on 2026-08-08 (not from memory):
 
-| In-flight item | What it is | Notes |
+| Shipped item | Evidence |
+|---|---|
+| **Checkpoint git identity** | `-c user.name=heirloom` / `user.email=heirloom@local` in `src/checkpoints/index.ts:21-22`. |
+| **Dist mode-YAML packaging** | `dist/builtin/*.yaml` present; `ModeLoader` resolves via `import.meta.url`, so the published bundle finds them. |
+| **`notify`** | `fireNotify` called from both the interactive (`cli.tsx`) and headless (`exec-runner.ts`) completion boundaries. |
+| **`statusline`** | `src/ui/statusline/` consumed by the TUI. |
+| **Input-stall fix (`<Static>`)** | Committed output moved to Ink `<Static>` in `OutputArea.tsx` — closes the [input-stall-diagnosis.md](./input-stall-diagnosis.md) item. |
+| **`ErrorRecovery` / `ErrorReflector` / `RepoMap`** | All three now constructed and threaded into the agent context — no longer orphan subsystems. |
+| **Config keys wired** | `enabledSkills` (honored by `SkillLoader`), `compaction.auto` (gates auto-compaction, `cli.tsx:175`), `workflow.gitPollInterval` (read by the poller, `App.tsx:314`). |
+| **`web_fetch` tool** | HTTPS-only fetch → Readability/Turndown markdown, SSRF guard re-run per redirect hop, control-char sanitization, untrusted-content wrapper, domain-scoped permissions. Specs: [tool-spec.md](./tool-spec.md), [security-spec.md](./security-spec.md) T13/T14. |
+| **Compaction keep-boundary** | `keepBoundary()` shared by auto-compaction and `/compact`; stops the boundary splitting an assistant `tool_calls` message from its results (a hard 400 on strict providers). See [subsystems/context-management.md](./subsystems/context-management.md). |
+| **CLI flag surface** | `--exec`→`-p/--print`, `--last`→`-c/--continue`, positional prompt, `auth`/`doctor` subcommands, `/compact`. **Breaking** for scripts. [cli-spec.md](./cli-spec.md). |
+| **Word-level input navigation** | Option+←/→ and Option+Backspace; root cause was a dropped modifier param in the CSI parser, plus undecoded `ESC b`/`ESC f`. |
+| **System-prompt fixes** | Duplicate identity line removed, untrusted-content rule added, structured compaction prompt, plan-mode tool filtering. [system-prompt.md](./system-prompt.md). |
+
+### 🚧 Still in-flight
+
+| Item | What it is | Notes |
 |---|---|---|
-| **Checkpoint git identity** | Give checkpoint commits a distinct committer identity so they don't pollute `git log`/blame with the user's identity. | `src/checkpoints/`. |
-| **Dist mode-YAML packaging** | Ensure built-in mode YAML files ship in the published `dist/` bundle (currently resolved from source paths). | Packaging fix; touches build + `src/modes/loader.ts`. |
-| **`notify`** | Activate the parsed-but-dead `notify` config key — fire the user's notification script on completion/idle events. | See dead-wiring section; parallel agent owns activation. |
-| **`statusline`** | Wire the built `src/ui/statusline/` module (StatusLineManager + providers) into the TUI. | See dead-wiring section; parallel agent owns activation. |
-| **Sessions index** | A queryable index over the JSONL session store (list/resume ergonomics, observability). | Complements the session-spec observability work. |
+| **Streaming-markdown refactor** | `src/ui/core/stream-blocks.ts` + `markdown-inline.ts`, rewriting `MarkdownText`/`App` streaming. | Started 2026-08-08. Must preserve two earlier fixes it supersedes: holding back a line whose inline span (`**`, `` ` ``, `~~`) hasn't closed yet, and keeping the block-start `●` out of the raw markdown so headings/lists still parse. |
+| **Sessions index** | A queryable index over the JSONL session store (list/resume ergonomics, observability). | **Not started** — `src/sessions/` is still `store.ts` + `redact.ts` only. |
 
 ## 🆕 Newly-known items (surfaced during the wave)
 
@@ -115,9 +143,9 @@ captured so they aren't lost:
 
 | Item | What / why |
 |---|---|
-| **`ThemeableStatic` + input-stall pair** | The two are coupled: moving committed output to Ink `<Static>` (the input-stutter fix, [input-stall-diagnosis.md](./input-stall-diagnosis.md)) and re-mounting `<Static>` on theme change (`ThemeableStatic`, so live `/theme` preview repaints scrollback) touch the same `OutputArea.tsx` surface. Do them together. |
-| **`/usage` command** | Provider-agnostic balance view via a `getBalance()` adapter method (see PR #216 section). Still unbuilt; `/theme` established the bordered-view+Esc pattern it would reuse. |
-| **Exit-summary React view** | Replace the direct-`stdout.write` `src/ui/exit-summary.ts` with a React-rendered view (survives scroll). Now also the natural home for the **telemetry accept/reject counters** (the remaining slice of the token-usage item). |
+| ~~**`ThemeableStatic` + input-stall pair**~~ **half shipped** | The `<Static>` move landed (see the 08-02→08-08 wave). What remains is only `ThemeableStatic`: re-mounting `<Static>` on theme change so a live `/theme` preview repaints existing scrollback. |
+| **`/usage` command** | Provider-agnostic balance view via a `getBalance()` adapter method (see PR #216 section). **Confirmed still unbuilt** (no `getBalance` on any adapter, no `/usage` command); `/theme` established the bordered-view+Esc pattern it would reuse. |
+| ~~**Exit-summary React view**~~ **obsolete** | `src/ui/exit-summary.ts` no longer exists — superseded by the exit-collapse-to-resume-hint change (`a61733b`), which removed the direct-`stdout.write` path entirely. The **telemetry accept/reject counters** still need a home; re-home them rather than reviving this. |
 | **Audit refinements — remainder** | (a) **allow-by-posture emission** — the canonical decision value still isn't written by `agent.ts` (the audit closure lacks posture visibility; needs plumbing, deferred with the exit-summary wave). Color/label coverage for all canonical values + **double-row dedup** ✅ **shipped 2026-08-02**. |
 | ~~**Doctor: `credentials.json` label**~~ ✅ **shipped 2026-08-02** | `doctor` diagnostics now print `credentials.yaml`, the real file. |
 | ~~**`ansi-light` / `ansi-dark` presets**~~ ✅ **shipped 2026-08-02** | Both ANSI presets (base-16 only, "dumb-terminal" variants of dark/light) added in `ThemeDefinition` shape; `/theme` picker auto-adopts them. |
@@ -484,14 +512,23 @@ strictly richer and already integrated. This is the clearest "borrow the
 
 ---
 
-## Dead wiring — audit findings (2026-07-31)
+## Dead wiring — audit findings (2026-07-31, resolved 2026-08-08)
 
-This repo has a recurring disease: config keys, modules, and whole subsystems
-that are **declared/parsed/plumbed but consumed by nothing**. This section is a
-full sweep. Already found + fixed/being-fixed elsewhere (not re-listed as new):
-`webSearchTool` (deprecated with a warning), `notify` + `statusline` (being
-activated by the in-flight wave above), `setConfigProviders` (dead helper —
-imported into `cli.tsx:9` but never called).
+> **Status: this sweep is closed.** Every "being wired / being resolved
+> (in-flight)" verdict below has since landed — re-verified against the code on
+> 2026-08-08: `ErrorRecovery`, `ErrorReflector`, and `RepoMap` are all
+> constructed and threaded into the agent context; `enabledSkills`,
+> `compaction.auto`, and `workflow.gitPollInterval` all have real consumers;
+> `notify` and `statusline` are wired. The tables are kept as a record of the
+> audit method and its findings, **not** as an open work list. The only item
+> still genuinely deferred is the `Orchestrator` / `new_task` subsystem, which
+> is intentional (see the Roadmap tier).
+
+This repo had a recurring disease: config keys, modules, and whole subsystems
+that were **declared/parsed/plumbed but consumed by nothing**. This section is a
+full sweep. Already found + fixed elsewhere (not re-listed as new):
+`webSearchTool` (deprecated with a warning), `notify` + `statusline` (activated),
+`setConfigProviders` (dead helper — imported into `cli.tsx:9` but never called).
 
 Method: for each candidate, grep past the declaration/parse site for a real
 consumer. "Dead-wired" = the value is set/plumbed but read by nothing (or the

@@ -29,8 +29,8 @@ Launch:
 
 ```bash
 heirloom                         # interactive
-heirloom -p "explain src/foo.ts" # start with a prompt
-heirloom -l                      # resume last session
+heirloom "explain src/foo.ts"    # start with a prompt
+heirloom -c                      # continue the most recent session
 heirloom -p "..."                # one-shot, no TUI (for scripts)
 heirloom doctor                  # verify your setup
 ```
