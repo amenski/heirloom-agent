@@ -142,6 +142,13 @@ describe("App streaming markdown", () => {
     expect(frame).toContain("bold");
     expect(frame).toContain("continues");
     expect(frame).not.toContain("**");
+    // The held paragraph commits exactly ONCE at the tool-start flush — the
+    // stale active-line preview must not be scheduled a second time. (This
+    // regressed during the stream-blocks refactor: the preview used to hold
+    // only the partial tail, but now includes the held paragraph, which
+    // flushStream already committed.)
+    expect(frame.match(/bold/g) ?? []).toHaveLength(1);
+    expect(frame.match(/continues/g) ?? []).toHaveLength(1);
   });
 
   it("keeps a wrapped list item under one bullet", async () => {
@@ -173,5 +180,28 @@ describe("App streaming markdown", () => {
     const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("const x = 1;");
     expect(frame).not.toContain("```");
+  });
+
+  it("does not duplicate a partial tail committed at turn end", async () => {
+    // No trailing newline and no tool call: the partial line is committed by
+    // the turn-end flushStream, and the stale active-line preview must not be
+    // pushed a second time by the `if (activeLineRef.current)` fallback.
+    let callbacks: any = null;
+    const ctx = makeCtx(async (_input: string, cb: any) => {
+      callbacks = cb;
+      cb.onText("partial tail");
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("hi");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame.match(/partial tail/g) ?? []).toHaveLength(1);
+    expect(callbacks).not.toBeNull();
   });
 });

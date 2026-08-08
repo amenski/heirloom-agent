@@ -628,8 +628,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         if (s.buffer !== "" || s.pending.length > 0 || s.fence) {
           const { lines: emitted, state: next } = streamTextChunk(s, "\n");
           streamStateRef.current = next;
-          for (const l of emitted) scheduleOutput(withBullet(l));
-          if (emitted.length > 0) atBlockStart = false;
+          if (emitted.length > 0) {
+            for (const l of emitted) scheduleOutput(withBullet(l));
+            atBlockStart = false;
+            // The committed lines are exactly what the active-line preview was
+            // showing (held paragraph + partial tail), so the preview is now in
+            // the transcript. Clear it — otherwise the flush site's own
+            // `if (activeLineRef.current)` would schedule the same content a
+            // second time. An OPEN FENCE emits nothing, so its preview is left
+            // in place for the turn-end path to commit it as a code block.
+            activeLineRef.current = "";
+          }
         }
       };
 
