@@ -419,7 +419,11 @@ async function main() {
     const preset = getPreset(shared.providerName);
     const caps = preset?.models[shared.activeModel ?? preset.defaultModel];
     if (!caps?.contextWindow) return null;
-    const total = shared.lastContextTokens;
+    // Use estimateTokens on the live conversation history, not the API's
+    // per-call usage report. lastContextTokens tracked the last single-call
+    // input+output, which fluctuates across turns and never reflects the
+    // total context fill level. The /context command uses the same estimator.
+    const total = estimateTokens(shared.conversationHistory);
     if (total === 0) return null;
     return (total / caps.contextWindow) * 100;
   }
