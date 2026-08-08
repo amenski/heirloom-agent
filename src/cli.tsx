@@ -15,7 +15,7 @@ import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, s
 import { PermissionEngine } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
-import { Compactor } from "./compaction/compactor.js";
+import { Compactor, keepBoundary } from "./compaction/compactor.js";
 import { CheckpointManager } from "./checkpoints/index.js";
 import { DiagnosticRunner } from "./diagnostics/index.js";
 import { startStallWatchdog } from "./diagnostics/stall-watchdog.js";
@@ -942,6 +942,34 @@ export async function handleSlashCore(
       return;
     }
     case "/clear": shared.conversationHistory = []; console.log("[cleared]"); return;
+    case "/compact": {
+      const msgs = shared.conversationHistory as import("./types.js").Message[];
+      if (msgs.length === 0) { console.log("[nothing to compact]"); return; }
+      const compactor = getCompactor();
+      // Keep the system prompt in place: it is the cached stable prefix, and
+      // dropping it would strip the agent's rules for the rest of the session.
+      const systemMsg = msgs[0]?.role === "system" ? msgs[0] : undefined;
+      const withoutSystem = systemMsg ? msgs.slice(1) : msgs;
+      // Same boundary as auto-compaction — never orphans a tool result.
+      const keepCount = keepBoundary(withoutSystem);
+      const old = withoutSystem.slice(0, withoutSystem.length - keepCount);
+      const recent = withoutSystem.slice(withoutSystem.length - keepCount);
+      if (old.length === 0) { console.log(`[only ${withoutSystem.length} message(s) — nothing to compact]`); return; }
+      try {
+        const summaryText = await compactor.summarizeForResume(old);
+        const summaryMsg: import("./types.js").Message = { role: "user", content: `[Previous conversation summary]\n${summaryText}` };
+        shared.conversationHistory = [...(systemMsg ? [systemMsg] : []), summaryMsg, ...recent];
+        const persistedCount = await sessionStore.getMessageCount(sessionId);
+        if (persistedCount > 0) {
+          const summary: import("./sessions/store.js").CompactionSummary = { task: summaryText, decisions: [], files: [], errors_resolved: [] };
+          await sessionStore.appendCompaction(sessionId, persistedCount - 1, summary);
+        }
+        console.log(`[compacted ${old.length} turns · kept ${recent.length} recent]`);
+      } catch (err) {
+        console.log(`[compaction failed: ${(err as Error).message}]`);
+      }
+      return;
+    }
     case "/modes": for (const m of await modeLoader.listAll()) console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`); return;
     case "/mode": {
       const slug = input.slice(6).trim();

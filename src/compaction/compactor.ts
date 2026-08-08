@@ -22,6 +22,24 @@ Unfinished work, next steps, and anything the user asked for that has not been d
 
 Omit tool output details — just note what was done and the outcome.`;
 
+/**
+ * How many trailing messages to keep uncompacted: 4, widened so the kept tail
+ * never starts with a "tool" message. Splitting a tool result from the
+ * assistant "tool_calls" message that produced it is a hard 400 on strict
+ * providers ("Messages with role 'tool' must be a response to ... 'tool_calls'").
+ * Shared by auto-compaction and the manual /compact path so both agree.
+ */
+export function keepBoundary(messages: Message[]): number {
+  let keepCount = Math.min(4, messages.length);
+  while (
+    keepCount < messages.length &&
+    messages[messages.length - keepCount].role === "tool"
+  ) {
+    keepCount++;
+  }
+  return keepCount;
+}
+
 export class Compactor {
   private lastChangedFiles: Set<string> = new Set();
   private fidelityRegenerationCount = 0;
@@ -52,18 +70,7 @@ export class Compactor {
   async compact(messages: Message[]): Promise<Message[]> {
     if (!this.needsCompaction(messages)) return messages;
 
-    let keepCount = Math.min(4, messages.length);
-    // Never split an assistant tool-call message from its tool results: if the
-    // kept tail would start with a "tool" message, widen it until the paired
-    // assistant message (the nearest preceding non-tool message) is included.
-    // An orphaned tool message is a hard 400 on strict providers ("Messages
-    // with role 'tool' must be a response to ... 'tool_calls'").
-    while (
-      keepCount < messages.length &&
-      messages[messages.length - keepCount].role === "tool"
-    ) {
-      keepCount++;
-    }
+    const keepCount = keepBoundary(messages);
     const recent = messages.slice(-keepCount);
     const old = messages.slice(0, messages.length - keepCount);
 
