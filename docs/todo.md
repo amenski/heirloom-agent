@@ -89,3 +89,14 @@ schema overhead is negligible.
 
 Item 1 is done and verified in the working tree. Nothing else is queued — add new forward-looking
 items here as they come up.
+
+---
+
+## Claude Code parity backlog (2026-08-10)
+
+Ranked gap analysis against Claude Code's CLI, with code-verified current state, lives in
+[docs/claude-code-parity.md](./claude-code-parity.md). Shortlist: **1)** `--output-format
+json|stream-json` for headless automation, **2)** lifecycle hooks (generalize `notify.ts`),
+**3)** file-based slash commands, **4)** flag parity batch (`--max-turns`, `--allowedTools`,
+`--permission-mode`, `--name`/`/rename`, …), **5)** subagents (revive the orphaned
+`src/orchestrator/`), **6)** git worktrees.
