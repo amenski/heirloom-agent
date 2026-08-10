@@ -1,13 +1,11 @@
 import { lookup } from "node:dns/promises";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler, ToolContext } from "./types.js";
 import { ToolRegistry } from "./registry.js";
+import { pkg } from "../version.js";
 import { isBlockedAddress, isBlockedHostnameLiteral, sanitizeControlChars } from "./web-fetch-guard.js";
 
 const TIMEOUT_MS = 15_000;
@@ -21,14 +19,7 @@ let cachedUserAgent: string | undefined;
 
 async function getUserAgent(): Promise<string> {
   if (cachedUserAgent) return cachedUserAgent;
-  let version = "0.0.0";
-  try {
-    const raw = await readFile(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json"), "utf-8");
-    version = (JSON.parse(raw).version as string) ?? version;
-  } catch {
-    // package.json unreadable (e.g. bundled dist layout) — fall back to 0.0.0.
-  }
-  cachedUserAgent = `heirloom-agent/${version} (+cli)`;
+  cachedUserAgent = `heirloom-agent/${pkg.version} (+cli)`;
   return cachedUserAgent;
 }
 

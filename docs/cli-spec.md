@@ -73,7 +73,7 @@ added by yargs):
 | `--mode <slug>` | Start in the given mode. On the headless (`-p`) path an unknown slug is validated and rejected with a clean error (`src/exec-runner.ts`). On the interactive path an unknown slug is not rejected — it silently falls back to the default `code` mode. |
 | `-d`, `--debug` | Write redacted request/response JSONL. |
 | `-h`, `--help` | Show help and the epilog, exit 0. |
-| `-v`, `--version` | Print version (`1.0.0`), exit 0. |
+| `-v`, `--version` | Print the current version (read from `package.json` via `src/version.ts`), exit 0. |
 
 There is also an `auth` subcommand and a `doctor` subcommand. There is **no**
 `--session` or `--approve` flag.
