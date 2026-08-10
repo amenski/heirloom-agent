@@ -5,7 +5,10 @@ import { Box, Text } from "ink";
 import { ThemeProvider, TerminalProvider } from "./contexts.js";
 import HintBar from "./HintBar.js";
 import { stripAnsi as strip } from "./test-helpers.js";
-import { DARK_THEME, ansiFg, ANSI_RESET } from "./theme.js";
+import { DARK_THEME, ansiFg } from "./theme.js";
+
+/** Ink narrows a blanket reset to foreground-off when closing a colour run. */
+const ANSI_FG_RESET = "\x1b[39m";
 
 function renderBar(ui: React.ReactElement, colorEnabled = false) {
   return render(
@@ -62,12 +65,16 @@ describe("HintBar", () => {
     // Ink wraps each styled run in reversed-video escapes (its own cursor
     // marker), so normalize those away before asserting on the colour runs.
     const frame = (lastFrame() ?? "").replace(/\x1b\[7m/g, "").replace(/\x1b\[27m/g, "");
-    // frame starts at 0, so the active dot is the first of the eight.
-    expect(frame).toContain(`${ansiFg(DARK_THEME.accent)}•${ANSI_RESET}`);
-    // ...and the other seven track dots stay dim (contrast, not clutter).
-    const dimTrack = frame.match(/\x1b\[2m·\x1b\[0m/g);
-    expect(dimTrack).not.toBeNull();
-    expect(dimTrack!.length).toBe(7);
+    // Ink re-encodes the raw escapes the component emits: a blanket reset
+    // (\x1b[0m) is narrowed to the matching attribute-off code — \x1b[39m after
+    // a foreground colour, \x1b[22m after dim — so assert on those, not on the
+    // pre-render string. frame starts at 0, so the active dot is the first of
+    // the eight.
+    expect(frame).toContain(`${ansiFg(DARK_THEME.accent)}•${ANSI_FG_RESET}`);
+    // ...and the other seven track dots stay dim (contrast, not clutter). Ink
+    // also coalesces adjacent identical runs, so they arrive as one dim span
+    // rather than seven individually-wrapped glyphs.
+    expect(frame).toContain(`\x1b[2m${"·".repeat(7)}\x1b[22m`);
   });
 
   it("keeps the indicator field blank when idle", () => {
