@@ -94,7 +94,7 @@ handles, so this doc reflects reality rather than intent:
 | Shipped item | Date | Commit(s) | Owning spec |
 |---|---|---|---|
 | `docs_search` tool (keyless official-API search; general web via MCP) | 07-31 | `1e33ff7` | [web-search-spec.md](./web-search-spec.md) |
-| `web_search` tool (general web search via Bing RSS; guarded-tier) | 08-10 | *see latest* | [web-search-spec.md](./web-search-spec.md) |
+| `web_search` tool (general web search via Bing RSS; guarded-tier) | 08-10 | `9e23197` | [web-search-spec.md](./web-search-spec.md) |
 | Theme foundation: real `detectSystemTheme` + gutter/prompt theme-slot contrast | 07-31 | `4b51424`, `854cd41` | [theme-spec.md](./theme-spec.md) |
 | Theme presets (dracula, monokai, github-dark, github-light) | 07-31 | `c83f07c` | [theme-spec.md](./theme-spec.md) |
 | `/theme` runtime switcher (live preview, Esc-revert, persist) | 08-01 | `341334c` | [theme-spec.md](./theme-spec.md) |
