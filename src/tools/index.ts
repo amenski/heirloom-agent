@@ -8,6 +8,7 @@ import { registerSearch } from "./search.js";
 import { registerEdits } from "./edit.js";
 import { registerAskUserQuestion } from "./ask_user_question.js";
 import { registerDocsSearch } from "./docs-search.js";
+import { registerWebSearch } from "./web-search.js";
 import { registerWebFetch } from "./web-fetch.js";
 import { registerJobs } from "./jobs.js";
 
@@ -18,6 +19,7 @@ registerSearch(registry);
 registerEdits(registry);
 registerAskUserQuestion(registry);
 registerDocsSearch(registry);
+registerWebSearch(registry);
 registerWebFetch(registry);
 registerJobs(registry);
 

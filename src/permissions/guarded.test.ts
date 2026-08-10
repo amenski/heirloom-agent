@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { patternMatches } from "./rules.js";
+import { patternMatches, extractToolSubject } from "./rules.js";
 import { BUILTIN_GUARDED_RULES } from "./guarded.js";
 import { PermissionEngine } from "./engine.js";
 
@@ -111,5 +111,35 @@ describe("BUILTIN_GUARDED_RULES: docs_search", () => {
     const result = engine.resolve("docs_search", { query: "npm workspaces" });
     expect(result.action).toBe("ask");
     expect(result.isGuarded).toBe(true);
+  });
+});
+
+describe("BUILTIN_GUARDED_RULES: web_search", () => {
+  it("matches any web_search call regardless of query text", () => {
+    const rule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "web_search")!;
+    expect(rule).toBeDefined();
+    expect(rule.kind).toBe("any");
+    expect(patternMatches(rule, { tool: "web_search", text: "claude code hooks" })).toBe(true);
+    expect(patternMatches(rule, { tool: "web_search", text: "" })).toBe(true);
+  });
+
+  it("engine resolves web_search to ask with isGuarded=true, exempt from posture bypass", () => {
+    const engine = new PermissionEngine(undefined, "/tmp");
+    const result = engine.resolve("web_search", { query: "latest stable node version" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+    expect(result.winningRule?.origin).toBe("builtin-guarded");
+  });
+
+  it("engine resolves web_search to ask even under defaultMode: allowAll", () => {
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/tmp");
+    const result = engine.resolve("web_search", { query: "react 19 release notes" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+  });
+
+  it("uses the query string as the permission subject text", () => {
+    expect(extractToolSubject("web_search", { query: "how to fix segfault" })).toBe("how to fix segfault");
+    expect(extractToolSubject("web_search", {})).toBe("");
   });
 });

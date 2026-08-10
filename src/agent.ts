@@ -31,7 +31,7 @@ const TOOL_ARGS_SIZE_DIAGNOSTIC_THRESHOLD = 256 * 1024; // 256KB
 // match the "read" group in the tool registry. `ask_user_question` is excluded
 // deliberately — it interacts with the user and must remain sequential.
 const READ_TOOLS = new Set([
-  "read_file", "list_files", "glob", "search", "docs_search", "web_fetch",
+  "read_file", "list_files", "glob", "search", "docs_search", "web_fetch", "web_search",
 ]);
 
 // Rebuilding the stable preamble is pure string concatenation, but it's still

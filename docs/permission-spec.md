@@ -202,13 +202,16 @@ broadens to "all matching commands."
 
 ### Guarded tier (`src/permissions/guarded.ts`) — always asks
 
-Two categories, both `origin: "builtin-guarded"`, `action: "ask"`:
+Three categories, all `origin: "builtin-guarded"`, `action: "ask"`:
 
 - **Secret-adjacent paths** (`read_file`/`write_to_file`/`edit`, glob-matched
   against the resolved path): `.env*`, `~/.ssh/*`, `~/.aws/*`, `id_rsa*`,
   `*.pem`, `credentials*`.
 - **Network egress** (`run_bash`, basename-matched): `curl`, `wget`, `nc`,
   `ssh`, `scp`, `rsync`.
+- **Search egress** (built-in search tools, `kind: "any"`): `docs_search`,
+  `web_search` — the query string leaves the machine to pinned search hosts
+  (web-search-spec.md).
 
 Unlike the destructive tier, guarded rules resolve to `ask`, not `deny` —
 reading your own `.env` or curl-ing an API is common and legitimate. The

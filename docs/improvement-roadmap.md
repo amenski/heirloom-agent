@@ -49,6 +49,7 @@ architectural swings on the roadmap; drop the rest.
 | ~~**Gutter/prompt contrast fix**~~ ✅ **shipped 2026-08-01** | local | S | Gutter + permission/ask prompts routed through tuned theme slots (dark 39/33, light 26/27); border-focus bug fixed. Remaining `#229ac3` in menus/PromptInput listed for a follow-up pass. |
 | ~~**Long→short flag map** for destructive rules~~ ✅ **shipped 2026-08-02** | local | S | `rm` map landed in the prior wave; this wave extended it to `git` (`--force`/`--directory`/`--ignored`), closing the `git clean --force -dx` escape. See [security-destructive-matching.md](./security-destructive-matching.md). |
 | ~~**`docs_search` tool**~~ ✅ **shipped 2026-08-01** | local | M | Keyless official-API search, live-smoke verified; general web via MCP. Spec: [web-search-spec.md](./web-search-spec.md). |
+| ~~**`web_search` tool**~~ ✅ **shipped 2026-08-10** | local | M | Built-in general web search via Bing `format=rss` (keyless, one pinned host); guarded-tier permission, headless-deny. Spec: [web-search-spec.md](./web-search-spec.md). |
 | ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** | #266 | M | Recursively-loaded scoped rule sections injected alongside `instructions.md`/`AGENTS.md` (`7290aab`). Promoted from Roadmap. |
 
 > **Local (non-borrow) findings** also tracked in their own docs, with priorities:
@@ -93,6 +94,7 @@ handles, so this doc reflects reality rather than intent:
 | Shipped item | Date | Commit(s) | Owning spec |
 |---|---|---|---|
 | `docs_search` tool (keyless official-API search; general web via MCP) | 07-31 | `1e33ff7` | [web-search-spec.md](./web-search-spec.md) |
+| `web_search` tool (general web search via Bing RSS; guarded-tier) | 08-10 | *see latest* | [web-search-spec.md](./web-search-spec.md) |
 | Theme foundation: real `detectSystemTheme` + gutter/prompt theme-slot contrast | 07-31 | `4b51424`, `854cd41` | [theme-spec.md](./theme-spec.md) |
 | Theme presets (dracula, monokai, github-dark, github-light) | 07-31 | `c83f07c` | [theme-spec.md](./theme-spec.md) |
 | `/theme` runtime switcher (live preview, Esc-revert, persist) | 08-01 | `341334c` | [theme-spec.md](./theme-spec.md) |
