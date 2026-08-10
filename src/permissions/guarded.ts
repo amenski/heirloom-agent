@@ -17,6 +17,15 @@ import type { PermissionRule } from "./rules.js";
  * reliable without a bespoke mechanism outside the rule model. Flagged as a
  * known gap.
  *
+ * Dependency-internals scope: read_file/list_files on paths under
+ * node_modules. Discovery tools (glob walker, repo map) already skip
+ * node_modules; this closes the explicit-path hole so a human always sees a
+ * direct read into installed dependencies. Ask, not deny: reading a package's
+ * .d.ts or package.json to introspect an installed API is legitimate. The
+ * search tool's `grep -rn` is NOT covered — its subject carries no path
+ * (buildSubject yields empty text), so no glob rule can match it; it remains
+ * a known gap.
+ *
  * Network-egress scope: run_bash only, matched on the invoked binary's
  * basename. Indirection (`xargs curl`, `echo url | sh`) is caught upstream
  * by isUnresolved's command-carrying-token detection, not here.
@@ -28,6 +37,12 @@ export const BUILTIN_GUARDED_RULES: PermissionRule[] = [
   { tool: "read_file", kind: "glob", pattern: "**/id_rsa*", action: "ask", origin: "builtin-guarded" },
   { tool: "read_file", kind: "glob", pattern: "**/*.pem", action: "ask", origin: "builtin-guarded" },
   { tool: "read_file", kind: "glob", pattern: "**/credentials*", action: "ask", origin: "builtin-guarded" },
+  // node_modules: the directory itself (list_files on the package root) and
+  // anything under it. `**/node_modules` alone can't match `./node_modules/ink`,
+  // and `**/node_modules/**` alone can't match `./node_modules` — both are needed.
+  { tool: "read_file", kind: "glob", pattern: "**/node_modules/**", action: "ask", origin: "builtin-guarded" },
+  { tool: "list_files", kind: "glob", pattern: "**/node_modules", action: "ask", origin: "builtin-guarded" },
+  { tool: "list_files", kind: "glob", pattern: "**/node_modules/**", action: "ask", origin: "builtin-guarded" },
   { tool: "write_to_file", kind: "glob", pattern: "**/.env*", action: "ask", origin: "builtin-guarded" },
   { tool: "edit", kind: "glob", pattern: "**/.env*", action: "ask", origin: "builtin-guarded" },
 

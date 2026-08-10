@@ -202,11 +202,19 @@ broadens to "all matching commands."
 
 ### Guarded tier (`src/permissions/guarded.ts`) — always asks
 
-Three categories, all `origin: "builtin-guarded"`, `action: "ask"`:
+Four categories, all `origin: "builtin-guarded"`, `action: "ask"`:
 
 - **Secret-adjacent paths** (`read_file`/`write_to_file`/`edit`, glob-matched
   against the resolved path): `.env*`, `~/.ssh/*`, `~/.aws/*`, `id_rsa*`,
   `*.pem`, `credentials*`.
+- **Dependency internals** (`read_file`/`list_files`, glob-matched against the
+  resolved path): anything under `node_modules` (the directory itself for
+  `list_files`, and `node_modules/**` for both). Discovery tools (glob walker,
+  repo map) already skip `node_modules`; this closes the explicit-path hole so
+  a human always sees a direct read into installed dependencies. Ask, not
+  deny — introspecting an installed package's `.d.ts`/`package.json` is
+  legitimate. The `search` tool is NOT covered: its subject carries no path,
+  so no glob rule can match it (known gap).
 - **Network egress** (`run_bash`, basename-matched): `curl`, `wget`, `nc`,
   `ssh`, `scp`, `rsync`.
 - **Search egress** (built-in search tool, `kind: "any"`): `web_search` —

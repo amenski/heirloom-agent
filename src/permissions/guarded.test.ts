@@ -56,6 +56,48 @@ describe("BUILTIN_GUARDED_RULES", () => {
   });
 });
 
+describe("BUILTIN_GUARDED_RULES: node_modules", () => {
+  it("matches reads anywhere under node_modules (workspace-root and nested)", () => {
+    const rule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "read_file" && r.pattern.includes("node_modules"))!;
+    expect(patternMatches(rule, { tool: "read_file", text: "./node_modules/ink/build/index.js", resolvedPath: "./node_modules/ink/build/index.js" })).toBe(true);
+    expect(patternMatches(rule, { tool: "read_file", text: "./node_modules/ink/package.json", resolvedPath: "./node_modules/ink/package.json" })).toBe(true);
+    expect(patternMatches(rule, { tool: "read_file", text: "/repo/vendor/node_modules/lodash/index.d.ts", resolvedPath: "/repo/vendor/node_modules/lodash/index.d.ts" })).toBe(true);
+  });
+
+  it("matches list_files on the node_modules directory itself and below", () => {
+    const rootRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "list_files" && r.pattern === "**/node_modules")!;
+    const deepRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "list_files" && r.pattern === "**/node_modules/**")!;
+    expect(patternMatches(rootRule, { tool: "list_files", text: "./node_modules", resolvedPath: "./node_modules" })).toBe(true);
+    expect(patternMatches(deepRule, { tool: "list_files", text: "./node_modules/ink", resolvedPath: "./node_modules/ink" })).toBe(true);
+  });
+
+  it("a read_file node_modules rule does not match a plain write_to_file call into node_modules (tool-scoped)", () => {
+    const readRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "read_file" && r.pattern.includes("node_modules"))!;
+    expect(patternMatches(readRule, { tool: "write_to_file", text: "./node_modules/x/out.js", resolvedPath: "./node_modules/x/out.js" })).toBe(false);
+  });
+
+  it("engine resolves an explicit node_modules read to ask with isGuarded=true, even under defaultMode: allowAll", () => {
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/repo");
+    const result = engine.resolve("read_file", { path: "/repo/node_modules/ink/package.json" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+    expect(result.winningRule?.origin).toBe("builtin-guarded");
+  });
+
+  it("engine resolves list_files on node_modules to ask (not silently allowed by the ./** builtin fallback)", () => {
+    const engine = new PermissionEngine(undefined, "/repo");
+    const result = engine.resolve("list_files", { path: "/repo/node_modules/ink" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+  });
+
+  it("engine still allows ordinary reads inside the working tree (no node_modules false positive)", () => {
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/repo");
+    const result = engine.resolve("read_file", { path: "/repo/src/main.ts" });
+    expect(result.action).toBe("allow");
+  });
+});
+
 describe("BUILTIN_GUARDED_RULES: network egress", () => {
   const NETWORK_TOOLS = ["curl", "wget", "nc", "ssh", "scp", "rsync"];
 
