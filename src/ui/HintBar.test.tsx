@@ -5,10 +5,11 @@ import { Box, Text } from "ink";
 import { ThemeProvider, TerminalProvider } from "./contexts.js";
 import HintBar from "./HintBar.js";
 import { stripAnsi as strip } from "./test-helpers.js";
+import { DARK_THEME, ansiFg, ANSI_RESET } from "./theme.js";
 
-function renderBar(ui: React.ReactElement) {
+function renderBar(ui: React.ReactElement, colorEnabled = false) {
   return render(
-    <ThemeProvider>
+    <ThemeProvider config={{ colorEnabled }}>
       <TerminalProvider>{ui}</TerminalProvider>
     </ThemeProvider>,
   );
@@ -51,6 +52,28 @@ describe("HintBar", () => {
     renderBar(<HintBar working left={LEFT} />);
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  it("paints the active dot in the theme accent at full intensity while working", () => {
+    // The whole field used to be dim-wrapped, which made the travelling dot
+    // nearly invisible on dark themes. The active dot must now carry the
+    // accent colour, un-dimmed, so the animation reads at a glance.
+    const { lastFrame } = renderBar(<HintBar working left={LEFT} />, true);
+    // Ink wraps each styled run in reversed-video escapes (its own cursor
+    // marker), so normalize those away before asserting on the colour runs.
+    const frame = (lastFrame() ?? "").replace(/\x1b\[7m/g, "").replace(/\x1b\[27m/g, "");
+    // frame starts at 0, so the active dot is the first of the eight.
+    expect(frame).toContain(`${ansiFg(DARK_THEME.accent)}•${ANSI_RESET}`);
+    // ...and the other seven track dots stay dim (contrast, not clutter).
+    const dimTrack = frame.match(/\x1b\[2m·\x1b\[0m/g);
+    expect(dimTrack).not.toBeNull();
+    expect(dimTrack!.length).toBe(7);
+  });
+
+  it("keeps the indicator field blank when idle", () => {
+    const { lastFrame } = renderBar(<HintBar left={LEFT} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toContain("•");
   });
 
   it("keeps the hints flush left and unmoved whether idle or working", () => {

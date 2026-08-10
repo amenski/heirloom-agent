@@ -1,6 +1,7 @@
 import type { Message } from "../types.js";
 import type { Provider } from "../providers/types.js";
 import { shouldCompact } from "./budget.js";
+import { stripToolCallMarkup } from "../sessions/store.js";
 
 const COMPACTION_PROMPT = `Summarize the following conversation between an AI agent and a user.
 Structure the summary under these headings, omitting any heading with nothing to report:
@@ -20,7 +21,10 @@ Errors encountered and how they were resolved.
 ## Pending
 Unfinished work, next steps, and anything the user asked for that has not been done yet.
 
-Omit tool output details — just note what was done and the outcome.`;
+Omit tool output details — just note what was done and the outcome.
+
+Write the summary as plain prose only. Never emit XML or tool-call markup of any
+kind — no <invoke>, <parameter>, <tool_calls>, or similar tags, escaped or not.`;
 
 /**
  * How many trailing messages to keep uncompacted: 4, widened so the kept tail
@@ -146,7 +150,10 @@ export class Compactor {
       }
     }
 
-    return result || "Conversation summarized.";
+    // stripToolCallMarkup is a hard guarantee: even if the model ignores the
+    // prompt instruction and leaks markup, nothing raw reaches the live
+    // context (compact()), the resume overlay (appendCompaction), or memory.
+    return stripToolCallMarkup(result) || "Conversation summarized.";
   }
 
   private fidelityCheck(summary: string, files: string[]): boolean {

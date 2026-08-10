@@ -132,6 +132,78 @@ describe("SessionStore", () => {
       expect(effective.messages[2].content).toBe("msg3");
       expect(effective.messages[3].content).toBe("continue");
     });
+
+    it("strips DSML tool-call markup from summaries on write", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "ask" });
+      await store.appendMessage(id, { role: "user", content: "msg0" });
+      await store.appendMessage(id, { role: "assistant", content: "msg1" });
+
+      // Escaped (deepseek-family U+FF5C) and plain DSML tool-call blocks.
+      const esc = "\uFF5C";
+      const escaped = [
+        `<${esc}${esc}DSML${esc}${esc}tool_calls>`,
+        `<${esc}${esc}DSML${esc}${esc}invoke name="read_file">`,
+        `<${esc}${esc}DSML${esc}${esc}parameter name="file_path" string="true">/tmp/a.md</${esc}${esc}DSML${esc}${esc}parameter>`,
+        `</${esc}${esc}DSML${esc}${esc}invoke>`,
+        `</${esc}${esc}DSML${esc}${esc}tool_calls>`,
+      ].join("\n");
+      const plain =
+        '<tool_calls>\n<invoke name="check_job">\n<parameter name="job_id" string="true">abc</parameter>\n</invoke>\n</tool_calls>';
+
+      await store.appendCompaction(id, 1, {
+        task: `## Task\nFinish the menu work.\n\n${escaped}`,
+        decisions: [`picked regex ${plain}`],
+        files: [],
+        errors_resolved: [],
+      });
+
+      // The JSONL must hold cleaned text, never the markup.
+      const { readFile } = await import("node:fs/promises");
+      const raw = await readFile(join(sessionDir(), `${id}.jsonl`), "utf-8");
+      expect(raw).not.toContain("DSML");
+      expect(raw).not.toContain("tool_calls");
+      expect(raw).not.toContain("invoke name");
+
+      const effective = await store.loadEffective(id);
+      const content = effective.messages[0].content as string;
+      expect(content).toContain("Finish the menu work.");
+      expect(content).toContain("picked regex");
+      expect(content).not.toContain("<");
+      expect(content).not.toContain("DSML");
+    });
+
+    it("renders already-corrupted on-disk summaries without DSML markup", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "ask" });
+      await store.appendMessage(id, { role: "user", content: "msg0" });
+      await store.appendMessage(id, { role: "assistant", content: "msg1" });
+      await store.appendMessage(id, { role: "user", content: "msg2" });
+
+      // Simulate a compaction record written by an older build that stored the
+      // model's raw DSML output as the task.
+      const { appendFile } = await import("node:fs/promises");
+      await appendFile(
+        join(sessionDir(), `${id}.jsonl`),
+        JSON.stringify({
+          type: "compaction",
+          at: new Date().toISOString(),
+          replacesThrough: 1,
+          summary: {
+            task: '<tool_calls>\n<invoke name="read_file">\n<parameter name="file_path" string="true">/tmp/a.md</parameter>\n</invoke>\n</tool_calls>',
+            decisions: [],
+            files: [],
+            errors_resolved: [],
+          },
+        }) + "\n",
+        "utf-8",
+      );
+
+      const effective = await store.loadEffective(id);
+      const content = effective.messages[0].content as string;
+      expect(content).toContain("[Earlier in this conversation]");
+      expect(content).not.toContain("tool_calls");
+      expect(content).not.toContain("invoke");
+      expect(content).not.toContain("parameter");
+    });
   });
 
   describe("permission audit", () => {

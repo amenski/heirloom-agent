@@ -49,7 +49,7 @@ Each line is one JSON object with a `type` field. Six types: `meta`,
 ```json
 {"type":"meta","version":1,"id":"20260728T142301-ab3f",
  "cwd":"/Users/x/proj","createdAt":"2026-07-28T14:23:01Z",
- "provider":"deepseek","model":"deepseek-chat","mode":"code"}
+ "provider":"deepseek","model":"deepseek-v4-pro","mode":"code"}
 ```
 
 `version` gates format migrations. A loader that sees a higher version than it

@@ -146,23 +146,62 @@ export function slugify(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
 }
 
+/**
+ * Full-width reverse solidus (＼, U+FF5C). Tool-using models asked to
+ * summarize a conversation sometimes leak their own tool-call markup into the
+ * summary — deepseek-family models render it escaped (`<\＼\＼DSML\＼\＼tool_calls>`),
+ * others emit plain `<tool_calls>` blocks. That markup is agent plumbing, not
+ * conversation content: it must never surface in `[Earlier in this
+ * conversation]` on resume, be sent back to the model, or be re-summarized.
+ */
+export function stripToolCallMarkup(text: string): string {
+  // One or more ASCII backslashes and/or U+FF5C (models escape with either).
+  const esc = "[\\\\\uFF5C]+";
+  const tag = (name: string) => `<${esc}DSML${esc}${name}`;
+  let out = text;
+  // Escaped DSML blocks: <\＼\＼DSML\＼\＼tool_calls> … </\＼\＼DSML\＼\＼tool_calls>
+  out = out.replace(
+    new RegExp(`${tag("tool_calls")}>[\\s\\S]*?<\\/${esc}DSML${esc}tool_calls>`, "g"),
+    "",
+  );
+  // Plain DSML blocks: <tool_calls> … </tool_calls>
+  out = out.replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "");
+  // Standalone invoke blocks, escaped or plain, with or without a wrapper.
+  out = out.replace(
+    new RegExp(`<(?:${esc}DSML${esc})?invoke\\b[^>]*>[\\s\\S]*?<\\/(?:${esc}DSML${esc})?invoke>`, "g"),
+    "",
+  );
+  // Leftover parameter tags, escaped or plain.
+  out = out.replace(
+    new RegExp(`<(?:${esc}DSML${esc})?parameter\\b[^>]*>[\\s\\S]*?<\\/(?:${esc}DSML${esc})?parameter>`, "g"),
+    "",
+  );
+  // Any remaining bare tags (opening or closing).
+  out = out.replace(
+    new RegExp(`<\\/?(?:${esc}DSML${esc})?(?:tool_calls|invoke|parameter)\\b[^>]*>`, "g"),
+    "",
+  );
+  // Collapse the blank lines a removed block leaves behind.
+  return out.replace(/[ \t]*\n{3,}/g, "\n\n").trim();
+}
+
 function formatCompactionText(summary: CompactionSummary): string {
   const parts: string[] = [];
-  parts.push(`[Earlier in this conversation]\nTask: ${summary.task}`);
+  parts.push(`[Earlier in this conversation]\nTask: ${stripToolCallMarkup(summary.task)}`);
   if (summary.decisions.length > 0) {
     parts.push(
-      `\nDecisions:\n${summary.decisions.map((d) => "- " + d).join("\n")}`,
+      `\nDecisions:\n${summary.decisions.map((d) => "- " + stripToolCallMarkup(d)).join("\n")}`,
     );
   }
   if (summary.files.length > 0) {
     parts.push(
-      `\nFiles:\n${summary.files.map((f) => "- " + f).join("\n")}`,
+      `\nFiles:\n${summary.files.map((f) => "- " + stripToolCallMarkup(f)).join("\n")}`,
     );
   }
   if (summary.errors_resolved.length > 0) {
     parts.push(
       `\nErrors resolved:\n${summary.errors_resolved
-        .map((e) => "- " + e)
+        .map((e) => "- " + stripToolCallMarkup(e))
         .join("\n")}`,
     );
   }
@@ -239,10 +278,10 @@ export class SessionStore {
     summary: CompactionSummary,
   ): Promise<void> {
     const safeSummary: CompactionSummary = {
-      task: redactSecrets(summary.task),
-      decisions: summary.decisions.map((d) => redactSecrets(d)),
-      files: summary.files.map((f) => redactSecrets(f)),
-      errors_resolved: summary.errors_resolved.map((e) => redactSecrets(e)),
+      task: stripToolCallMarkup(redactSecrets(summary.task)),
+      decisions: summary.decisions.map((d) => stripToolCallMarkup(redactSecrets(d))),
+      files: summary.files.map((f) => stripToolCallMarkup(redactSecrets(f))),
+      errors_resolved: summary.errors_resolved.map((e) => stripToolCallMarkup(redactSecrets(e))),
     };
     await this.append(sessionId, {
       type: "compaction",

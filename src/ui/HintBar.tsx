@@ -2,7 +2,7 @@ import React, { memo, useEffect, useState } from "react";
 import { Box, Text } from "ink";
 import { useTheme, useTerminalInfo, useRefresh } from "./contexts.js";
 import { chip } from "./core/chips.js";
-
+import { ansiFg, ANSI_RESET } from "./theme.js";
 
 /** Width of the working-indicator field, reserved whether or not it animates. */
 const DOTS_WIDTH = 8;
@@ -68,12 +68,20 @@ function HintBar({ left, right = [], working = false }: HintBarProps) {
   // reflow — but it is appended AFTER the left hints rather than before them.
   // Leading it indented every hint by the field width even when idle, which
   // read as a stray margin; trailing it keeps hints flush to the left edge.
+  //
+  // The active dot is painted at FULL intensity in the theme's accent colour
+  // while the track stays dim, so the animation reads at a glance instead of
+  // dissolving into the dim hint row — the whole field used to be dim-wrapped,
+  // which made it nearly invisible on dark themes.
   const dots = working
-    ? Array.from({ length: DOTS_WIDTH }, (_, i) =>
-        i === frame % DOTS_WIDTH ? "•" : "·",
-      ).join("")
+    ? Array.from({ length: DOTS_WIDTH }, (_, i) => {
+        const glyph = i === frame % DOTS_WIDTH ? "•" : "·";
+        return i === frame % DOTS_WIDTH && theme.colorEnabled
+          ? `${ansiFg(theme.theme.accent)}${glyph}${ANSI_RESET}`
+          : dim(glyph);
+      }).join("")
     : " ".repeat(DOTS_WIDTH);
-  const leftStr = left.map(render).join(dim("  ")) + dim(`  ${dots}`);
+  const leftStr = left.map(render).join(dim("  ")) + dim("  ") + dots;
   const rightStr = right.map(render).join(dim("  "));
 
   // Right-align the right group by padding between. If the terminal is too

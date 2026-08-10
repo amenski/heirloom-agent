@@ -190,7 +190,7 @@ async function main() {
   const sessionCreateBase = {
     cwd: process.cwd(),
     provider: providerName,
-    model: initialModel || getPreset(providerName)?.defaultModel || "deepseek-chat",
+    model: initialModel || getPreset(providerName)?.defaultModel || "deepseek-v4-pro",
     mode: parsed.mode || "code",
   };
 
