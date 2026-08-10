@@ -89,31 +89,6 @@ describe("BUILTIN_GUARDED_RULES: network egress", () => {
   });
 });
 
-describe("BUILTIN_GUARDED_RULES: docs_search", () => {
-  it("matches any docs_search call regardless of query text", () => {
-    const rule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "docs_search")!;
-    expect(rule).toBeDefined();
-    expect(rule.kind).toBe("any");
-    expect(patternMatches(rule, { tool: "docs_search", text: "how to use fetch in node" })).toBe(true);
-    expect(patternMatches(rule, { tool: "docs_search", text: "" })).toBe(true);
-  });
-
-  it("engine resolves docs_search to ask with isGuarded=true, exempt from posture bypass", () => {
-    const engine = new PermissionEngine(undefined, "/tmp");
-    const result = engine.resolve("docs_search", { query: "react hooks" });
-    expect(result.action).toBe("ask");
-    expect(result.isGuarded).toBe(true);
-    expect(result.winningRule?.origin).toBe("builtin-guarded");
-  });
-
-  it("engine resolves docs_search to ask even under defaultMode: allowAll", () => {
-    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/tmp");
-    const result = engine.resolve("docs_search", { query: "npm workspaces" });
-    expect(result.action).toBe("ask");
-    expect(result.isGuarded).toBe(true);
-  });
-});
-
 describe("BUILTIN_GUARDED_RULES: web_search", () => {
   it("matches any web_search call regardless of query text", () => {
     const rule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "web_search")!;

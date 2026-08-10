@@ -235,10 +235,11 @@ homes: config lives under `~/.heirloom`, credentials and sessions under
 
 ## Web Search
 
-Heirloom ships the built-in `docs_search` tool for developer-documentation
-sources. For **general** web search, add a search MCP server under `mcpServers`;
-it is gated by the existing `mcp__*` permission rules. Heirloom ships and
-endorses none.
+Heirloom ships the built-in `web_search` tool for general web search —
+keyless, Bing-backed, guarded-tier (always asks; see
+[web-search-spec.md](./web-search-spec.md)). For search via an external
+provider, add a search MCP server under `mcpServers`; it is gated by the
+existing `mcp__*` permission rules. Heirloom ships and endorses none.
 
 ```jsonc
 {
@@ -288,7 +289,7 @@ field. If you set it, nothing happens because there is nothing to enable.
 
 | Key | Status | Replacement |
 |-----|--------|-------------|
-| `webSearchTool` (script path) | Parsed but ignored; emits a warning | Add a search MCP server under `mcpServers` |
+| `webSearchTool` (script path) | Parsed but ignored; emits a warning | Use the built-in `web_search` tool, or a search MCP server under `mcpServers` |
 | `debugLogEnabled` (boolean) | Parsed but ignored; emits a warning | Use the `--debug` CLI flag |
 | `workflow.gitCommands` (boolean) | Parsed but ignored; emits a warning | None — no git-command subsystem consumes it |
 | `workflow.detectBuildTools` (boolean) | Parsed but ignored; emits a warning | None — no build-tool detection subsystem consumes it |

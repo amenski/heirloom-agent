@@ -232,7 +232,7 @@ export function extractToolSubject(toolName: string, args: Record<string, unknow
     const c = args?.command;
     return typeof c === "string" ? c : "";
   }
-  if (toolName === "docs_search" || toolName === "web_search") {
+  if (toolName === "web_search") {
     const q = args?.query;
     return typeof q === "string" ? q : "";
   }
@@ -254,7 +254,7 @@ export function extractHostname(url: string): string | undefined {
 }
 
 export function buildSubject(tool: string, args: Record<string, unknown>): PermissionSubject {
-  if (tool === "run_bash" || tool === "docs_search" || tool === "web_search") {
+  if (tool === "run_bash" || tool === "web_search") {
     return { tool, text: extractToolSubject(tool, args) };
   }
   if (tool === "web_fetch") {

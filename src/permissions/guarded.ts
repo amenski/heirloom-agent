@@ -38,6 +38,5 @@ export const BUILTIN_GUARDED_RULES: PermissionRule[] = [
   { tool: "run_bash", kind: "prefix", pattern: "scp", action: "ask", origin: "builtin-guarded" },
   { tool: "run_bash", kind: "prefix", pattern: "rsync", action: "ask", origin: "builtin-guarded" },
 
-  { tool: "docs_search", kind: "any", pattern: "", action: "ask", origin: "builtin-guarded" },
   { tool: "web_search", kind: "any", pattern: "", action: "ask", origin: "builtin-guarded" },
 ];

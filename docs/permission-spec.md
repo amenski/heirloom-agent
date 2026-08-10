@@ -209,8 +209,8 @@ Three categories, all `origin: "builtin-guarded"`, `action: "ask"`:
   `*.pem`, `credentials*`.
 - **Network egress** (`run_bash`, basename-matched): `curl`, `wget`, `nc`,
   `ssh`, `scp`, `rsync`.
-- **Search egress** (built-in search tools, `kind: "any"`): `docs_search`,
-  `web_search` — the query string leaves the machine to pinned search hosts
+- **Search egress** (built-in search tool, `kind: "any"`): `web_search` —
+  the query string leaves the machine to the pinned search host
   (web-search-spec.md).
 
 Unlike the destructive tier, guarded rules resolve to `ask`, not `deny` —

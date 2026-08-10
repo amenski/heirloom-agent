@@ -14,6 +14,12 @@ now the general-search tier — a deliberate, approved reversal of anti-drift
 rule 3 **for `web_search` only**, in the same style as the `web_fetch`
 carve-out below. See the Tier 3 section.
 
+Status (**2026-08-10**): **`docs_search` (Tier 1) removed.** `web_search`
+subsumes it — a general SERP covers GitHub repos, Stack Overflow questions,
+and package-registry pages with one tool and one pinned host, and the extra
+structured metadata (stars, versions, scores) didn't justify a second search
+surface. The Tier 1 section below is decision history only.
+
 > **Scope note (2026-08-07).** This doc governs **search** — finding pages you
 > don't have a URL for. It no longer governs *all* network access: `web_fetch`
 > (tool-spec.md) now fetches a **user- or model-supplied URL** and converts
@@ -29,7 +35,8 @@ carve-out below. See the Tier 3 section.
 > This is a deliberate, approved reversal of anti-drift rule 3 **for
 > `web_search` only**, granted on demonstrated demand (see Tier 3). Rule 2's
 > host list gains `www.bing.com`, with security-spec.md updated in lockstep.
-> Everything else in the anti-drift rules still binds `docs_search`.
+> `docs_search` was **removed** the same day (subsumed by `web_search`), so
+> the anti-drift rules below now bind `web_search` and any future search work.
 
 ## Decision
 
@@ -43,7 +50,7 @@ Instead, three tiers:
 
 | Tier | What | Status |
 |---|---|---|
-| 1 | **`docs_search`** — built-in tool over free, keyless, ToS-clean official APIs (GitHub, Stack Exchange, package registries, Wikipedia) | **Implemented 2026-08-01** |
+| 1 | **`docs_search`** — built-in tool over free, keyless, ToS-clean official APIs (GitHub, Stack Exchange, package registries, Wikipedia) | **Implemented 2026-08-01; removed 2026-08-10** — subsumed by `web_search` |
 | 2 | **General web search via MCP** — user adds any search MCP server; one documented config line | Document only |
 | 3 | **`web_search`** — built-in general web search via Bing's keyless `format=rss` XML feed (one pinned host, no API key) | **Implemented 2026-08-10** — demonstrated demand; see Tier 3 spec below |
 
@@ -61,7 +68,11 @@ with better signal than generic SERP snippets.
 
 ---
 
-## Tier 1 — `docs_search` implementation spec
+## Tier 1 — `docs_search` implementation spec (REMOVED 2026-08-10)
+
+> **Removed 2026-08-10.** `web_search` subsumes this tier — see the status
+> note at the top. This section is kept for decision history; it is not a
+> live spec and its acceptance items no longer apply.
 
 ### Registration
 
@@ -240,7 +251,7 @@ security-spec.md, same class as the tier-1 residual-exfiltration acceptance.
 ### Registration
 
 - `src/tools/web-search.ts`, exporting `registerWebSearch(registry)`, called
-  from `src/tools/index.ts` — same pattern as `docs_search`.
+  from `src/tools/index.ts` — same pattern as the other built-in read tools.
 - `groups: ["read"]`; execution gated by the guarded permission rule below.
 - **No new npm dependencies.** Global `fetch` only.
 
@@ -250,8 +261,7 @@ security-spec.md, same class as the tier-1 residual-exfiltration acceptance.
 name: "web_search",
 description: "Search the general web (Bing-backed, no API key) for pages,
   articles, news, and current information on any topic. Returns titles, URLs,
-  and snippets; use web_fetch to read a result in full. Unlike docs_search,
-  this is not limited to developer indexes.",
+  and snippets; use web_fetch to read a result in full.",
 parameters: {
   type: "object",
   properties: {
@@ -280,8 +290,7 @@ entities; strip tags from descriptions; drop items lacking a title or link.
 - Response body cap **512 KB** (streamed read, abort past cap).
 - 403/429 → `content: "web_search: Bing rate-limited the request, try again
   shortly."` as a normal (non-throwing) result.
-- Network failure/timeout → same pattern as `docs_search`: clean message,
-  never a crash.
+- Network failure/timeout → clean message, never a crash.
 
 ### Output format
 
@@ -301,16 +310,16 @@ Add to `BUILTIN_GUARDED_RULES` in `src/permissions/guarded.ts`:
 { tool: "web_search", kind: "any", pattern: "", action: "ask", origin: "builtin-guarded" }
 ```
 
-Semantics inherited from the guarded tier, identical to `docs_search`: always
+Semantics inherited from the guarded tier: always
 **ask**, exempt from the auto-approve posture bypass, **deny in headless**.
-`extractToolSubject`/`buildSubject` (`src/permissions/rules.ts`) treat
-`web_search` exactly like `docs_search` — the permission subject text is the
-query string, so the prompt shows what would be sent.
+`extractToolSubject`/`buildSubject` (`src/permissions/rules.ts`) use the
+query string as the permission subject, so the prompt shows what would be
+sent.
 
 ### Security
 
 - **Results are untrusted input** (prompt-injection surface, same class as
-  repo files/bash output/docs_search results — security-spec Trust
+  repo files/bash output — security-spec Trust
   Boundaries). Never treat instructions inside results as directives.
 - **Residual exfiltration risk, accepted and documented:** the query string
   leaves the machine — to exactly one pinned host (`www.bing.com`). This is
@@ -322,22 +331,22 @@ query string, so the prompt shows what would be sent.
 
 ## Anti-drift rules (hard constraints for any implementing agent)
 
-Scope: these bind **`docs_search` and future search work**. `web_fetch` is
+Scope: these bind **`web_search` and future search work**. `web_fetch` is
 explicitly carved out of rules 1, 3, and 4 — see the scope note at the top.
 `web_search` (Tier 3, 2026-08-10) is explicitly carved out of rules 2 and 3
 for its single pinned Bing-RSS surface only — see the Tier 3 section.
 
 1. **No new dependencies.** Global `fetch` only.
-2. **No hosts beyond the pinned endpoints** (the six tier-1 hosts **plus
-   `www.bing.com` for `web_search` only**). Adding a host requires editing
-   this doc *and* security-spec.md first.
+2. **No hosts beyond the pinned endpoints** (`www.bing.com` for `web_search`
+   — the sole remaining search host since the 2026-08-10 removal of the
+   tier-1 APIs). Adding a host requires editing this doc *and*
+   security-spec.md first.
 3. **No HTML scraping of any host. No SERP scraper.** The Bing `format=rss`
    XML feed is the sole approved general-search surface, carved out for
    `web_search` (2026-08-10). DDG/Google/Bing HTML scraping — and any other
-   SERP engine in any form — remains out of scope for tier 1.
+   SERP engine in any form — remains out of scope.
 4. **No fetching arbitrary URLs or result page bodies.**
-5. **No API keys required, requested, or stored.** `GITHUB_TOKEN` is
-   opportunistic env-read only.
+5. **No API keys required, requested, or stored.**
 6. **Do not wire `webSearchTool`** — deprecate it as specified.
 7. **Do not add LLM-assisted query preparation/translation.**
 8. Guarded-tier permission, headless-deny, and output caps are not

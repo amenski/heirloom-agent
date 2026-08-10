@@ -163,7 +163,7 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
 const webSearchDef: ToolDef = {
   name: "web_search",
   description:
-    "Search the general web (Bing-backed, no API key) for pages, articles, news, and current information on any topic. Returns titles, URLs, and snippets; use web_fetch to read a result in full. Unlike docs_search, this is not limited to developer indexes.",
+    "Search the general web (Bing-backed, no API key) for pages, articles, news, and current information on any topic. Returns titles, URLs, and snippets; use web_fetch to read a result in full.",
   parameters: {
     type: "object",
     properties: {
