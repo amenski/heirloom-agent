@@ -102,7 +102,9 @@ export function parseTable(text: string): ParsedTable | null {
   if (sepIdx === -1) return null;
 
   const alignments = parseAlignments(lines[sepIdx], headers.length);
-  const rows = lines.slice(sepIdx + 1).map(splitCells);
+  const rows = lines.slice(sepIdx + 1)
+    .map(splitCells)
+    .filter((row) => row.some((c) => c !== ""));
 
   return { headers, alignments, rows };
 }
