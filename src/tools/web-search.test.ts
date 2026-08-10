@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ToolRegistry } from "./registry.js";
 import type { ToolContext } from "./types.js";
-import { registerWebSearch, parseBingRss, clearWebSearchCache } from "./web-search.js";
+import { registerWebSearch, parseBingRss, looksLikeRssFeed, clearWebSearchCache } from "./web-search.js";
 
 function rssResponse(xml: string, status = 200): Response {
   return new Response(xml, {
@@ -48,6 +48,24 @@ describe("parseBingRss", () => {
 
   it("returns an empty array for non-RSS input", () => {
     expect(parseBingRss("<html>not rss</html>")).toEqual([]);
+  });
+});
+
+describe("looksLikeRssFeed", () => {
+  it("accepts a feed with items", () => {
+    expect(looksLikeRssFeed(sampleRss())).toBe(true);
+  });
+
+  it("accepts a well-formed feed with zero items", () => {
+    expect(looksLikeRssFeed(`<rss version="2.0"><channel><title>Bing: x</title></channel></rss>`)).toBe(true);
+  });
+
+  it("rejects an HTML shell page", () => {
+    expect(looksLikeRssFeed("<html><body>no results</body></html>")).toBe(false);
+  });
+
+  it("rejects an empty body", () => {
+    expect(looksLikeRssFeed("")).toBe(false);
   });
 });
 
@@ -99,6 +117,58 @@ describe("web_search", () => {
     );
     const lines = result.content.split("\n").filter((l) => l.startsWith("- [web]"));
     expect(lines).toHaveLength(1);
+  });
+
+  it("keeps the rate-limit notice outside the untrusted-content banner", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(rssResponse("", 429)));
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(result.content).toContain("rate-limited");
+    expect(result.content).not.toContain("BEGIN WEB CONTENT");
+  });
+
+  it("reports a tool failure when the response is not an RSS feed", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(rssResponse("<html><body>no results</body></html>")));
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(result.content).toContain("unrecognized response format");
+    expect(result.content).not.toContain("No results found.");
+  });
+
+  it("still reports no results for a well-formed empty feed", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(rssResponse(`<rss version="2.0"><channel><title>Bing: x</title></channel></rss>`)),
+    );
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(result.content).toContain("No results found.");
+  });
+
+  it("does not cache an unrecognized response", async () => {
+    fetchMock.mockImplementationOnce(() => Promise.resolve(rssResponse("<html>broken</html>")));
+    fetchMock.mockImplementationOnce(() => Promise.resolve(rssResponse(sampleRss())));
+
+    const first = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(first.content).toContain("unrecognized response format");
+
+    const second = await registry.execute(
+      { id: "2", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(second.content).toContain("[web] Claude Code");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("wraps formatted results in the untrusted-content banner", async () => {

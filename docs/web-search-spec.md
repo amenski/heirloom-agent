@@ -367,6 +367,18 @@ entities; strip tags from descriptions; drop items lacking a title or link.
 - 403/429 → `content: "web_search: Bing rate-limited the request, try again
   shortly."` as a normal (non-throwing) result. **Never retried.**
 - Network failure/timeout → clean message, never a crash.
+- **Unrecognized response format (added 2026-08-11):** a 200 body that does
+  not look like an RSS feed (`looksLikeRssFeed` — no `<rss` or `<channel`
+  element) returns `content: "web_search: Bing returned an unrecognized
+  response format — the search feed may have changed. This is a tool failure,
+  not an empty result."` and is **not cached**, so a transient bad body can't
+  poison the 60s cache. A well-formed feed with zero `<item>` blocks is
+  unaffected and still reports `No results found.` Rationale: the endpoint is
+  undocumented (anti-drift rule 9's "if a backend proves unreliable" case), so
+  a silent format change previously collapsed into the same
+  `No results found.` string as a genuine empty result — indistinguishable to
+  the model, which would then conclude the web had no answer. This surfaces
+  the failure without adding a host, dependency, key, or fallback provider.
 - **Retry (added 2026-08-10):** 5xx responses and network-level failures
   (fetch itself rejecting, not an abort) retry up to **2 times** (3 attempts
   total) with fixed backoff (**250ms, then 750ms**) before surfacing the

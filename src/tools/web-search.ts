@@ -107,6 +107,16 @@ function unwrapCdata(s: string): string {
   return m ? m[1] : s;
 }
 
+/**
+ * True when `xml` is a recognizable RSS feed. Distinguishes a genuine
+ * zero-result feed from a response whose shape we no longer understand — the
+ * endpoint is undocumented, so a silent format change must not read as
+ * "the web has no answer".
+ */
+export function looksLikeRssFeed(xml: string): boolean {
+  return /<rss[\s>]/i.test(xml) || /<channel[\s>]/i.test(xml);
+}
+
 /** Parses Bing's `format=rss` search feed into flat results, dropping items without a usable title or link. */
 export function parseBingRss(xml: string): WebResult[] {
   const results: WebResult[] = [];
@@ -223,22 +233,27 @@ function wrapUntrusted(text: string): string {
   ].join("\n");
 }
 
+/**
+ * Renders results with the untrusted-content wrapper around **web content
+ * only**. Tool-generated status text (rate limits, empty results) stays
+ * outside the delimiters — the banner marks what Bing returned, not what
+ * Heirloom says about it (web-search-spec.md, Tier 3 output format).
+ */
 function formatResults(results: WebResult[], rateLimited: boolean): string {
+  const status = rateLimited ? "web_search: Bing rate-limited the request, try again shortly." : "";
+
   const lines: string[] = [];
   for (const r of results) {
     lines.push(`- [web] ${r.title} — ${r.url}`);
     if (r.snippet) lines.push(`  ${truncateSnippet(r.snippet)}`);
   }
-  if (rateLimited) {
-    lines.push("web_search: Bing rate-limited the request, try again shortly.");
-  }
-  if (lines.length === 0) return "No results found.";
+  if (lines.length === 0) return status || "No results found.";
 
   let out = lines.join("\n");
   if (out.length > OUTPUT_CAP_CHARS) {
     out = `${out.slice(0, OUTPUT_CAP_CHARS)}\n… (truncated)`;
   }
-  return wrapUntrusted(out);
+  return status ? `${wrapUntrusted(out)}\n${status}` : wrapUntrusted(out);
 }
 
 const webSearchHandler: ToolHandler = async (args, ctx) => {
@@ -258,6 +273,12 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
     let filtered = getCached(key);
     if (filtered === undefined) {
       const xml = await fetchRssWithRetry(query, ctx);
+      if (!looksLikeRssFeed(xml)) {
+        return {
+          content:
+            "web_search: Bing returned an unrecognized response format — the search feed may have changed. This is a tool failure, not an empty result.",
+        };
+      }
       filtered = filterByDomain(parseBingRss(xml), allowedDomains, blockedDomains);
       setCached(key, filtered);
     }

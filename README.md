@@ -154,6 +154,19 @@ automatic compaction. Resume with `--continue`, `--resume <id>`, or `/resume`.
 Install [Agent Skills](https://agentskills.io) or connect MCP servers. Browse
 with `/skills` and `/mcp`.
 
+### Web search
+
+`web_search` works with no API key, backed by Bing's keyless RSS feed, and
+`web_fetch` reads any result in full. Both ask before running and treat what
+comes back as untrusted input.
+
+Because that feed is undocumented, it can change shape without notice. When a
+response no longer parses as RSS, the tool says so explicitly rather than
+reporting "no results" — a broken search never masquerades as an empty web.
+For a stronger index, add a search MCP server with your own key
+([`docs/config-spec.md`](./docs/config-spec.md)); Heirloom ships none and
+stores no keys.
+
 ### Stale-file detection
 
 The agent tracks when it last read each file and refuses to overwrite changes
