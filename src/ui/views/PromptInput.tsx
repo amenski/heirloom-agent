@@ -7,6 +7,7 @@ import {
   insertText, isEmpty, moveLeft, moveRight, moveLineStart, moveLineEnd,
   moveWordLeft, moveWordRight, killLine,
   getCurrentSlashToken,
+  getCurrentFileMentionToken,
   type PromptBufferState,
 } from "../core/prompt-buffer.js";
 import {
@@ -17,10 +18,12 @@ import {
 } from "../core/paste-spans.js";
 import { getSlashCommands, filterSlashCommands, type SlashCommandItem } from "../core/slash-commands.js";
 import { resolveSlashSubmit } from "../core/slash-submit.js";
+import { scanFileMentionItems, filterFileMentionItems } from "../core/file-mentions.js";
 import { useHistoryNavigation } from "../hooks/useHistoryNavigation.js";
 import { readClipboardImageAsync } from "../core/clipboard.js";
 import { useTerminalInput, type InputKey } from "../hooks/useTerminalInput.js";
 import SlashCommandMenu from "./SlashCommandMenu.js";
+import FileMentionMenu from "../components/FileMentionMenu/index.js";
 import { useTheme } from "../contexts.js";
 import { ansi256 } from "../theme.js";
 
@@ -68,6 +71,13 @@ const PromptInput = React.memo(function PromptInput({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [pendingExit, setPendingExit] = useState(false);
   const [menuIndex, setMenuIndex] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  // The @-file menu closes itself by remembering the query it was dismissed on:
+  // after Esc, or after inserting a file ("@src/foo.ts " must not re-open while
+  // the user keeps typing past it), the menu stays closed for that exact token.
+  // A different token reopens it. State (not a ref) so Esc — which changes no
+  // buffer text — still triggers the re-render that closes the menu.
+  const [dismissedMention, setDismissedMention] = useState<string | null>(null);
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const bufferRef = useRef(buffer);
   bufferRef.current = buffer;
@@ -105,6 +115,23 @@ const PromptInput = React.memo(function PromptInput({
   );
   const showMenu = slashMenu.length > 0;
 
+  const mentionToken = getCurrentFileMentionToken(buffer);
+  // Same history-gating as the slash menu: recalling an old prompt with the
+  // arrows must not pop the picker open.
+  const mentionOpen = !!mentionToken &&
+    mentionToken.query !== dismissedMention &&
+    historyCursor === -1;
+  // Scan once per open, not per keystroke: walking the whole tree with
+  // readdir on every character would stall the input on large repos.
+  const mentionItems = useMemo(
+    () => (mentionOpen ? scanFileMentionItems(process.cwd()) : []),
+    [mentionOpen],
+  );
+  const mentionMenu = useMemo(
+    () => (mentionOpen && mentionToken ? filterFileMentionItems(mentionItems, mentionToken.query) : []),
+    [mentionOpen, mentionToken, mentionItems],
+  );
+
   const lastCtrlDAt = useRef<number>(0);
   const inputContentWidth = Math.max(1, screenWidth - PROMPT_PREFIX_WIDTH);
   // Footer shows only transient messages (e.g. "press ctrl+d again to exit").
@@ -123,6 +150,14 @@ const PromptInput = React.memo(function PromptInput({
     if (!showMenu) { setMenuIndex(0); return; }
     if (menuIndex >= slashMenu.length) setMenuIndex(slashMenu.length - 1);
   }, [slashMenu, showMenu, menuIndex]);
+
+  // Keep the @-picker's highlight inside the list as the query filters it.
+  useEffect(() => {
+    if (!mentionOpen) { setMentionIndex(0); return; }
+    if (mentionMenu.length > 0 && mentionIndex >= mentionMenu.length) {
+      setMentionIndex(mentionMenu.length - 1);
+    }
+  }, [mentionMenu.length, mentionOpen, mentionIndex]);
 
   useEffect(() => {
     if (wasBusyRef.current && !busy) setStatusMessage(null);
@@ -208,6 +243,31 @@ const PromptInput = React.memo(function PromptInput({
     clearPromptUndoRedoState(undoRedoRef.current);
     setAttachedImages([]);
     attachedImagesRef.current = [];
+    setDismissedMention(null);
+  }
+
+  // Insert a selected file/directory at the mention token, replacing the "@…"
+  // the user typed, and close the menu for that token. A directory keeps its
+  // trailing "/" so the picker reopens filtered inside it on the next char
+  // (drill-down); a file is followed by a space so the next word starts fresh.
+  function handleMentionSelection(item: { path: string; type: "file" | "directory" }): void {
+    if (!mentionToken) return;
+    const { start } = mentionToken;
+    const suffix = item.type === "directory" ? "/" : " ";
+    const cur = bufferRef.current;
+    const nextText = cur.text.slice(0, start) + "@" + item.path + suffix + cur.text.slice(cur.cursor);
+    const nextCursor = start + 1 + item.path.length + suffix.length;
+    const next = { text: nextText, cursor: nextCursor };
+    recordPromptEdit(undoRedoRef.current, cur, next);
+    bufferRef.current = next;
+    setBuffer(next);
+    setPasteSpansChecked([]);
+    // Dismiss the NEW token, not the old query: after inserting a file the
+    // buffer reads "@package.json " whose token query is exactly `item.path` —
+    // dismissing that keeps the menu shut. A directory's new token is
+    // "dir/" which differs from `item.path`, so it reopens as drill-down.
+    setDismissedMention(item.path);
+    setMentionIndex(0);
   }
 
   useTerminalInput((key: InputKey) => {
@@ -228,7 +288,9 @@ const PromptInput = React.memo(function PromptInput({
     // While busy, Esc (or Ctrl+C on an empty buffer) interrupts the running
     // turn. Everything else falls through so the user can keep typing and queue
     // follow-up messages. When idle, Esc also interrupts (no-op if nothing runs).
-    if (key.escape) {
+    // Exception: with the @-file picker open, Esc closes the picker instead —
+    // its own branch below handles that; a second Esc then interrupts.
+    if (key.escape && !mentionOpen) {
       if (busy) { onInterrupt?.(); setStatusMessage("Interrupting…"); return; }
       onInterrupt?.();
       return;
@@ -280,6 +342,33 @@ const PromptInput = React.memo(function PromptInput({
         }
         return;
       }
+    }
+
+    // @-file picker. Handled in the SAME handler as everything else — Ink's
+    // useInput has no stop-propagation, so a second useInput in the menu
+    // component would fire alongside this one: Enter would both insert a file
+    // AND submit the prompt, Esc would both close the menu AND interrupt the
+    // turn, and ↑↓ would both navigate the list AND walk history.
+    if (mentionOpen) {
+      if (key.upArrow) { if (mentionMenu.length > 0) setMentionIndex((i) => (i - 1 + mentionMenu.length) % mentionMenu.length); return; }
+      if (key.downArrow) { if (mentionMenu.length > 0) setMentionIndex((i) => (i + 1) % mentionMenu.length); return; }
+      if (key.tab || key.return) {
+        const selected = mentionMenu[mentionIndex];
+        if (selected) { handleMentionSelection(selected); return; }
+        // No matches: Tab is still swallowed so it never falls through to
+        // submit-as-tab; Enter falls through to submit the buffer as typed.
+        if (key.tab) return;
+      }
+      if (key.escape) {
+        // Close for this token only. The raw escape is consumed here too, so
+        // closing the picker never ALSO interrupts a running turn.
+        if (mentionToken) setDismissedMention(mentionToken.query);
+        setMentionIndex(0);
+        return;
+      }
+      // Any other key (typing a char, backspacing into a new token, an arrow
+      // with no list) falls through to normal editing below; the picker stays
+      // open and re-filters on the next render.
     }
 
     const noMod = !key.shift && !key.ctrl && !key.meta;
@@ -414,6 +503,14 @@ const PromptInput = React.memo(function PromptInput({
           an explicit "/" and closes on the next keystroke, so its cost is a
           deliberate, user-initiated repaint rather than a continuous one. */}
       <SlashCommandMenu width={screenWidth} items={slashMenu} activeIndex={menuIndex} />
+      {mentionOpen && (
+        <FileMentionMenu
+          width={screenWidth}
+          items={mentionMenu}
+          activeIndex={mentionIndex}
+          query={mentionToken?.query ?? ""}
+        />
+      )}
     </Box>
   );
 });

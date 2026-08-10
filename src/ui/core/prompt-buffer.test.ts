@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { moveWordLeft, moveWordRight, type PromptBufferState } from "./prompt-buffer.js";
+import {
+  moveWordLeft, moveWordRight,
+  getCurrentFileMentionToken,
+  type PromptBufferState,
+} from "./prompt-buffer.js";
 
 function at(text: string, cursor: number): PromptBufferState {
   return { text, cursor };
@@ -38,5 +42,31 @@ describe("moveWordRight", () => {
 
   it("jumps over consecutive words from the middle of one", () => {
     expect(moveWordRight(at("foo bar baz", 5)).cursor).toBe(7);
+  });
+});
+
+describe("getCurrentFileMentionToken", () => {
+  it("returns the token after @ at the start of a line or after whitespace", () => {
+    expect(getCurrentFileMentionToken(at("@src/main.ts", 12))).toEqual({ query: "src/main.ts", start: 0 });
+    expect(getCurrentFileMentionToken(at("look at @src/main.ts", 20))).toEqual({ query: "src/main.ts", start: 8 });
+  });
+
+  it("returns an empty query for a bare @, so the picker can open on the @ itself", () => {
+    expect(getCurrentFileMentionToken(at("@", 1))).toEqual({ query: "", start: 0 });
+  });
+
+  it("returns null when @ is mid-word (emails) and for a trailing @ after a space", () => {
+    expect(getCurrentFileMentionToken(at("a@b.com", 6))).toBeNull();
+    // Word-internal: the char before @ is not whitespace.
+    expect(getCurrentFileMentionToken(at("foo@bar", 7))).toBeNull();
+  });
+
+  it("stops the token at whitespace or a quote", () => {
+    expect(getCurrentFileMentionToken(at("say @foo bar", 8))).toEqual({ query: "foo", start: 4 });
+    expect(getCurrentFileMentionToken(at('say "@foo bar"', 9))).toBeNull();
+  });
+
+  it("ignores @ not preceded by whitespace even mid-buffer", () => {
+    expect(getCurrentFileMentionToken(at("prefix@file.ts", 13))).toBeNull();
   });
 });

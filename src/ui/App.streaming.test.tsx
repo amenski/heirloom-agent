@@ -69,7 +69,6 @@ function makeCtx(
     effortValues: () => [],
     provideAbortController: () => new AbortController(),
     renewAbortController: () => {},
-    processAtMentions: async (s: string) => s,
     completer: () => [[], ""],
     buildStatusBar: () => [],
     getPromptStr: () => "❯",

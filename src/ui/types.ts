@@ -131,7 +131,6 @@ export interface AppContext {
   provideAbortController: () => AbortController;
   renewAbortController: () => void;
 
-  processAtMentions: (input: string) => Promise<string>;
   completer: (line: string) => [string[], string];
 
   buildStatusBar: () => StatusSegment[];

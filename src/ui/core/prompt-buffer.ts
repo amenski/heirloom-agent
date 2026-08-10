@@ -105,6 +105,9 @@ export function getCurrentFileMentionToken(state: PromptBufferState): { query: s
   const afterAt = state.text.slice(atIdx + 1);
   const endIdx = afterAt.search(/[\s"]/);
   const query = endIdx === -1 ? afterAt : afterAt.slice(0, endIdx);
-  if (!query) return null;
+  // A bare "@" is a valid token too: it opens the picker with every file listed
+  // (score 5/10 in filterFileMentionItems), which is how the menu is discovered
+  // in the first place. Before this, the helper returned null for an empty
+  // query and "@" did nothing until the user typed a character.
   return { query, start: atIdx };
 }

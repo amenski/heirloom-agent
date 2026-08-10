@@ -54,6 +54,63 @@ export function filterFileMentionItems(items: FileMentionItem[], query: string, 
   return scored.slice(0, maxResults).map((s) => s.item);
 }
 
+// ── Submit-time expansion ────────────────────────────────────────────────────
+// When the prompt is sent, `@path` tokens that name real files are read and
+// attached to the model's view of the prompt as <file> blocks (Claude Code
+// style). Tokens that don't resolve are left in place as plain text — they may
+// be email addresses, usernames, or simply typos.
+
+/**
+ * Relative-to-cwd `@`-mention paths mentioned in a prompt, deduplicated, in
+ * order of appearance. Mirrors the picker's token rules: `@` must sit at the
+ * start of a line or after whitespace/`(`, so emails ("a@b.com") and
+ * word-internal `@` are never treated as mentions.
+ */
+export function extractMentionedPaths(text: string): string[] {
+  const paths: string[] = [];
+  const re = /(^|[\s(])@([^\s@()]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    let token = m[2];
+    // A mention glued to trailing prose punctuation ("@foo.ts,") is still a
+    // mention — strip the punctuation before resolving the path.
+    token = token.replace(/[.,;:!?)\]}]+$/, "");
+    if (!token) continue;
+    if (!paths.includes(token)) paths.push(token);
+  }
+  return paths;
+}
+
+/** Per-file cap on content attached via `@` (bytes of text, not tokens). */
+const MAX_MENTION_CHARS = 60_000;
+
+/**
+ * Reads each resolvable `@`-mention path and returns one `<file path="…">`
+ * block per file, ready to prepend to the prompt. Binary files and unreadable
+ * paths are skipped silently — the mention stays in the prompt as text.
+ */
+export async function expandFileMentions(text: string, cwd = process.cwd()): Promise<string[]> {
+  const blocks: string[] = [];
+  for (const raw of extractMentionedPaths(text)) {
+    const abs = path.resolve(cwd, raw);
+    let buf: Buffer;
+    try {
+      buf = await fs.promises.readFile(abs);
+    } catch {
+      continue;
+    }
+    // NUL byte = binary; dumping raw binary into the prompt would garble the
+    // model's view of the message and waste context on garbage.
+    if (buf.includes(0)) continue;
+    let content = buf.toString("utf8");
+    if (content.length > MAX_MENTION_CHARS) {
+      content = content.slice(0, MAX_MENTION_CHARS) + "\n… [truncated]";
+    }
+    blocks.push(`<file path="${raw}">\n${content}\n</file>`);
+  }
+  return blocks;
+}
+
 function scoreFileMention(itemPath: string, query: string): number {
   if (!query) return itemPath.endsWith("/") ? 5 : 10;
   const p = itemPath.toLowerCase();

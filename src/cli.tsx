@@ -1,5 +1,5 @@
 import { render } from "ink";
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -40,6 +40,7 @@ import { chip, meter } from "./ui/core/chips.js";
 import { ANSI_CLEAR_SCREEN } from "./ui/constants.js";
 import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./ui/core/refresh-rates.js";
 import { installResizeRepaintFix } from "./ui/core/resize-repaint.js";
+import { expandFileMentions } from "./ui/core/file-mentions.js";
 import { probeSyncOutput } from "./terminal-probe.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
@@ -501,7 +502,6 @@ async function main() {
       effortValues: () => getActiveModelCaps()?.effort?.values ?? [],
       provideAbortController: () => shared.abort,
       renewAbortController: () => { shared.abort = new AbortController(); },
-      processAtMentions,
       completer: (line: string) => completer(line, knownModeSlugs),
       buildStatusBar,
       buildModelPill,
@@ -778,23 +778,6 @@ function completer(line: string, knownModeSlugs: string[]): [string[], string] {
     } catch { return [[], line]; }
   }
   return [[], line];
-}
-
-async function processAtMentions(input: string): Promise<string> {
-  const atRegex = /@([^\s]+)/g;
-  let result = input;
-  let match;
-  while ((match = atRegex.exec(input)) !== null) {
-    const filePath = match[1];
-    if (filePath.endsWith("/") || (!filePath.includes(".") && !filePath.includes("/"))) continue;
-    const fullPath = resolve(process.cwd(), filePath);
-    try {
-      const content = readFileSync(fullPath, "utf-8");
-      const truncated = content.length > 4000 ? content.slice(0, 4000) + `\n... (truncated at 4000 chars)` : content;
-      result = result.replace(match[0], `\n--- ${filePath} ---\n${truncated}\n--- end ${filePath} ---\n`);
-    } catch {}
-  }
-  return result;
 }
 
 function extractDecisions(summary: string | null): string[] {
@@ -1074,7 +1057,15 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
   }
   shared.sessionUserInputs.push(input);
-  const processed = await processAtMentions(input);
+  // `@file` mentions (Claude Code style): read the referenced files and attach
+  // their contents to the model's view of the prompt. The transcript echo and
+  // the persisted session keep the raw text — the user's own words — while the
+  // model additionally sees the file contents. Unresolvable mentions are left
+  // in the prompt as plain text (emails, usernames, typos).
+  const mentionBlocks = await expandFileMentions(input);
+  const processed = mentionBlocks.length > 0
+    ? `${mentionBlocks.join("\n\n")}\n\n${input}`
+    : input;
   // Plan mode is read-only: offer only read-group tools so the model cannot
   // call an edit/command tool the plan-mode instruction forbids.
   const tools = planMode
