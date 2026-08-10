@@ -586,7 +586,7 @@ async function main() {
         // Drop the leading system prompt (if any) from the summarized span; it is
         // rebuilt per turn and shouldn't be baked into the summary.
         const withoutSystem = msgs[0]?.role === "system" ? msgs.slice(1) : msgs;
-        const keepCount = Math.min(4, withoutSystem.length);
+        const keepCount = keepBoundary(withoutSystem);
         const old = withoutSystem.slice(0, withoutSystem.length - keepCount);
         const recent = withoutSystem.slice(withoutSystem.length - keepCount);
         if (old.length === 0) return null;
