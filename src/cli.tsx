@@ -996,6 +996,11 @@ export async function handleSlashCore(
     case "/modes": for (const m of await modeLoader.listAll()) console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`); return;
     case "/mode": {
       const slug = input.slice(6).trim();
+      if (!slug) {
+        console.log(`Current: ${shared.activeMode?.slug ?? "code"}`);
+        for (const m of await modeLoader.listAll()) console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`);
+        return;
+      }
       const mode = await modeLoader.load(slug);
       if (mode) { shared.activeMode = mode; await sessionStore.appendState(sessionId, { mode: slug }); console.log(`Switched to ${mode.name} mode.`); }
       else console.log(`Unknown mode: ${slug}.`);

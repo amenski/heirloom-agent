@@ -1,5 +1,5 @@
 export type SlashCommandKind =
-  | "model" | "effort" | "theme" | "new" | "resume" | "continue" | "undo" | "mcp" | "permissions" | "exit" | "help" | "clear" | "skills" | "plan" | "raw" | "doctor" | "compact";
+  | "model" | "mode" | "effort" | "theme" | "new" | "resume" | "continue" | "undo" | "mcp" | "permissions" | "exit" | "help" | "clear" | "skills" | "plan" | "raw" | "doctor" | "compact";
 
 export interface SlashCommandItem {
   kind: SlashCommandKind;
@@ -11,6 +11,7 @@ export interface SlashCommandItem {
 export const BUILTIN_SLASH_COMMANDS: SlashCommandItem[] = [
   { kind: "skills", name: "skills", label: "/skills", description: "List available skills" },
   { kind: "model", name: "model", label: "/model", description: "Select model" },
+  { kind: "mode", name: "mode", label: "/mode", description: "Switch persona (code/ask/architect/…)" },
   { kind: "effort", name: "effort", label: "/effort", description: "Set reasoning effort" },
   { kind: "theme", name: "theme", label: "/theme", description: "Switch color theme (live preview)" },
   { kind: "new", name: "new", label: "/new", description: "Start a fresh conversation" },

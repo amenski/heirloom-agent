@@ -12,6 +12,7 @@ import {
 // with a kind not covered here would fall through to `Unknown:` at runtime.
 const ROUTED_KINDS: ReadonlySet<SlashCommandKind> = new Set<SlashCommandKind>([
   "model",
+  "mode",
   "effort",
   "theme",
   "new",
