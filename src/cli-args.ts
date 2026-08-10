@@ -1,6 +1,7 @@
 import type { Argv } from "yargs";
 import Yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { pkg } from "./version.js";
 
 // Matches the IDs generateId() produces in src/sessions/store.ts.
 const SESSION_ID_REGEX = /^\d{4}-\d{2}-\d{2}T\d{4}-[0-9a-f]{4}$/;
@@ -97,7 +98,7 @@ export async function parseArguments(argv?: string[]): Promise<ParsedCliArgs> {
       yargs.showHelp();
       process.exit(1);
     })
-    .version("1.0.0")
+    .version(pkg.version)
     .alias("v", "version")
     .help()
     .alias("h", "help");

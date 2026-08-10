@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { ToolDef, ToolOutput } from "../types.js";
+import { pkg } from "../version.js";
 
 export interface McpServerConfig {
   name: string;
@@ -108,7 +109,7 @@ export async function listTools(
     await mcpRequest<McpInitializeResult>(config.url, "initialize", {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: "heirloom", version: "1.0.0" },
+      clientInfo: { name: "heirloom", version: pkg.version },
     });
 
     const result = await mcpRequest<McpToolsListResult>(
@@ -221,7 +222,7 @@ export class MCPClient {
       this.sendRequest("initialize", {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "heirloom", version: "1.0.0" },
+        clientInfo: { name: "heirloom", version: pkg.version },
       }).then(() => {
         this.sendRequest("notifications/initialized", {});
         resolve();

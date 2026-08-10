@@ -1,8 +1,9 @@
 import { render } from "ink";
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
+import { pkg } from "./version.js";
 import { checkForNpmUpdate, promptForPendingUpdate } from "./common/update-check.js";
 import { parseArguments } from "./cli-args.js";
 import { runExecMode } from "./exec-runner.js";
@@ -46,9 +47,6 @@ import { StatusLineManager } from "./ui/statusline/index.js";
 import { isSkillAlreadyLoaded, buildSkillLoadMessage } from "./ui/core/skill-load.js";
 import { toModelId } from "./ui/core/model-picker.js";
 import { loadFavoriteModels, loadRecentModels, persistRecentModel, persistToggleFavorite } from "./ui/components/ModelsDropdown/settings.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 
 // Opt-in stall watchdog (HEIRLOOM_PROFILE=1|true): started before the Ink
 // render() call, stopped + reported inside logSessionEnd. Module-level so
