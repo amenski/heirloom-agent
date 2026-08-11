@@ -21,6 +21,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   apply_diff: "Patch",
   apply_patch: "Patch",
   load_skill: "Skill",
+  new_task: "Task",
   ask_user_question: "AskUserQuestion",
 };
 

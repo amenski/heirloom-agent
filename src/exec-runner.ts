@@ -8,6 +8,8 @@ import { PermissionEngine } from "./permissions/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { fireNotify } from "./notify.js";
+import { Orchestrator } from "./orchestrator/index.js";
+import { ModeLoader } from "./modes/loader.js";
 
 export interface ExecRunnerOptions {
   prompt: string;
@@ -78,7 +80,6 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // with a clear "unknown mode" message instead of silently proceeding or
     // crashing later (B1/D7). Loaded lazily to avoid the cost when no --mode.
     if (options.mode) {
-      const { ModeLoader } = await import("./modes/loader.js");
       const modeLoader = new ModeLoader();
       const resolved = await modeLoader.load(options.mode, options.projectRoot);
       if (!resolved) {
@@ -131,6 +132,22 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       writeErr(`permission denied (headless): ${toolName} ${subject}`);
       return false;
     };
+
+    // Orchestrator mode (9.3): register once per headless run so `-p` prompts
+    // can use new_task too. Sub-agents inherit this run's provider, permission
+    // engine (rules + approval posture — no escalation, 24.3), and the
+    // fail-closed headless askUser above. getSignal forwards the run's
+    // AbortController so SIGINT/Ctrl+C cancels an in-flight sub-agent.
+    const orchestrator = new Orchestrator({
+      provider: () => provider,
+      registry,
+      executeTool,
+      modeLoader: new ModeLoader(),
+      permissions,
+      askUser,
+      getSignal: () => abortController.signal,
+    });
+    orchestrator.register(registry);
 
     // Notify hook fires from this completion boundary (turn outcome is
     // definitively known here) for headless `-x` runs, mirroring the

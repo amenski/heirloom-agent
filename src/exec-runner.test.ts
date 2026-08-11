@@ -60,7 +60,7 @@ vi.mock("./providers/presets.js", () => ({
 
 vi.mock("./tools/index.js", () => ({
   executeTool: (call: ToolCall) => executeToolSpy(call),
-  registry: { getAllDefs: () => [] },
+  registry: { getAllDefs: () => [], register: () => {} },
   setSessionId: () => {},
   setSignal: () => {},
 }));

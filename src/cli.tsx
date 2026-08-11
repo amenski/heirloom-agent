@@ -23,6 +23,7 @@ import { DiagnosticRunner } from "./diagnostics/index.js";
 import { startStallWatchdog } from "./diagnostics/stall-watchdog.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
+import { Orchestrator } from "./orchestrator/index.js";
 import { authWizard, authList, authLogout, authSaveKey } from "./auth/wizard.js";
 import { readHiddenLine } from "./auth/hidden-input.js";
 import { SessionStore, type CompactionSummary } from "./sessions/store.js";
@@ -170,6 +171,22 @@ async function main() {
   const modeLoader = new ModeLoader();
   const permissions = new PermissionEngine(configResult.config.permissions, process.cwd());
   const contextWindow = configResult.config.contextWindow ?? 128000;
+
+  // Orchestrator mode (9.3) is registered once at startup, but its runtime
+  // dependencies only exist inside main(): the provider factory resolves per
+  // spawn so sub-agents follow /model switches, and the permission engine is
+  // the live session one so sub-agents inherit the parent's rules + approval
+  // posture and cannot escalate (24.3). askUser is re-pointed per turn by
+  // runAgentTurnCore — the prompt bridge is recreated each turn.
+  const orchestrator = new Orchestrator({
+    provider: () => getProvider(),
+    registry,
+    executeTool,
+    modeLoader,
+    permissions,
+    getSignal: () => shared.abort.signal,
+  });
+  orchestrator.register(registry);
 
   let _compactor: Compactor | undefined;
   function getCompactor(): Compactor {
@@ -540,7 +557,14 @@ async function main() {
           return { ok: false, error: (err as Error).message };
         }
       },
-      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled),
+      runAgentTurnCore: (input: string, cb: any, imageUrls?: string[], planMode?: boolean) => {
+        // Sub-agents spawned by the orchestrator must see this turn's ask
+        // prompt (19.1). cb.askUser is a fresh bridge per turn, so re-point
+        // the orchestrator before delegating — otherwise sub-agents holding
+        // the stale closure would auto-deny every ask-tier action.
+        orchestrator.setAskUser(cb.askUser);
+        return runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled);
+      },
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);

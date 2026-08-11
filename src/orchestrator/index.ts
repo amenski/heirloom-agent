@@ -38,7 +38,13 @@ const NEW_TASK_DEF: ToolDef = {
 };
 
 export interface OrchestratorOptions {
-  provider: Provider;
+  /**
+   * Provider factory resolved at sub-agent spawn time, so a sub-agent always
+   * uses the provider/model the parent session is currently on (including
+   * mid-session `/model` switches) instead of the provider captured at
+   * tool-registration time.
+   */
+  provider: () => Provider;
   registry: ToolRegistry;
   executeTool: (call: ToolCall) => Promise<ToolOutput>;
   modeLoader: ModeLoader;
@@ -51,21 +57,25 @@ export interface OrchestratorOptions {
    * headless branch (no askUser) denies rather than asks.
    */
   askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+  /**
+   * Resolved at sub-agent spawn time. Lets Esc/Ctrl+C at the top level abort
+   * an in-flight sub-agent instead of leaving it running to completion.
+   */
+  getSignal?: () => AbortSignal | undefined;
   maxDepth?: number;
   maxSubTurns?: number;
 }
 
 export class Orchestrator {
-  private options: Required<
-    Pick<OrchestratorOptions, "maxDepth" | "maxSubTurns">
-  > & {
-    provider: Provider;
+  private options: Required<Pick<OrchestratorOptions, "maxDepth" | "maxSubTurns">> & {
+    provider: () => Provider;
     registry: ToolRegistry;
     executeTool: (call: ToolCall) => Promise<ToolOutput>;
     modeLoader: ModeLoader;
     permissions?: PermissionEngine;
-    askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+    getSignal?: () => AbortSignal | undefined;
   };
+  private askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
 
   constructor(options: OrchestratorOptions) {
     this.options = {
@@ -73,6 +83,17 @@ export class Orchestrator {
       maxSubTurns: 10,
       ...options,
     };
+    this.askUser = options.askUser;
+  }
+
+  /**
+   * Re-point the askUser callback. The interactive CLI's prompt bridge is
+   * recreated every turn, so the orchestrator (registered once at startup)
+   * must be told about the current turn's bridge rather than holding a stale
+   * closure. Headless mode leaves this unset, which auto-denies.
+   */
+  setAskUser(askUser: ((toolName: string, args: Record<string, unknown>) => Promise<boolean>) | undefined): void {
+    this.askUser = askUser;
   }
 
   register(registry: ToolRegistry): void {
@@ -112,7 +133,8 @@ export class Orchestrator {
         NEW_TASK_DEF,
       ];
 
-      const subCompactor = new Compactor(this.options.provider);
+      const provider = this.options.provider();
+      const subCompactor = new Compactor(provider);
 
       const subExecuteTool = (call: ToolCall): Promise<ToolOutput> => {
         if (call.name === "new_task") {
@@ -121,18 +143,17 @@ export class Orchestrator {
         return this.options.executeTool(call);
       };
 
-      const subPermissions = this.options.permissions;
-
       try {
         const result = await runAgent(description, {
-          provider: this.options.provider,
+          provider,
           tools: subTools,
           executeTool: subExecuteTool,
           compactor: subCompactor,
-          permissions: subPermissions,
-          askUser: this.options.askUser,
+          permissions: this.options.permissions,
+          askUser: this.askUser,
           maxTurns: this.options.maxSubTurns,
           mode: subMode,
+          signal: this.options.getSignal?.(),
         });
 
         const summary = summarizeMessages(result.messages, description);
