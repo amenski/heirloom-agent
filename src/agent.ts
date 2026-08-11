@@ -10,7 +10,7 @@ import type { SkillDef } from "./skills/index.js";
 import type { MemoryStore } from "./memory/store.js";
 import type { SessionStore, CompactionSummary, PermissionDecision } from "./sessions/store.js";
 import { buildStablePreamble, buildVolatileContext, type PromptContext } from "./prompt.js";
-import { estimateTokens } from "./compaction/budget.js";
+import { estimateTokens, estimateOverheadTokens } from "./compaction/budget.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
@@ -125,14 +125,11 @@ export async function runAgent(
   const stablePreamble = getStablePreamble(promptCtx);
   const volatileContext = await buildVolatileContext(promptCtx);
 
-  // Overhead the compaction check must account for beyond `messages` itself:
-  // the volatile-context prefix (attached to the request but never stored on
-  // `messages`) and the tool schemas (sent verbatim to provider.streamChat).
-  // Tool schemas are stable for the session, so this is computed once here
-  // rather than per turn. Same chars/4 convention as estimateTokens.
-  const toolSchemaTokens = Math.ceil(JSON.stringify(tools).length / 4);
-  const volatileContextTokens = Math.ceil(volatileContext.length / 4);
-  const compactionOverheadTokens = toolSchemaTokens + volatileContextTokens;
+  // Overhead the compaction check must account for beyond `messages` itself.
+  // Stable for the session, so computed once here rather than per turn. Shares
+  // estimateOverheadTokens with the status bar meter and /context so all three
+  // measure the same payload.
+  const compactionOverheadTokens = estimateOverheadTokens(tools, volatileContext);
 
   let messages: Message[] = options.history ? [...options.history] : [];
   // The system prompt lives at position 0 only, and holds only the stable

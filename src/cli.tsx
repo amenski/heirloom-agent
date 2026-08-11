@@ -11,7 +11,7 @@ import { initPresets, createProvider, getPreset, getKnownProviderNames, getProvi
 import { getProviderCapabilities } from "./providers/registry.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap, loadProjectResearch } from "./prompt.js";
-import { estimateTokens, estimateTokensDetailed } from "./compaction/budget.js";
+import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
 import { PermissionEngine } from "./permissions/index.js";
@@ -437,6 +437,19 @@ async function main() {
     });
   }
 
+  // Tool schemas + repo map ride on every request but are absent from
+  // conversationHistory, so measuring history alone under-reads context fill by
+  // most of the payload on a tool-heavy session. Mirrors the tool set
+  // runAgentTurnBridge builds for the active mode; the repo map stands in for
+  // the volatile prefix, which runAgent rebuilds per turn and is not reachable
+  // here. Shared by the status bar meter and /context.
+  function getOverheadTokens(): number {
+    const tools = shared.activeMode?.groups
+      ? registry.getByMode(shared.activeMode.groups)
+      : registry.getAllDefs();
+    return estimateOverheadTokens(tools, repomapInjection);
+  }
+
   function getContextPercent(): number | null {
     const preset = getPreset(shared.providerName);
     const caps = preset?.models[shared.activeModel ?? preset.defaultModel];
@@ -445,7 +458,11 @@ async function main() {
     // per-call usage report. lastContextTokens tracked the last single-call
     // input+output, which fluctuates across turns and never reflects the
     // total context fill level. The /context command uses the same estimator.
-    const total = estimateTokens(shared.conversationHistory);
+    // Overhead is added so the meter reflects the whole request, matching what
+    // the compaction check measures. It is also why the meter is visible from
+    // startup instead of appearing only after the first turn: the tools and repo
+    // map are already on the wire before any message exists.
+    const total = estimateTokens(shared.conversationHistory) + getOverheadTokens();
     if (total === 0) return null;
     return (total / caps.contextWindow) * 100;
   }
@@ -538,7 +555,7 @@ async function main() {
         const lines: string[] = [];
         const origLog = console.log;
         console.log = (...args) => lines.push(args.map(String).join(" "));
-        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort, resetCompactor); } finally { console.log = origLog; }
+        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort, resetCompactor, getOverheadTokens); } finally { console.log = origLog; }
         return lines;
       },
       getModelEntries: () => listKnownModels(),
@@ -909,6 +926,7 @@ export async function handleSlashCore(
   shared: any, getActiveModelCaps: () => ModelCapabilities | undefined,
   getCostStr: () => string | null, colorEnabled: boolean, reasoningEffort: string | undefined,
   resetCompactor: () => void,
+  getOverheadTokens?: () => number,
 ): Promise<void> {
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
@@ -933,7 +951,9 @@ export async function handleSlashCore(
       const asstTokens = breakdown.filter(b => b.role === "assistant").reduce((s, b) => s + b.tokens, 0);
       const toolTokens = breakdown.filter(b => b.role === "tool").reduce((s, b) => s + b.tokens, 0);
       const convTokens = userTokens + asstTokens + toolTokens;
-      const totalUsed = sysTokens + convTokens;
+      // Tool schemas + repo map: on the request, absent from conversationHistory.
+      const overheadTokens = getOverheadTokens?.() ?? 0;
+      const totalUsed = sysTokens + convTokens + overheadTokens;
       const remaining = Math.max(0, cw - totalUsed);
       const pct = (v: number) => ((v / cw) * 100).toFixed(1);
       const bar = (v: number, width: number) => `${"\u2501".repeat(Math.round((v / cw) * width))}`;
@@ -945,6 +965,7 @@ export async function handleSlashCore(
       console.log(`  \u251C User msgs    ${String(userTokens).padStart(6)}`);
       console.log(`  \u251C Assistant    ${String(asstTokens).padStart(6)}`);
       console.log(`  \u2514 Tool results  ${String(toolTokens).padStart(6)}`);
+      console.log(`Tools + RepoMap   ${String(overheadTokens).padStart(6)}  (${pct(overheadTokens).padStart(5)}%)`);
       console.log(`\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
       console.log(`Total Used        ${String(totalUsed).padStart(6)}  (${pct(totalUsed).padStart(5)}%)`);
       console.log(`Remaining         ${String(remaining).padStart(6)}  (${pct(remaining).padStart(5)}%)`);

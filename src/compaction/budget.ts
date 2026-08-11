@@ -45,6 +45,24 @@ export function estimateTokensDetailed(messages: Message[]): TokenBreakdown[] {
   });
 }
 
+/**
+ * Tokens that ride on every request but never live in `messages`: the tool
+ * schemas (passed straight to provider.streamChat) and the volatile-context
+ * prefix (attached to the trailing user message at request time only). The
+ * single definition every consumer shares — the compaction check, the status
+ * bar meter, and /context — so they cannot disagree about context fill.
+ *
+ * Same chars/4 convention as estimateTokens, which under-reads dense JSON
+ * schemas; calibrating against provider-reported inputTokens would fix that.
+ */
+export function estimateOverheadTokens(
+  tools: unknown,
+  volatileContext?: string,
+): number {
+  const toolChars = tools ? JSON.stringify(tools).length : 0;
+  return Math.ceil((toolChars + (volatileContext?.length ?? 0)) / 4);
+}
+
 export function shouldCompact(
   messages: Message[],
   contextWindow: number,
