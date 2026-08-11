@@ -170,7 +170,6 @@ async function main() {
 
   const modeLoader = new ModeLoader();
   const permissions = new PermissionEngine(configResult.config.permissions, process.cwd());
-  const contextWindow = configResult.config.contextWindow ?? 128000;
 
   // Orchestrator mode (9.3) is registered once at startup, but its runtime
   // dependencies only exist inside main(): the provider factory resolves per
@@ -190,7 +189,10 @@ async function main() {
 
   let _compactor: Compactor | undefined;
   function getCompactor(): Compactor {
-    if (!_compactor) _compactor = new Compactor(getProvider(), contextWindow, configResult.config.compaction?.threshold, configResult.config.compaction?.auto ?? true);
+    if (!_compactor) {
+      const contextWindow = configResult.config.contextWindow ?? getActiveModelCaps()?.contextWindow ?? 128000;
+      _compactor = new Compactor(getProvider(), contextWindow, configResult.config.compaction?.threshold, configResult.config.compaction?.auto ?? true);
+    }
     return _compactor;
   }
   // _compactor memoizes the provider captured at first use — after /model
@@ -564,7 +566,7 @@ async function main() {
         // the orchestrator before delegating — otherwise sub-agents holding
         // the stale closure would auto-deny every ask-tier action.
         orchestrator.setAskUser(cb.askUser);
-        return runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled);
+        return runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow);
       },
       resumeSession: async (id: string) => {
         try {
@@ -1084,7 +1086,7 @@ export async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -1129,6 +1131,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     history: shared.conversationHistory.length > 0 ? shared.conversationHistory : undefined,
     imageUrls,
     planMode,
+    contextWindow,
     onText: cb.onText, onReasoning: cb.onReasoning, onToolStart: (name, args) => { shared.toolUsage[name] = (shared.toolUsage[name] || 0) + 1; cb.onToolStart(name, args); }, onToolResult: cb.onToolResult,
     onDiagnostic: cb.onDiagnostic, onRetry: cb.onRetry, onCompacted: cb.onCompacted,
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,

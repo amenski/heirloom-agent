@@ -125,6 +125,15 @@ export async function runAgent(
   const stablePreamble = getStablePreamble(promptCtx);
   const volatileContext = await buildVolatileContext(promptCtx);
 
+  // Overhead the compaction check must account for beyond `messages` itself:
+  // the volatile-context prefix (attached to the request but never stored on
+  // `messages`) and the tool schemas (sent verbatim to provider.streamChat).
+  // Tool schemas are stable for the session, so this is computed once here
+  // rather than per turn. Same chars/4 convention as estimateTokens.
+  const toolSchemaTokens = Math.ceil(JSON.stringify(tools).length / 4);
+  const volatileContextTokens = Math.ceil(volatileContext.length / 4);
+  const compactionOverheadTokens = toolSchemaTokens + volatileContextTokens;
+
   let messages: Message[] = options.history ? [...options.history] : [];
   // The system prompt lives at position 0 only, and holds only the stable
   // preamble — replacing it every turn with byte-identical content (the
@@ -159,6 +168,48 @@ export async function runAgent(
     return copy;
   }
 
+  // Shared by the pre-request check (before provider.streamChat, so an
+  // oversized request never goes out) and the end-of-turn check (catches
+  // growth from tool results within the turn). Reassigns the outer `messages`
+  // in place; `compactor.compact()` itself early-returns as a no-op when
+  // `needsCompaction` is false, so calling this when nothing changed is cheap.
+  async function maybeCompact(overheadTokens: number): Promise<void> {
+    if (!compactor || !compactor.needsCompaction(messages, overheadTokens)) return;
+    const persistedCount = options.sessionStore && options.sessionId
+      ? await options.sessionStore.getMessageCount(options.sessionId)
+      : 0;
+    const before = messages.length;
+    messages = await compactor.compact(messages);
+    if (messages[0]?.role !== "system") {
+      // Reinsert the stable preamble only — no volatile RepoMap/env here,
+      // consistent with the per-turn path above (the next user turn will
+      // carry fresh volatile context of its own).
+      const rebuiltPrompt = getStablePreamble({
+        mode: options.mode,
+        workingDir: process.cwd(),
+        skills: options.skills,
+        repomap: options.repomap,
+        memory: options.memory,
+      });
+      messages.unshift({ role: "system", content: rebuiltPrompt });
+    }
+    if (options.sessionStore && options.sessionId && persistedCount > 0) {
+      const { summary, files } = compactor.getLastCompaction();
+      const compactionSummary: CompactionSummary = {
+        task: summary ?? "Conversation summarized.",
+        decisions: [],
+        files,
+        errors_resolved: [],
+      };
+      await options.sessionStore.appendCompaction(
+        options.sessionId,
+        persistedCount - 1,
+        compactionSummary,
+      );
+    }
+    options.onCompacted?.(`${before} → ${messages.length} messages`);
+  }
+
   let stopReason: "done" | "aborted" | "max_turns" = "done";
   let turn = 0;
   let turnEnded = false;
@@ -190,6 +241,12 @@ export async function runAgent(
     let reasoning = "";
     let turnTokens = 0;
     const pendingCalls: Map<string, { name: string; args: string }> = new Map();
+
+    // Pre-request compaction: catches an oversized context BEFORE it goes out
+    // (the end-of-turn check below only shrinks context for the NEXT turn).
+    // Recomputes requestMessages from `messages` after this, so the request
+    // reflects the compacted set.
+    await maybeCompact(compactionOverheadTokens);
 
     try {
     const requestMessages = volatileContext ? withVolatilePrefix(messages, volatileContext) : messages;
@@ -519,41 +576,7 @@ export async function runAgent(
       }
     }
 
-    if (compactor && compactor.needsCompaction(messages)) {
-      const persistedCount = options.sessionStore && options.sessionId
-        ? await options.sessionStore.getMessageCount(options.sessionId)
-        : 0;
-      const before = messages.length;
-      messages = await compactor.compact(messages);
-      if (messages[0]?.role !== "system") {
-        // Reinsert the stable preamble only — no volatile RepoMap/env here,
-        // consistent with the per-turn path above (the next user turn will
-        // carry fresh volatile context of its own).
-        const rebuiltPrompt = getStablePreamble({
-          mode: options.mode,
-          workingDir: process.cwd(),
-          skills: options.skills,
-          repomap: options.repomap,
-          memory: options.memory,
-        });
-        messages.unshift({ role: "system", content: rebuiltPrompt });
-      }
-      if (options.sessionStore && options.sessionId && persistedCount > 0) {
-        const { summary, files } = compactor.getLastCompaction();
-        const compactionSummary: CompactionSummary = {
-          task: summary ?? "Conversation summarized.",
-          decisions: [],
-          files,
-          errors_resolved: [],
-        };
-        await options.sessionStore.appendCompaction(
-          options.sessionId,
-          persistedCount - 1,
-          compactionSummary,
-        );
-      }
-      options.onCompacted?.(`${before} → ${messages.length} messages`);
-    }
+    await maybeCompact(compactionOverheadTokens);
     } catch (err) {
       if (errorRecovery && !(err as any)?.__providerStreamError) {
         const msg = errorRecovery.handleFatalError(err instanceof Error ? err : new Error(String(err)));

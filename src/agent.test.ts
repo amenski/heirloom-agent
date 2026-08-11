@@ -560,4 +560,43 @@ describe("runAgent", () => {
       expect(executeTool.mock.calls[0][0].arguments).toEqual({ path: "a.txt" });
     });
   });
+
+  describe("pre-request compaction", () => {
+    it("compacts before the provider call, so the provider sees the compacted set", async () => {
+      const { provider, receivedMessages } = makeProvider([textTurn("done")]);
+      const fakeCompactor = {
+        needsCompaction: vi.fn(() => true),
+        // Mirrors the real Compactor: drop everything except a summary plus
+        // the trailing (most recent) message.
+        compact: vi.fn(async (msgs: Message[]) => [
+          { role: "system", content: "[Previous conversation summary]\ncompacted" },
+          msgs[msgs.length - 1],
+        ] as Message[]),
+        getLastCompaction: vi.fn(() => ({ summary: "compacted", files: [] })),
+      };
+
+      // A long prior history that would trip needsCompaction if it were real —
+      // the fake always returns true, so this just needs to exist as history.
+      const history: Message[] = [
+        { role: "system", content: "SYSTEM PROMPT" },
+        { role: "user", content: "x".repeat(1000) },
+      ];
+
+      await runAgent("hi", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "" }),
+        compactor: fakeCompactor as any,
+        history,
+      });
+
+      // needsCompaction was consulted before the provider call, and the
+      // request the provider received reflects the compacted (shorter) set.
+      expect(fakeCompactor.needsCompaction).toHaveBeenCalled();
+      expect(fakeCompactor.compact).toHaveBeenCalled();
+      const sentMessages = receivedMessages[0];
+      expect(sentMessages.length).toBe(2); // compacted system msg + new user msg
+      expect(sentMessages.some((m) => m.content === history[1].content)).toBe(false);
+    });
+  });
 });

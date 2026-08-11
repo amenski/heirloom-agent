@@ -76,4 +76,14 @@ describe("shouldCompact", () => {
     const contextWindow = 100;
     expect(shouldCompact(messages, contextWindow)).toBe(false);
   });
+
+  it("overhead pushes usage over the threshold when bare messages would not", () => {
+    const longContent = "x".repeat(276); // 69 tokens, below 70 on its own
+    const messages: Message[] = [
+      { role: "user", content: longContent },
+    ];
+    const contextWindow = 100;
+    expect(shouldCompact(messages, contextWindow)).toBe(false);
+    expect(shouldCompact(messages, contextWindow, undefined, 5)).toBe(true);
+  });
 });

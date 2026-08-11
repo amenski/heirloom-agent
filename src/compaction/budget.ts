@@ -49,9 +49,10 @@ export function shouldCompact(
   messages: Message[],
   contextWindow: number,
   threshold?: number,
+  overheadTokens = 0,
 ): boolean {
   const ratio = threshold ?? 0.7;
   const cutoff = contextWindow * ratio;
-  const used = estimateTokens(messages);
+  const used = estimateTokens(messages) + overheadTokens;
   return used >= cutoff;
 }

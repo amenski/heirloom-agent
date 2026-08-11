@@ -57,11 +57,11 @@ export class Compactor {
     private auto: boolean = true,
   ) {}
 
-  needsCompaction(messages: Message[]): boolean {
+  needsCompaction(messages: Message[], overheadTokens = 0): boolean {
     // `auto: false` (config compaction.auto) disables automatic compaction.
     // Explicit paths (summarizeForResume, manual /compact) bypass this gate.
     if (!this.auto) return false;
-    return shouldCompact(messages, this.contextWindow, this.threshold);
+    return shouldCompact(messages, this.contextWindow, this.threshold, overheadTokens);
   }
 
   trackFiles(files: string[]): void {
