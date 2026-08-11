@@ -107,6 +107,33 @@ export interface AgentOptions {
   askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
 }
 
+/**
+ * Recognise transient network/fetch errors that should surface as a diagnostic
+ * instead of a fatal crash. These are distinct from AbortError (user-initiated)
+ * but equally recoverable — the user can retry the same prompt.
+ *
+ * TypeError is the name Node's undici fetch assigns to a "terminated" error
+ * (HTTP/2 stream reset, connection drop), hence we must inspect the message
+ * rather than just the error name.
+ *
+ * Walks the `cause` chain: the AI SDK wraps underlying fetch errors in
+ * APICallError, so the ECONNRESET may be nested one or two levels down.
+ */
+function isTransientNetworkError(err: Error): boolean {
+  for (let e: Error | undefined = err; e; e = (e as any).cause as Error | undefined) {
+    // undici TypeError: terminated (HTTP/2 GOAWAY, stream reset, ECONNRESET)
+    if (e.name === "TypeError" && e.message.includes("terminated")) return true;
+    // Node.js system errors with typical transient codes
+    const code = (e as any).code as string | undefined;
+    if (code === "ECONNRESET" || code === "ECONNREFUSED" || code === "ETIMEDOUT" || code === "ENOTFOUND") return true;
+    // undici errors surfaced as TypeError with fetch-related messages
+    if (e.name === "TypeError" && /fetch\s+failed/i.test(e.message)) return true;
+    // AI SDK APICallError — check its URL/message for transient indicators
+    if (e.name === "AI_APICallError" && /ECONNRESET|ECONNREFUSED|ETIMEDOUT|terminated/i.test(e.message)) return true;
+  }
+  return false;
+}
+
 export async function runAgent(
   userMessage: string,
   options: AgentOptions,
@@ -276,6 +303,14 @@ export async function runAgent(
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || (err as any).name === "AbortError")) {
         options.onDiagnostic?.("aborted by user");
+        stopReason = "aborted";
+        break;
+      }
+      // Transient network/connection errors (e.g. ECONNRESET, "terminated") are
+      // recoverable — surface them as a diagnostic so the user sees what happened
+      // and can retry, rather than crashing with a raw stack trace.
+      if (err instanceof Error && isTransientNetworkError(err)) {
+        options.onDiagnostic?.(`connection lost: ${err.message}`);
         stopReason = "aborted";
         break;
       }
