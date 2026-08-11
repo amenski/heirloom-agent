@@ -339,21 +339,24 @@ async function main() {
     let idCounter = 0;
     const nextId = () => `s${++idCounter}`;
 
-    // Leading identity segment: the active mode when one is set, otherwise the
-    // permission posture. Posture still takes over when it is non-default,
-    // because auto-approve/plan change what the agent may do without asking —
-    // that outranks the persona for "what is this session doing right now".
+    // Leading identity: the active mode (green dot) and the permission posture
+    // (warning/info dot) are independent switches — a persona and a permission
+    // scope answer different questions, so showing one must not hide the other.
+    // (Before, posture replaced mode, so switching to plan/auto-approve made a
+    // set /mode look like it had been dropped.) "normal" is the fallback
+    // identity only when neither is set.
     // A coloured dot carries the state and the word stays neutral, so the row
     // has one accent per meaning rather than three competing coloured words.
     const statusDot = (code: number) =>
       colorEnabled ? `${ansiFg(code)}●${ANSI_RESET} ` : "* ";
+    if (shared.activeMode?.name) {
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}${shared.activeMode.name}`, { raw: true }));
+    }
     if (shared.posture === "autoApprove") {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.warning)}auto-approve`, { raw: true }));
     } else if (shared.posture === "plan") {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.info)}plan`, { raw: true }));
-    } else if (shared.activeMode?.name) {
-      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}${shared.activeMode.name}`, { raw: true }));
-    } else {
+    } else if (!shared.activeMode?.name) {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}normal`, { raw: true }));
     }
 
