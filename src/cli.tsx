@@ -342,9 +342,10 @@ async function main() {
 
   // Shown inside the app's scrollback after mount — printing to stdout here
   // would get garbled by Ink's first render.
-  const initialNotice = sessionLoaded
+  const resumeNotice = sessionLoaded
     ? `Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${shared.activeMode?.slug || "code"}`
     : undefined;
+  const initialNotice = [...skillLoader.notices, resumeNotice].filter(Boolean).join("\n") || undefined;
 
   let knownModeSlugs: string[] = [];
   try { knownModeSlugs = (await modeLoader.listAll()).map(m => m.slug); } catch {}

@@ -283,7 +283,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       ctx.showResumeOnStart = false;
     }
     if (ctx.initialNotice) {
-      setOutputLines((prev) => [...prev, theme.colorEnabled ? `\x1b[2m${ctx.initialNotice}\x1b[0m` : ctx.initialNotice!]);
+      const lines = ctx.initialNotice.split("\n");
+      setOutputLines((prev) => [...prev, ...lines.map((l) => (theme.colorEnabled ? `\x1b[2m${l}\x1b[0m` : l))]);
     }
     // A resumed session with prior turns offers a load/compact choice before its
     // transcript is replayed into the scrollback. The chooser handlers do the

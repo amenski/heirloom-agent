@@ -160,6 +160,13 @@ export function isSkillEnabled(
 }
 
 export class SkillLoader {
+  // "[skill] ... loaded/changed" lines, collected instead of console.log'd —
+  // load() runs before Ink's render() takes raw-mode control of stdin, so
+  // printing here directly would garble whatever the user is typing at
+  // startup. The caller shows these in the app's scrollback after mount
+  // (see initialNotice in cli.tsx), same as the resumed-session notice.
+  notices: string[] = [];
+
   async load(options?: {
     headless?: boolean;
     enabledSkills?: Record<string, boolean>;
@@ -191,9 +198,9 @@ export class SkillLoader {
           }
 
           if (trustResult.status === "new") {
-            console.log(`  [skill] ${trustResult.name} loaded (first time) — ${trustResult.sourcePath}`);
+            this.notices.push(`  [skill] ${trustResult.name} loaded (first time) — ${trustResult.sourcePath}`);
           } else if (trustResult.status === "changed") {
-            console.log(`  [skill] ${trustResult.name} changed — ${trustResult.sourcePath}`);
+            this.notices.push(`  [skill] ${trustResult.name} changed — ${trustResult.sourcePath}`);
           }
 
           seen.add(skill.name);
