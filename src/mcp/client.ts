@@ -224,7 +224,7 @@ export class MCPClient {
         capabilities: {},
         clientInfo: { name: "heirloom", version: pkg.version },
       }).then(() => {
-        this.sendRequest("notifications/initialized", {});
+        this.sendNotification("notifications/initialized", {});
         resolve();
       }).catch(reject);
     });
@@ -240,6 +240,12 @@ export class MCPClient {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
       this.process!.stdin!.write(JSON.stringify(request) + "\n");
     });
+  }
+
+  private sendNotification(method: string, params?: Record<string, unknown>): void {
+    if (!this.process || !this.process.stdin) return;
+    const notification = { jsonrpc: "2.0", method, params };
+    this.process.stdin.write(JSON.stringify(notification) + "\n");
   }
 
   async listTools(): Promise<McpTool[]> {

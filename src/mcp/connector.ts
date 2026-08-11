@@ -101,14 +101,18 @@ export async function reconnectMCPServer(name: string, config: McpServerConfig):
             : { type: "object", properties: {}, required: [] },
         },
         handler: async (args) => {
-          const result = await client.callTool(tool.name, args);
-          const content = result.content
-            .filter((c) => c.type === "text")
-            .map((c) => c.text)
-            .join("\n");
-          return result.isError
-            ? { content, error: content }
-            : { content };
+          try {
+            const result = await client.callTool(tool.name, args);
+            const content = result.content
+              .filter((c) => c.type === "text")
+              .map((c) => c.text)
+              .join("\n");
+            return result.isError
+              ? { content, error: content }
+              : { content };
+          } catch (err) {
+            return { content: "", error: (err as Error).message };
+          }
         },
         groups: ["mcp", name] as ToolGroup[],
       });
