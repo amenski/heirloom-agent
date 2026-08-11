@@ -39,6 +39,8 @@ export class PermissionEngine {
   private defaultMode: "allowAll" | "askAll";
   private workingDir: string;
   private projectConfigDir: string;
+  /** True when the user has at least one MCP server configured. Not a rule — never persisted — just the signal that lets defaultMode: allowAll cover mcp__* tools without an explicit rule. */
+  private hasMcpServersConfigured: boolean;
 
   /** Tools whose exact/glob patterns carry file paths (normalized on load). */
   private static readonly FILE_TOOLS = new Set([
@@ -61,11 +63,12 @@ export class PermissionEngine {
     "edit", "edit_file", "write_to_file", "search_replace", "apply_diff", "apply_patch",
   ]);
 
-  constructor(config?: PermissionConfig, workingDir?: string) {
+  constructor(config?: PermissionConfig, workingDir?: string, hasMcpServersConfigured?: boolean) {
     this.workingDir = workingDir ?? process.cwd();
     this.configRules = (config?.rules ?? []).map((r) => this.normalizeConfigRule(r));
     this.defaultMode = config?.defaultMode ?? "askAll";
     this.projectConfigDir = join(this.workingDir, ".heirloom");
+    this.hasMcpServersConfigured = hasMcpServersConfigured ?? false;
   }
 
   /**
@@ -184,8 +187,13 @@ export class PermissionEngine {
       // Only user-configured rules count toward "this tool is recognized" —
       // builtin destructive/guarded rules exist for every install regardless
       // of user intent, so they can't be what makes an unconfigured tool "known."
+      // MCP tools are the one exception: connecting a server via mcpServers is
+      // itself an explicit opt-in, so it stands in for a rule without one
+      // actually needing to exist (and therefore without ever being persisted).
       const userRules = [...this.configRules, ...this.sessionRules];
-      const hasAnyRuleForTool = userRules.some((r) => r.tool === toolName || r.tool === "*" || (r.tool === "mcp__*" && toolName.startsWith("mcp__")));
+      const hasAnyRuleForTool =
+        userRules.some((r) => r.tool === toolName || r.tool === "*" || (r.tool === "mcp__*" && toolName.startsWith("mcp__"))) ||
+        (toolName.startsWith("mcp__") && this.hasMcpServersConfigured);
       if (this.defaultMode === "allowAll" && hasAnyRuleForTool) {
         return { action: "allow", wasUnresolved: false };
       }

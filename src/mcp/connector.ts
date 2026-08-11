@@ -43,6 +43,7 @@ function basename(command: string): string {
 const toolSnapshots = new Map<string, ToolSnapshot[]>();
 const statusMap = new Map<string, McpServerStatus>();
 const errorMap = new Map<string, string>();
+const clientsMap = new Map<string, MCPClient>();
 let serverConfigsMap = new Map<string, McpServerConfig>();
 let strictMcpConfig = false;
 
@@ -68,6 +69,12 @@ export async function reconnectMCPServer(name: string, config: McpServerConfig):
   statusMap.set(name, "reconnecting");
   errorMap.delete(name);
 
+  const staleClient = clientsMap.get(name);
+  if (staleClient) {
+    staleClient.disconnect();
+    clientsMap.delete(name);
+  }
+
   if (strictMcpConfig) {
     const cmd = basename(config.command);
     if (!ALLOWED_MCP_COMMANDS.has(cmd)) {
@@ -86,12 +93,13 @@ export async function reconnectMCPServer(name: string, config: McpServerConfig):
   try {
     const client = new MCPClient();
     await client.connect(config.command, config.args || [], config.env);
+    clientsMap.set(name, client);
 
     const tools = await client.listTools();
     toolSnapshots.set(name, tools.map(t => ({ name: t.name, inputSchema: t.inputSchema as Record<string, unknown> | undefined })));
 
     for (const tool of tools) {
-      const namespacedName = `${name}/${tool.name}`;
+      const namespacedName = `mcp__${name}__${tool.name}`;
       registry.register({
         def: {
           name: namespacedName,
@@ -119,7 +127,6 @@ export async function reconnectMCPServer(name: string, config: McpServerConfig):
     }
 
     statusMap.set(name, "connected");
-    process.stderr.write(`  [mcp] ${name}: ${tools.length} tool(s) registered\n`);
   } catch (err) {
     statusMap.set(name, "failed");
     errorMap.set(name, (err as Error).message);
@@ -137,4 +144,11 @@ export async function connectMCPServers(
     statusMap.set(name, "starting");
     await reconnectMCPServer(name, config);
   }
+}
+
+export function disconnectAllMCPServers(): void {
+  for (const client of clientsMap.values()) {
+    client.disconnect();
+  }
+  clientsMap.clear();
 }

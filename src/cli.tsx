@@ -32,7 +32,7 @@ import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.
 import { loadConfig } from "./config/loader.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
-import { connectMCPServers } from "./mcp/connector.js";
+import { connectMCPServers, disconnectAllMCPServers } from "./mcp/connector.js";
 import App from "./ui/App.js";
 import type { Message } from "./types.js";
 import type { ModelCapabilities } from "./providers/types.js";
@@ -105,6 +105,7 @@ async function main() {
 
   if (configResult.config.mcpServers) {
     await connectMCPServers(configResult.config.mcpServers, { strictMcpConfig: configResult.config.strictMcpConfig });
+    process.on("exit", () => disconnectAllMCPServers());
   }
 
   let initialPrompt = parsed.prompt;
@@ -169,7 +170,11 @@ async function main() {
   }
 
   const modeLoader = new ModeLoader();
-  const permissions = new PermissionEngine(configResult.config.permissions, process.cwd());
+  const permissions = new PermissionEngine(
+    configResult.config.permissions,
+    process.cwd(),
+    Object.keys(configResult.config.mcpServers ?? {}).length > 0,
+  );
 
   // Orchestrator mode (9.3) is registered once at startup, but its runtime
   // dependencies only exist inside main(): the provider factory resolves per

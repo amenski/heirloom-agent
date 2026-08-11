@@ -123,7 +123,11 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // bash segments) has no one to prompt, so the askUser below fails closed —
     // it denies and prints one stderr line so a scripted user knows why a run
     // did less than expected. See docs/permission-spec.md § Headless Interaction.
-    const permissions = new PermissionEngine(configResult.config.permissions, options.projectRoot);
+    const permissions = new PermissionEngine(
+      configResult.config.permissions,
+      options.projectRoot,
+      Object.keys(configResult.config.mcpServers ?? {}).length > 0,
+    );
     const askUser = async (toolName: string, args: Record<string, unknown>): Promise<boolean> => {
       const subject =
         toolName === "run_bash"

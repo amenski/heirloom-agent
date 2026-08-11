@@ -175,12 +175,17 @@ export class MCPClient {
   private process: ChildProcess | null = null;
   private requestId = 1;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
+  private stderrTail = "";
 
   async connect(command: string, args: string[], env?: Record<string, string>): Promise<void> {
     return new Promise((resolve, reject) => {
       this.process = spawn(command, args, {
-        stdio: ["pipe", "pipe", "inherit"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, ...env },
+      });
+
+      this.process.stderr?.on("data", (chunk: Buffer) => {
+        this.stderrTail = (this.stderrTail + chunk.toString()).slice(-2000);
       });
 
       const rl = createInterface({ input: this.process.stdout!, historySize: 0 });
@@ -203,16 +208,19 @@ export class MCPClient {
       });
 
       this.process.on("error", (err) => {
+        const tail = this.stderrTail.trim();
+        const wrapped = tail ? new Error(`${err.message}: ${tail}`) : err;
         for (const [, pending] of this.pending) {
-          pending.reject(err);
+          pending.reject(wrapped);
         }
         this.pending.clear();
-        reject(err);
+        reject(wrapped);
       });
 
       this.process.on("exit", (code) => {
         if (this.process && this.process.exitCode !== null) return;
-        const msg = `MCP server exited with code ${code}`;
+        const tail = this.stderrTail.trim();
+        const msg = `MCP server exited with code ${code}` + (tail ? `: ${tail}` : "");
         for (const [, pending] of this.pending) {
           pending.reject(new Error(msg));
         }
@@ -237,9 +245,30 @@ export class MCPClient {
     return new Promise((resolve, reject) => {
       const id = this.requestId++;
       const request: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP request "${method}" timed out after ${MCP_TIMEOUT_MS}ms`));
+      }, MCP_TIMEOUT_MS);
+
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value as T);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
       this.process!.stdin!.write(JSON.stringify(request) + "\n");
     });
+  }
+
+  disconnect(): void {
+    if (this.process && this.process.exitCode === null && this.process.signalCode === null) {
+      this.process.kill();
+    }
   }
 
   private sendNotification(method: string, params?: Record<string, unknown>): void {

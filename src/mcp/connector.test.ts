@@ -10,6 +10,7 @@ vi.mock("./client.js", () => ({
     connect = connectMock;
     listTools = listToolsMock;
     callTool = vi.fn(async () => ({ content: [] }));
+    disconnect = vi.fn();
   },
 }));
 
