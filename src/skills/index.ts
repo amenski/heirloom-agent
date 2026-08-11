@@ -197,9 +197,10 @@ export class SkillLoader {
             continue;
           }
 
-          if (trustResult.status === "new") {
-            this.notices.push(`  [skill] ${trustResult.name} loaded (first time) — ${trustResult.sourcePath}`);
-          } else if (trustResult.status === "changed") {
+          // New skills register silently (a fresh project would otherwise spam a
+          // line per skill). "changed" stays visible: it is the tamper warning —
+          // the only signal that a skill's content differs from what previously ran.
+          if (trustResult.status === "changed") {
             this.notices.push(`  [skill] ${trustResult.name} changed — ${trustResult.sourcePath}`);
           }
 
