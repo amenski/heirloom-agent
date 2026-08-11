@@ -64,7 +64,7 @@ architectural swings on the roadmap; drop the rest.
 | Item | Source | Effort | Why later |
 |---|---|---|---|
 | **PermissionProfile ACL model** (path/network/git sandbox) | #263 | L | A *parallel* permission architecture to the current rule engine — needs its own design doc + a reconcile-or-migrate decision. |
-| **Sub-task orchestration** (`new_task` tool, `src/orchestrator/`) | — | L | Deferred — intentional future work. The built subsystem stays in-tree unwired; before mounting `new_task` it needs a design doc covering permission inheritance (how a sub-task's rules derive from the parent) and recursion limits (depth/fan-out bounds). |
+| ~~**Sub-task orchestration**~~ (`new_task` tool, `src/orchestrator/`) ✅ **wired 2026-08-11** | — | L | `new_task` is now mounted in both the TUI (`cli.tsx:181–189`) and headless `-p` (`exec-runner.ts:141–150`) registries; sub-agents run a real `runAgent` turn in the target mode's toolset, inherit the parent's live permission engine (rules + approval posture, no escalation) and per-spawn provider factory (follows `/model` switches). Enforcement today: depth cap 3, max 10 sub-agent turns. Remaining roadmap slice: the design doc for permission inheritance + recursion limits. |
 | ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** (`7290aab`) | #266 | M | Additive to `instructions.md`/`AGENTS.md`; landed — promoted to Do-now shipped list. |
 | **Auto error-fix loop + `<error_analysis>`** | #266 | M | Must first audit overlap with existing `errorrecovery/` + `selfreflection/`. |
 | **Lifecycle hooks** (shell on events) | #263 | M | Powerful but another untrusted-exec surface — opt-in + security-spec first. Highest-leverage of the remaining roadmap tier. |
@@ -522,9 +522,9 @@ strictly richer and already integrated. This is the clearest "borrow the
 > constructed and threaded into the agent context; `enabledSkills`,
 > `compaction.auto`, and `workflow.gitPollInterval` all have real consumers;
 > `notify` and `statusline` are wired. The tables are kept as a record of the
-> audit method and its findings, **not** as an open work list. The only item
-> still genuinely deferred is the `Orchestrator` / `new_task` subsystem, which
-> is intentional (see the Roadmap tier).
+> audit method and its findings, **not** as an open work list. The last
+> deferred item — the `Orchestrator` / `new_task` subsystem — was wired on
+> 2026-08-11 (see the Roadmap tier), closing the sweep.
 
 This repo had a recurring disease: config keys, modules, and whole subsystems
 that were **declared/parsed/plumbed but consumed by nothing**. This section is a
@@ -562,7 +562,7 @@ Keys confirmed **live** (traced to a real consumer): `env`, `model`,
 
 | Symbol / module | Where declared | Evidence | Recommend |
 |---|---|---|---|
-| **`Orchestrator`** subsystem | `src/orchestrator/index.ts` (`Orchestrator` class, `OrchestratorOptions`, `new_task` tool def) | **Nothing imports the module.** `new_task` is registered by no tool registry; only non-code hit is a comment in `permissions/smoke.test.ts`. Entire subsystem orphan. | **Deferred — intentional future work.** Kept in-tree (not deleted); moved to the [🗺️ Roadmap tier](#-roadmap--valuable-but-bigger--needs-its-own-decision) — needs a design doc (permission inheritance + recursion limits) before wiring. |
+| ~~**`Orchestrator`** subsystem~~ ✅ **wired 2026-08-11** | `src/orchestrator/index.ts` (`Orchestrator` class, `OrchestratorOptions`, `new_task` tool def) | **Resolved 2026-08-11.** `new_task` is registered by both the TUI (`cli.tsx:181–189`) and headless (`exec-runner.ts:141–150`) registries; sub-agents run a real `runAgent` turn with the parent's live permission engine and a per-spawn provider. Covered by `src/orchestrator/orchestrator.test.ts` (4 tests). | **Wired.** Remaining roadmap slice is the design doc (permission inheritance + recursion limits); enforcement today is depth cap 3 / max 10 sub-turns. |
 | **`ErrorRecovery`** subsystem | `src/errorrecovery/index.ts` | Only `agent.ts:8` imports it, as `type`, for the optional field `errorRecovery?` (`agent.ts:64`). The field **is** read (159/236/418) but **no caller of `runAgent` ever sets it** (`cli.tsx`, `exec-runner.ts`, `orchestrator`) and there is no `new ErrorRecovery`. Always `undefined`. | **Being wired (in-flight)** — parallel agent is instantiating + threading it in. |
 | **`ErrorReflector`** subsystem | `src/selfreflection/index.ts` | Same shape: `agent.ts:7` `type`-imports it for `errorReflector?` (`:63`); read at 159/336/338/340 but never populated; no `new ErrorReflector`. Always `undefined`. | **Being wired (in-flight)** — parallel agent owns activation (see errorrecovery). |
 | **`RepoMap`** subsystem | `src/repomap/index.ts` (~470 lines) | `type`-imported by `agent.ts:10` + `prompt.ts:3`; `prompt.ts:78` calls `ctx.repomap.getMap(...)` — but no caller ever sets `repomap`, so it is always `undefined` and the ~470-line impl never executes. | **Being wired (in-flight)** — parallel agent is constructing a `RepoMap` into the agent ctx. |

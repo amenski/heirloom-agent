@@ -24,7 +24,7 @@ get promoted to `todo.md` / a spec only when picked up.
 | 2 | **Lifecycle hooks** | `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart/End`, `PreCompact`, `Notification`, `Stop`, `SubagentStop`; Setup `init`/`maintenance` matchers | `notify.ts` is a single completion-boundary shell hook | M | Most leverage per line; already flagged in improvement-roadmap (PR #263 hooks). Build on `notify.ts`. |
 | 3 | **Custom slash commands from files** | `.claude/commands/*.md` (frontmatter: description, argument-hint, allowed-tools, model) | Builtin registry only (`src/ui/core/slash-commands.ts`); `ModeLoader`/`SkillLoader` already do file loading | S | Cheap, reuses existing loader patterns. |
 | 4 | **Flag parity batch** | `--max-turns`, `--system-prompt-file`, `--append-system-prompt`, `--allowedTools`/`--disallowedTools`, `--permission-mode`, `--name`/`/rename`, `--fork-session`, `--bare`, `--settings` | `maxTurns` exists in `agent.ts` (default 100) but no flag; permissions via config+posture only; sessions have a renamable `title` but no flag/command | S each | Small, individually shippable. |
-| 5 | **Subagents** (`--agents`, `new_task`) | `claude --agents '{"reviewer":{...}}'`; subagent frontmatter (name, description, tools, model) | `src/orchestrator/` exists with a `new_task` tool def but is imported by **nothing** | L | Biggest differentiator; also the biggest lift. Needs the design doc the roadmap already demands (permission inheritance, recursion limits). |
+| 5 | **Subagents** (`--agents`, `new_task`) | `claude --agents '{"reviewer":{...}}'`; subagent frontmatter (name, description, tools, model) | `new_task` **wired 2026-08-11** — mounts in the TUI + headless registries, delegates to any mode's `runAgent` turn, inherits the parent's permission engine; no `--agents` config or custom frontmatter yet | M–L | Half built; remaining lift is `--agents`-style definitions (per-mode tool/model overrides) + the permission-inheritance design doc. |
 | 6 | **Git worktrees** (`-w`) | `claude -w feature-auth` → isolated worktree at `<repo>/.claude/worktrees/<name>`; `#<n>`/PR URL support | No worktree support; `workflow.gitCommands` is deprecated/ignored (`loader.ts:789`) | L | Greenfield; separate workstream. |
 | 7 | **Background bash at exit** | `claude -p` terminates background Bash ~5s after result, kills the process tree | Long `run_bash` calls tie up the turn (already on improvement-roadmap as "background/streaming command output") | M | Reuses the existing roadmap item; different framing (exit semantics + tree kill). |
 
@@ -174,16 +174,11 @@ nest; `--append-subagent-system-prompt` appends text to every subagent's prompt.
 In `stream-json`, subagent messages carry `parent_tool_use_id` for transcript
 reconstruction.
 
-**Heirloom today (code-verified):** `src/orchestrator/index.ts` already contains
-an `Orchestrator` class and a `new_task` tool def — but nothing imports the
-module (the improvement-roadmap dead-wiring audit confirmed this; still true).
-The roadmap already requires a design doc before wiring: **permission
-inheritance** (how a sub-task's rules derive from the parent) and **recursion
-limits** (depth/fan-out bounds).
+**Heirloom today (code-verified 2026-08-11):** `src/orchestrator/index.ts` has an `Orchestrator` class + a `new_task` tool def, now **wired** in both the TUI (`cli.tsx:181–189`) and headless `-p` (`exec-runner.ts:141–150`) registries. Sub-agents run a real `runAgent` turn in the requested mode's toolset, inheriting the parent's **live** permission engine (rules + approval posture — no escalation) and the parent's provider factory (follows mid-session `/model` switches). Enforcement today: depth cap 3, max 10 sub-agent turns; sub-agent tools = target mode's group tools + `new_task` (for recursion).
 
-**Recommendation:** do **not** start here. It's the biggest differentiator but
-the codebase already has a deliberate, documented "deferred until designed"
-answer for it. Revisit once 1–4 ship and the permission model settles.
+**Gap vs. Claude Code:** `--agents` inline definitions / subagent frontmatter (per-mode model, description, tool overrides) and the roadmap's design doc for permission inheritance + recursion limits.
+
+**Recommendation:** partially built — `new_task` is usable now. The next slice (frontmatter-style agent definitions + the permission-inheritance design doc) should ride on the permission-model work; keep it behind the roadmap's design doc until that settles.
 
 ---
 
@@ -232,8 +227,7 @@ and pair naturally with #2 (`SessionEnd` hooks on SIGTERM).
 3. **#4 flag batch** — pick the 2–3 that hurt most (`--max-turns`,
    `--allowedTools`, `--permission-mode` are the CI-relevant trio).
 4. **#3 custom slash commands** — cheap, reuses loaders.
-5. **#5 subagents, #6 worktrees** — separate design docs; #5 revives the
-   orphaned `Orchestrator` behind the roadmap's required design doc.
+5. **#5 subagents, #6 worktrees** — separate design docs; #5 finishes the now-wired `Orchestrator` (`new_task` ships, `--agents`-style definitions + permission-inheritance doc remain).
 
 ## Open questions / verify during implementation
 
