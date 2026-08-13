@@ -5,6 +5,7 @@ import App from "./App.js";
 import type { AppContext } from "./types.js";
 import { __resetInputWireForTests } from "./hooks/useTerminalInput.js";
 import { stripAnsi } from "./test-helpers.js";
+import { todoStore } from "../tools/todo.js";
 
 // ── Test doubles ──
 //
@@ -133,6 +134,59 @@ async function runTurn(
   await flush();
   return { lastFrame: () => inst.lastFrame(), inst };
 }
+
+describe("todo panel", () => {
+  afterEach(() => todoStore.reset());
+
+  it("renders the agent's live checklist, suppresses the redundant result echo, and clears at the next turn", async () => {
+    todoStore.reset();
+    const ctx = makeCtx(async (_input: string, cb: any) => {
+      // The model's first update_todo_list call: the ⏺ header fires, then the
+      // real handler writes the store (simulated here), then the tool result
+      // returns the full list.
+      cb.onToolStart("update_todo_list", { todos: [] });
+      todoStore.setTodos([
+        { content: "Add F feedrate capture", status: "pending" },
+        { content: "Per-segment time math", status: "in_progress" },
+        { content: "UI row in the pro gate", status: "completed" },
+      ]);
+      cb.onToolResult("update_todo_list", {
+        content: "Todo list updated (3 items):\n# Current todo list\n- [pending] Add F feedrate capture",
+      });
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("build it");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    // The turn is over by now; the panel persists (dimmed) with all three
+    // statuses rendered as the checklist glyphs.
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).toContain("◻ Add F feedrate capture");
+    expect(frame).toContain("▸ Per-segment time math");
+    expect(frame).toContain("☑ UI row in the pro gate");
+    // The call header stays (visible marker), but the redundant result echo —
+    // which would print the whole list dimmed — is suppressed.
+    expect(frame).toContain("⏺ update_todo_list");
+    expect(frame).not.toContain("Todo list updated");
+
+    // A check-off mid-turn re-renders the panel live.
+    todoStore.setTodos([
+      { content: "Add F feedrate capture", status: "completed" },
+      { content: "Per-segment time math", status: "in_progress" },
+    ]);
+    await flush();
+    await flush();
+    const frame2 = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame2).toContain("☑ Add F feedrate capture");
+    expect(frame2).not.toContain("◻ Add F feedrate capture");
+  });
+});
 
 describe("App streaming markdown", () => {
   it("merges a span split across streamed lines into bold", async () => {

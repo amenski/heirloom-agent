@@ -1,10 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runAgent } from "./agent.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
 import type { Provider, StreamEvent } from "./providers/types.js";
 import type { Message } from "./types.js";
+import { todoStore } from "./tools/todo.js";
+import { executeTool } from "./tools/index.js";
 
 vi.mock("./prompt.js", () => ({
   buildStablePreamble: vi.fn(() => "SYSTEM PROMPT"),
@@ -558,6 +560,99 @@ describe("runAgent", () => {
 
       expect(onDiagnostic).not.toHaveBeenCalled();
       expect(executeTool.mock.calls[0][0].arguments).toEqual({ path: "a.txt" });
+    });
+  });
+
+  describe("update_todo_list integration (real registry)", () => {
+    // Drives the REAL tool registry + permission engine + todo store through
+    // the loop, so this is an end-to-end test of registration, the builtin
+    // allow rule (no permission prompt on check-offs), and the live per-sub-
+    // turn context injection at the request-build site.
+    beforeEach(() => todoStore.reset());
+
+    const planTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "c1", name: "update_todo_list" },
+      { type: "tool_call_delta", id: "c1", arguments: JSON.stringify({
+        todos: [
+          { content: "Add F feedrate capture", status: "pending" },
+          { content: "Per-segment time math", status: "in_progress" },
+          { content: "UI row in the pro gate", status: "completed" },
+        ],
+      }) },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    const progressTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "c2", name: "update_todo_list" },
+      { type: "tool_call_delta", id: "c2", arguments: JSON.stringify({
+        todos: [
+          { content: "Add F feedrate capture", status: "completed" },
+          { content: "Per-segment time math", status: "in_progress" },
+          { content: "UI row in the pro gate", status: "pending" },
+        ],
+      }) },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("executes without a permission prompt and injects the live list into each sub-turn request", async () => {
+      const { provider, receivedMessages } = makeProvider([planTurn(), progressTurn(), textTurn("all done")]);
+      const askUser = vi.fn(async () => true);
+
+      const result = await runAgent("build the feedrate feature", {
+        provider,
+        tools: [],
+        executeTool, // real registry — the real handler writes the real store
+        permissions: new PermissionEngine(undefined, "/workspace"), // default askAll + builtin allow rules
+        askUser,
+        getTodos: () => todoStore.getTodos(),
+      });
+
+      // The builtin allow rule means the check-offs never hit the permission
+      // prompt; had the rule been missing, askUser would have been called.
+      expect(askUser).not.toHaveBeenCalled();
+
+      // Store holds the final plan (the second update replaced the first).
+      expect(todoStore.getTodos()).toEqual([
+        { content: "Add F feedrate capture", status: "completed" },
+        { content: "Per-segment time math", status: "in_progress" },
+        { content: "UI row in the pro gate", status: "pending" },
+      ]);
+
+      // The model-facing tool output returns the updated list.
+      expect(result.newMessages.some(
+        (m) => m.role === "tool" && typeof m.content === "string" && m.content.includes("Todo list updated (3 items)"),
+      )).toBe(true);
+
+      // Turn 1 request: list is empty, so no todo block is injected.
+      expect(JSON.stringify(receivedMessages[0])).not.toContain("# Current todo list");
+
+      // Turn 2 request: reflects the state after turn 1's update (live, not a
+      // stale snapshot computed once at run start).
+      expect(JSON.stringify(receivedMessages[1])).toContain("# Current todo list");
+      expect(JSON.stringify(receivedMessages[1])).toContain("- [pending] Add F feedrate capture");
+      expect(JSON.stringify(receivedMessages[1])).toContain("- [in_progress] Per-segment time math");
+      expect(JSON.stringify(receivedMessages[1])).toContain("- [completed] UI row in the pro gate");
+
+      // Turn 3 request: reflects turn 2's check-off.
+      expect(JSON.stringify(receivedMessages[2])).toContain("- [completed] Add F feedrate capture");
+      expect(JSON.stringify(receivedMessages[2])).toContain("- [pending] UI row in the pro gate");
+    });
+
+    it("does not inject the todo block when getTodos is absent (sub-agent contract)", async () => {
+      const { provider, receivedMessages } = makeProvider([planTurn(), textTurn("ok")]);
+
+      await runAgent("plan it", {
+        provider,
+        tools: [],
+        executeTool,
+      });
+
+      // The handler still ran and wrote the shared store, but the sub-agent's
+      // volatile prefix never carries the list (the tool result below still
+      // shows it — that's the handler's output, not a prefix injection).
+      expect(todoStore.getTodos()).toHaveLength(3);
+      const userMsg = receivedMessages[1].find((m) => m.role === "user")!;
+      expect(String(userMsg.content)).not.toContain("# Current todo list");
     });
   });
 

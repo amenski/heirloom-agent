@@ -23,4 +23,8 @@ export const BUILTIN_ALLOW_RULES: PermissionRule[] = [
   { tool: "list_files", kind: "glob", pattern: "./**", action: "allow", origin: "config" },
   { tool: "glob", kind: "any", pattern: "", action: "allow", origin: "config" },
   { tool: "search", kind: "any", pattern: "", action: "allow", origin: "config" },
+  // Meta tool: mutates only the in-memory todo store; same trust class as
+  // glob. Never prompts — the model checks items off mid-turn, and a prompt
+  // on every call would be noise.
+  { tool: "update_todo_list", kind: "any", pattern: "", action: "allow", origin: "config" },
 ];

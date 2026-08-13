@@ -41,6 +41,9 @@ import {
   type StreamBlockState,
 } from "./core/stream-blocks.js";
 import HintBar from "./HintBar.js";
+import TodoPanel from "./TodoPanel.js";
+import { todoStore } from "../tools/todo.js";
+import type { TodoItem } from "../tools/todo.js";
 import StatusBar from "./StatusBar.js";
 import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
 import { explainToolAction } from "./explain-action.js";
@@ -176,6 +179,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [statusLineProviderSegments, setStatusLineProviderSegments] = useState<
     StatusSegment[]
   >(() => ctx.statusLineManager?.segments ?? []);
+  // Todo checklist state, mirrored from the shared store so the panel
+  // re-renders on every update_todo_list call. Initialized from the store
+  // (empty at mount).
+  const [todos, setTodos] = useState<TodoItem[]>(() => todoStore.getTodos());
   const [askPrompt, setAskPrompt] = useState<{
     resolve: (v: boolean) => void;
     toolName: string;
@@ -304,6 +311,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     mgr.start();
     return () => mgr.stop();
   }, []);
+
+  // Mirror the shared todo store into React state. The store pushes a new array
+  // per update_todo_list call; event-driven, so no timers repaint the panel.
+  useEffect(() => todoStore.subscribe(setTodos), []);
 
   useEffect(() => {
     // Gate + interval come from config (workflow.gitStatus / gitPollInterval).
@@ -559,6 +570,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
       turnActiveRef.current = true;
 
+      // Fresh checklist per turn: clear the previous turn's (dimmed) list. The
+      // store subscriber above clears the panel synchronously. After the turn
+      // ends the last state stays on screen — dimmed — until the next turn.
+      todoStore.reset();
+
       const scheduleOutput = (line: string) => {
         if (rawMode.mode === "raw") {
           process.stdout.write(line + "\n");
@@ -725,7 +741,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           const content = result.error
             ? `Error: ${result.error}`
             : (result.content ?? "");
-          if (content.trim() !== "") {
+          // The TodoPanel renders todo state live; echoing the whole list as a
+          // dim preview is noise (the list can be 12 lines). Keep the ⏺ header.
+          if (content.trim() !== "" && _name !== "update_todo_list") {
             const isError = !!result.error || content.startsWith("PERMISSION_DENIED") || content.startsWith("COMMAND_FAILED");
             for (const line of formatToolResultPreview(content)) {
               if (theme.colorEnabled) {
@@ -1473,6 +1491,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         busy={busy}
         staticEpoch={staticEpoch}
       />
+
+      {/* Live checklist for the agent's update_todo_list plan (src/tools/todo.ts). */}
+      <TodoPanel todos={todos} active={turnActive} />
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 

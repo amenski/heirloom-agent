@@ -10,6 +10,7 @@ import { registerAskUserQuestion } from "./ask_user_question.js";
 import { registerWebSearch } from "./web-search.js";
 import { registerWebFetch } from "./web-fetch.js";
 import { registerJobs } from "./jobs.js";
+import { registerTodo } from "./todo.js";
 
 const registry = new ToolRegistry();
 registerFiles(registry);
@@ -20,6 +21,7 @@ registerAskUserQuestion(registry);
 registerWebSearch(registry);
 registerWebFetch(registry);
 registerJobs(registry);
+registerTodo(registry);
 
 export { registry };
 export const TOOL_DEFS = registry.getAllDefs();

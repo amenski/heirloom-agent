@@ -11,6 +11,8 @@ import type { MemoryStore } from "./memory/store.js";
 import type { SessionStore, CompactionSummary, PermissionDecision } from "./sessions/store.js";
 import { buildStablePreamble, buildVolatileContext, type PromptContext } from "./prompt.js";
 import { estimateTokens, estimateOverheadTokens } from "./compaction/budget.js";
+import { formatTodoBlock } from "./tools/todo.js";
+import type { TodoItem } from "./tools/todo.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
@@ -105,6 +107,9 @@ export interface AgentOptions {
   onMaxTurns?: (messages: Message[]) => void;
   onUsage?: (input: number, output: number, cached?: number) => void;
   askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+  /** Live reader for the update_todo_list store; injected into the volatile
+   *  prefix each sub-turn so the model always sees current plan state. */
+  getTodos?: () => TodoItem[];
 }
 
 /**
@@ -273,7 +278,12 @@ export async function runAgent(
     await maybeCompact(compactionOverheadTokens);
 
     try {
-    const requestMessages = volatileContext ? withVolatilePrefix(messages, volatileContext) : messages;
+    // Live todo block: volatileContext is session-stable (computed once above),
+    // but the todo list changes mid-turn, so it is re-read and appended here per
+    // sub-turn — same withVolatilePrefix mechanism, one extra section.
+    const todoBlock = options.getTodos ? formatTodoBlock(options.getTodos()) : "";
+    const prefix = [volatileContext, todoBlock].filter(Boolean).join("\n\n");
+    const requestMessages = prefix ? withVolatilePrefix(messages, prefix) : messages;
     for await (const event of provider.streamChat(requestMessages, tools, { signal: options.signal, effort, thinkingEnabled })) {
       switch (event.type) {
         case "text_delta":

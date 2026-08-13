@@ -14,6 +14,7 @@ import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
+import { todoStore } from "./tools/todo.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
@@ -1158,6 +1159,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     imageUrls,
     planMode,
     contextWindow,
+    getTodos: () => todoStore.getTodos(),
     onText: cb.onText, onReasoning: cb.onReasoning, onToolStart: (name, args) => { shared.toolUsage[name] = (shared.toolUsage[name] || 0) + 1; cb.onToolStart(name, args); }, onToolResult: cb.onToolResult,
     onDiagnostic: cb.onDiagnostic, onRetry: cb.onRetry, onCompacted: cb.onCompacted,
     onLoopDetected: cb.onLoopDetected, onMaxTurns: cb.onMaxTurns,

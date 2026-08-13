@@ -182,7 +182,7 @@ Always available regardless of mode (mode-spec.md), except `new_task`.
 
 | Tool | Signature | Behavior | Arrives |
 |------|-----------|----------|---------|
-| `update_todo_list` | `todos: [{content, status}]` | Replaces the whole plan; statuses `pending \| in_progress \| completed`; CLI renders as a checklist | Phase 8 |
+| `update_todo_list` | `todos: [{content, status}]` | Replaces the whole plan; statuses `pending \| in_progress \| completed`; CLI renders as a checklist | Shipped |
 | `ask_followup_question` | `question, suggestions?: string[]` | Blocks on user input via `ToolContext.askUser`; returns the answer as tool output | Phase 3 |
 | `attempt_completion` | `summary` | Signals the task is done; ends the turn | Phase 3 |
 | `switch_mode` | `slug, reason?` | Requests a mode change; user confirms; tool defs swap next turn | Phase 3 |
@@ -192,7 +192,9 @@ Always available regardless of mode (mode-spec.md), except `new_task`.
 `update_todo_list` replaces the whole list each call (idempotent, no
 add/remove/reorder API surface). Exactly one item should be `in_progress` at
 a time; the handler warns in its output when that's violated but does not
-reject.
+reject. Context: the current list is injected live into the volatile prefix
+each sub-turn (agent.ts), and the CLI renders it as a checklist panel above
+the input (src/ui/TodoPanel.tsx).
 
 ---
 

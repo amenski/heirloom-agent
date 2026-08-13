@@ -3,6 +3,7 @@ import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap } from "./prompt.js";
 import { executeTool, registry, setSessionId, setSignal } from "./tools/index.js";
+import { todoStore } from "./tools/todo.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
@@ -178,6 +179,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         signal: abortController.signal,
         errorReflector: new ErrorReflector(),
         errorRecovery: new ErrorRecovery(),
+        getTodos: () => todoStore.getTodos(),
       });
 
       if (interrupted) return 130;
