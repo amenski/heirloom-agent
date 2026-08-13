@@ -194,7 +194,8 @@ add/remove/reorder API surface). Exactly one item should be `in_progress` at
 a time; the handler warns in its output when that's violated but does not
 reject. Context: the current list is injected live into the volatile prefix
 each sub-turn (agent.ts), and the CLI renders it as a checklist panel above
-the input (src/ui/TodoPanel.tsx).
+the input (src/ui/TodoPanel.tsx). Sub-agents (`new_task`) run with their own
+isolated store for the duration of the sub-run.
 
 ---
 

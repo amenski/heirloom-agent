@@ -4,6 +4,25 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "./loader.js";
 
+// The global ~/.heirloom/settings.json is developer-specific and can carry
+// keys this branch's loader doesn't know (e.g. SearXNG's webSearch) — point
+// HEIRLOOM_HOME at an empty dir so no global settings interfere with the
+// warning assertions. Mirrors loader.test.ts.
+let homeDir: string;
+let prevHome: string | undefined;
+
+beforeEach(() => {
+  homeDir = mkdtempSync(join(tmpdir(), "heirloom-loader-refresh-home-"));
+  prevHome = process.env.HEIRLOOM_HOME;
+  process.env.HEIRLOOM_HOME = homeDir;
+});
+
+afterEach(() => {
+  rmSync(homeDir, { recursive: true, force: true });
+  if (prevHome === undefined) delete process.env.HEIRLOOM_HOME;
+  else process.env.HEIRLOOM_HOME = prevHome;
+});
+
 describe("config.refresh validation", () => {
   let dir: string;
 

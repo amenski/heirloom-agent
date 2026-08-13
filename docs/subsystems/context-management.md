@@ -82,7 +82,7 @@ than no compaction. After generating the summary, verify it mechanically (no
 LLM call):
 
 1. Every file path in the messages being compacted (T3 records) appears in `files[]`.
-2. Every todo item not marked complete appears in `pending[]`.
+2. Every todo item not marked complete appears in `pending[]` (compaction-summary fidelity only — the live per-sub-turn view of the current list rides in the volatile prefix, not the summary; see tool-spec.md).
 3. `task` is non-empty and derived from T1.
 
 On failure: regenerate once, naming the misses. On second failure: defer
