@@ -99,6 +99,33 @@ Selection precedence (`src/cli.tsx`): `--model` flag > settings.json
 env/BASE_URL detection > `"deepseek"` default. `--model` takes
 `provider/model`, split on the first slash.
 
+### 4.1 Runtime model switching (`/model` is turn-granular)
+
+Yes — the next call goes to the newly selected model, but not mid-turn. The
+active model is resolved **per turn, not per session**:
+
+- **The provider is resolved fresh each turn.** `runAgentTurnBridge`
+  (`src/cli.tsx`) calls `getProvider()` when a turn starts
+  (`provider: getProvider()`, cli.tsx:1161), and `getProvider()` reads
+  `shared.activeModel` at that moment (`modelOverride: shared.activeModel`,
+  cli.tsx:167). `/model` updates `shared.activeModel` and persists a `state`
+  record via `appendState` (cli.tsx:1092–1102).
+- **So the boundary is the turn.** Switching models mid-turn — mid-stream or
+  between tool calls inside one `runAgent` invocation — leaves the current
+  turn on the old model: the provider instance was already created with the
+  old `modelOverride` when the turn started. The new model takes effect on
+  the **next turn** (next prompt submission).
+- **Sub-agents follow the switch too.** The orchestrator resolves its
+  provider at sub-agent spawn time via the `provider()` factory (the comment
+  in `src/orchestrator/index.ts` says so), so a mid-session `/model` change
+  also applies to subsequently spawned sub-agents.
+- **The session record keeps it honest.** The `state` record persisted on
+  `/model` is folded back into `meta` on resume (`src/sessions/store.ts`), so
+  a resumed session restores the last model you picked.
+
+To apply a model change immediately, interrupt the current turn (Esc) and
+re-prompt.
+
 ## 5. Adding a provider
 
 **OpenAI-compatible service** (zero code):

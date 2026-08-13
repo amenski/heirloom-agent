@@ -1793,6 +1793,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           onExitShortcut={() => handleExit()}
           onModelPickerOpen={() => setShowModelDropdown(true)}
           onCyclePosture={() => cyclePosture()}
+          onOpenModePicker={() => setShowModeList(true)}
           modelPill={ctx.buildModelPill?.()}
           statusLine={
             <StatusBar
@@ -1818,7 +1819,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         left={
           turnActive
             ? [{ key: "esc", label: "interrupt" }]
-            : [{ key: "⇧ Tab", label: posture === "normal" ? "auto-approve" : "normal" }]
+            : [
+                { key: "⇧ Tab", label: posture === "normal" ? "auto-approve" : "normal" },
+                { key: "⌃O", label: "mode" },
+              ]
         }
         // Only chords that actually reach a handler. "^⇧P commands" was dead
         // twice over: a terminal sends the same byte (0x10) for ctrl+p and

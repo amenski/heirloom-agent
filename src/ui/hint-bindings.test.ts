@@ -89,8 +89,22 @@ describe("hint bar chords are reachable", () => {
     const hints = [...app.matchAll(/\{ key: "([^"]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
     expect(hints.length).toBeGreaterThan(0);
     for (const h of hints) {
+      // Covers both glyph conventions ("^X" and "⌃X").
       expect(h, `hint "${h}" uses a chord that is byte-identical to Enter/Tab`)
-        .not.toMatch(/\^(?:⇧)?[MI]$/);
+        .not.toMatch(/(?:\^|⌃)(?:⇧)?[MI]$/);
     }
+  });
+
+  it("the mode-picker hint chord (ctrl+o) is encodable and routed to a handler", () => {
+    // 0x0F is the classic terminal byte for ctrl+o — not aliased to Enter or
+    // Tab. PromptInput owns the idle input wire, so it must be the one that
+    // handles it (like the ⇧Tab posture cycle) — and the generic
+    // "swallowed" contract above already verifies its handler invokes a
+    // callback.
+    const key = parseTerminalInput("\x0f").keys[0];
+    expect(key.ctrl).toBe(true);
+    expect(key.value).toBe("o");
+    const prompt = src("ui/views/PromptInput.tsx");
+    expect(/key\.ctrl && key\.value === "o"\s*\)\s*\{\s*onOpenModePicker\?\.\(\)/.test(prompt)).toBe(true);
   });
 });

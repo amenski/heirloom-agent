@@ -6,6 +6,7 @@ import type { AppContext } from "./types.js";
 import { __resetInputWireForTests } from "./hooks/useTerminalInput.js";
 import { stripAnsi } from "./test-helpers.js";
 import { todoStore } from "../tools/todo.js";
+import { ModeLoader } from "../modes/loader.js";
 
 // ── Test doubles ──
 //
@@ -134,6 +135,54 @@ async function runTurn(
   await flush();
   return { lastFrame: () => inst.lastFrame(), inst };
 }
+
+describe("mode picker shortcut (ctrl+o)", () => {
+  afterEach(() => todoStore.reset());
+
+  it("opens the picker, Enter routes /mode, and the status bar reflects the switch", async () => {
+    todoStore.reset();
+    let currentMode = "Code";
+    const captured: string[] = [];
+    const ctx = makeCtx(async (_input: string, cb: any) => {
+      cb.onText("idle");
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    ctx.modeLoader = new ModeLoader();
+    ctx.activeMode = { slug: "code", name: "Code" } as any;
+    ctx.handleSlash = async (cmd: string) => {
+      const m = cmd.match(/^\/mode (\w+)$/);
+      if (m) currentMode = m[1];
+      captured.push(cmd);
+      return [];
+    };
+    // A live status bar: the segment text derives from the current mode, so
+    // the frame shows the switch the same way cli.tsx's buildStatusBar does.
+    ctx.buildStatusBar = () => [{ text: `mode:${currentMode}` } as any];
+
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    await flush();
+    await flush();
+
+    // ctrl+o (byte 0x0f) opens the picker.
+    inst.stdin.write("\x0f");
+    await flush();
+    await flush();
+    let frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).toContain("Modes");
+    expect(frame).toContain("architect");
+
+    // Enter selects the first listed mode (listAll is alphabetical →
+    // architect), which routes through /mode <slug>.
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+    frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(captured).toEqual(["/mode architect"]);
+    expect(frame).toContain("mode:architect");
+  });
+});
 
 describe("todo panel", () => {
   afterEach(() => todoStore.reset());

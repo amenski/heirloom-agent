@@ -56,11 +56,12 @@ interface Props {
   onExitShortcut?: () => void;
   onModelPickerOpen?: () => void;
   onCyclePosture?: () => void;
+  onOpenModePicker?: () => void;
 }
 
 const PromptInput = React.memo(function PromptInput({
   screenWidth, promptHistory, busy, placeholder, statusLine, modelPill,
-  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture,
+  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture, onOpenModePicker,
 }: Props): React.ReactElement {
   const theme = useTheme();
   const undoRedoRef = useRef(createPromptUndoRedoState());
@@ -423,6 +424,12 @@ const PromptInput = React.memo(function PromptInput({
     // both before ctrl detection, so handlers for them are unreachable. A
     // ctrl+m model-picker handler sat here dead until 2026-08-06.
     if (key.ctrl && key.value === "j") { updateBuffer((s) => insertText(s, "\n")); return; }
+
+    // Ctrl+O opens the persona-mode picker. Lives here (not in App's
+    // useInput) because the single input wire routes all idle keystrokes
+    // through PromptInput — App's useInput only sees keys while a modal is
+    // mounted. Same placement rule as the ⇧Tab posture cycle.
+    if (key.ctrl && key.value === "o") { onOpenModePicker?.(); return; }
 
     if (key.ctrl && key.value === "v") {
       setStatusMessage("Reading clipboard image…");

@@ -123,7 +123,19 @@ groups: [read]
 customInstructions: "Always reference line numbers. Suggest concrete fixes, not vague advice. Prioritize bugs over style."
 ```
 
-## 8. Verified against
+## 8. Switching modes
+
+- `/mode <slug>` — text command (with completion).
+- `/modes` or **Ctrl+O** — interactive picker (↑↓ navigate, Enter switch,
+  Esc close). Ctrl+O lives in PromptInput like the ⇧Tab posture cycle —
+  the idle input wire routes all keystrokes through it, so chords handled
+  anywhere else would be dead (see keybindings.ts notes).
+- The model itself can switch via the `switch_mode` tool (tool-spec.md).
+- The status bar always shows the active mode (colored dot + name) right
+  next to the approval-posture indicator; it refreshes immediately on any
+  switch.
+
+## 9. Verified against
 
 `src/modes/loader.ts` (ModeConfig, load, listAll) · `src/modes/builtin/*.yaml`
 (all five built-ins) · `src/tools/types.ts` (ToolGroup) · `src/cli.tsx`

@@ -153,6 +153,7 @@ settings.json `keybindings: { overrides, disabled }` with combos like
 | Complete | Tab; Shift+Tab partial |
 | Submit | Enter |
 | Abort (interrupt turn) | Esc |
+| Open mode picker | Ctrl+O |
 | Cancel | Ctrl+C |
 | Quit | `/exit`, Ctrl+D twice |
 
