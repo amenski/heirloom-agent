@@ -1,12 +1,33 @@
 #!/usr/bin/env tsx
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, cpSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const FIXTURES_DIR = resolve(import.meta.dirname!, "..", "fixtures");
 const EVAL_TMP = resolve(import.meta.dirname!, "..", ".eval-tmp");
-const HEIRLOOM_SRC = resolve(import.meta.dirname!, "..", "src", "index.ts");
+const HEIRLOOM_SRC = resolve(import.meta.dirname!, "..", "src", "cli.tsx");
 const TSX_BIN = resolve(import.meta.dirname!, "..", "node_modules", ".bin", "tsx");
+
+// Eval permissions, injected into each copied fixture's .heirloom/ as
+// settings.json. Headless runs fail closed (permission-spec.md §Headless
+// Interaction), so a fixture without explicit allow rules would deny every
+// edit and run_bash call and the golden task could never modify anything.
+// Fixtures are throwaway copies in .eval-tmp/, so allowing these tools
+// inside them is safe by construction.
+const EVAL_SETTINGS = JSON.stringify({
+  permissions: {
+    defaultMode: "askAll",
+    rules: [
+      { tool: "edit", pattern: "", action: "allow" },
+      { tool: "edit_file", pattern: "", action: "allow" },
+      { tool: "search_replace", pattern: "", action: "allow" },
+      { tool: "apply_diff", pattern: "", action: "allow" },
+      { tool: "apply_patch", pattern: "", action: "allow" },
+      { tool: "write_to_file", pattern: "", action: "allow" },
+      { tool: "run_bash", pattern: "", action: "allow" },
+    ],
+  },
+});
 
 interface EvalCase {
   name: string;
@@ -72,6 +93,8 @@ async function main() {
 
   if (existsSync(EVAL_TMP)) rmSync(EVAL_TMP, { recursive: true });
   mkdirSync(EVAL_TMP, { recursive: true });
+  const evalHome = join(EVAL_TMP, ".home");
+  mkdirSync(evalHome, { recursive: true });
 
   const results: { name: string; pass: boolean; message: string; duration: number }[] = [];
   let passed = 0;
@@ -88,19 +111,37 @@ async function main() {
 
     cpSync(fixtureSrc, evalWorkdir, { recursive: true });
 
+    // Inject eval permissions so headless fail-closed doesn't deny the
+    // edits the task requires (see EVAL_SETTINGS above).
+    const settingsDir = join(evalWorkdir, ".heirloom");
+    if (!existsSync(settingsDir)) mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, "settings.json"), EVAL_SETTINGS);
+
     process.stdout.write(`  ${testCase.name}... `);
     const start = Date.now();
 
     let spawnError: string | null = null;
+    let result: ReturnType<typeof spawnSync> | null = null;
     try {
-      const result = spawnSync(
+      result = spawnSync(
         TSX_BIN,
-        [HEIRLOOM_SRC, "-p", testCase.prompt, "--approve", "edits"],
+        [HEIRLOOM_SRC, "-p", testCase.prompt],
         {
           cwd: evalWorkdir,
           encoding: "utf-8",
           timeout: 120_000,
-          env: { ...process.env },
+          // input: "" closes the child's stdin immediately — headless mode
+          // reads piped stdin to EOF (exec-input.ts), and an open pipe
+          // would hang the spawn for the full timeout.
+          input: "",
+          env: {
+            ...process.env,
+            // Isolate the eval from the developer's global config: an
+            // empty HEIRLOOM_HOME means no global settings, no MCP servers
+            // to spawn at startup (which would block the key check), and
+            // no interference from personal credentials.
+            HEIRLOOM_HOME: evalHome,
+          },
         },
       );
 
@@ -120,6 +161,22 @@ async function main() {
         name: testCase.name,
         pass: false,
         message: spawnError.slice(0, 40),
+        duration,
+      });
+      continue;
+    }
+
+    // Distinguish "the agent could not run" from "the agent ran and did not
+    // pass": a non-zero heirloom exit (e.g. no provider key) must not be
+    // reported as a fixture-level task failure.
+    if (result!.status !== 0) {
+      failed++;
+      console.log("FAIL (heirloom exit)");
+      const stderrLine = (result!.stderr || "").trim().split("\n").slice(-1)[0] || "";
+      results.push({
+        name: testCase.name,
+        pass: false,
+        message: `heirloom exited ${result!.status}: ${stderrLine.slice(0, 60)}`,
         duration,
       });
       continue;
