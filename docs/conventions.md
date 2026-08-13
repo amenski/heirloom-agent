@@ -72,6 +72,16 @@
 Vitest (decided 2026-07-28): ESM-native (matches `"type": "module"`),
 zero-config TypeScript, watch mode. `npm test` runs `vitest run`.
 
+### TUI tests (App-level)
+- Drive real keypresses as stdin bytes (`"\x1b"` for Esc, `"\x0f"` for
+  Ctrl+O). A fake `runAgentTurnCore` plus the shared `AbortController`
+  returned by `ctx.provideAbortController` lets a test observe a real
+  mid-turn abort — that is how `App.streaming.test.tsx` proves
+  Esc-interrupt and queue survival end-to-end.
+- Fake ctx objects must `typeof`-guard optional stores
+  (`sessionStore.queryTodos` etc.) — App's mount effect reads them, and an
+  unguarded fake crashes every mount.
+
 ### Unit tests (from Phase 2)
 Highest-value targets, in priority order:
 1. **Edit strategies** — each of the 6 tools against fixture files: clean

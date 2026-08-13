@@ -1182,6 +1182,9 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
       cb.onUsage(input, output);
     },
     askUser: cb.askUser,
+    // Mid-turn steering mailbox (App's queue); the loop polls it before each
+    // provider call and injects a queued message at the next decision point.
+    pollSteeringMessage: cb.pollSteeringMessage,
     });
   } catch (err) {
     fireNotify(

@@ -223,5 +223,9 @@ export interface AgentBridgeCallbacks {
   onUsage: (input: number, output: number) => void;
   onNewMessages: (userInput: string, newMessages: Message[]) => Promise<void>;
   onHistoryUpdate: (messages: Message[]) => void;
-  askUser: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+  /** Resolves "posture" when an auto-approve posture upgraded the ask without showing a prompt (recorded as allow-by-posture). */
+  askUser: (toolName: string, args: Record<string, unknown>) => Promise<boolean | "posture">;
+  /** Mid-turn steering mailbox: polled once per decision point by the agent
+   *  loop; returns the next queued message or null (the queue head is consumed). */
+  pollSteeringMessage?: () => string | null;
 }

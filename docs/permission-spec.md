@@ -307,11 +307,11 @@ Each agent-side path emits a distinct `decision`, plus a human-readable
 |---|---|---|
 | `deny-by-rule` | `resolve()` returned `deny` | `deny rule matched (builtin-destructive)` |
 | `allow-by-rule` | `resolve()` returned `allow` (no prompt) | `allow rule matched (config)` |
-| `ask-approved` | `resolve()` returned `ask`, `askUser` → true | `approved by user (or auto-approve posture)` |
+| `ask-approved` | `resolve()` returned `ask`, `askUser` → true | `approved by user at prompt` |
 | `ask-denied` | `resolve()` returned `ask`, `askUser` → false | `denied by user at prompt` |
 | `unresolved-ask` | `ask` approved but a bash segment was `wasUnresolved` | `approved by user; bash segment was unresolved (fail-closed ask)` |
 | `headless-deny` | `resolve()` returned `ask` with no `askUser` supplied | `resolved to ask with no interactive prompter (headless)` |
-| `allow-by-posture` | *(UI-side only)* | — |
+| `allow-by-posture` | `resolve()` returned `ask`, `askUser` → `"posture"` (auto-approve posture upgraded it, no prompt shown) | `auto-approve posture upgraded an ordinary ask` |
 
 `winningRule` is attached whenever the resolution had one (absent only for a
 `defaultMode` fallthrough with no matching rule).
@@ -322,19 +322,21 @@ Two distinctions are only knowable in the TUI, so `agent.ts` records its
 best approximation and the finer detail is left to `App.tsx`:
 
 - **Fine-grained approval (`once` / `session` / `always`).** `askUser`
-  returns a bare boolean, so the agent can't tell which button the user
-  pressed; it records `ask-approved`. `App.tsx handlePermissionDecision`
-  *additionally* writes a row carrying the precise `once` / `session` /
-  `always` (or `deny`) value. An interactively-approved call therefore
-  yields **two** rows — the agent's `ask-approved` and the UI's
-  fine-grained one. Accepted on purpose: the agent's write is the one that
-  guarantees coverage of paths the UI never logs.
+  returns `true`/`false` (or `"posture"`), so the agent can't tell which
+  button the user pressed; it records `ask-approved`. `App.tsx
+  handlePermissionDecision` *additionally* writes a row carrying the
+  precise `once` / `session` / `always` (or `deny`) value. An
+  interactively-approved call therefore yields **two** rows — the agent's
+  `ask-approved` and the UI's fine-grained one. Accepted on purpose: the
+  agent's write is the one that guarantees coverage of paths the UI never
+  logs.
 - **`allow-by-posture`.** When the auto-approve posture short-circuits an
-  ordinary ask, `App.tsx`'s `askUser` returns `true` **without** showing a
-  prompt or writing any row. The agent records `ask-approved` — it cannot
-  distinguish a posture auto-approval from a real interactive yes.
-  `allow-by-posture` is reserved as the canonical value should a UI-side
-  write ever be added; today it is not emitted by `agent.ts`.
+  ordinary ask, `App.tsx`'s `askUser` resolves `"posture"` **without**
+  showing a prompt or writing any row, and `agent.ts` records
+  `allow-by-posture`. `ask-approved` is therefore exclusively an
+  interactive yes. Headless `askUser` implementations (e.g.
+  `exec-runner.ts`) never resolve `"posture"` — there is no posture to
+  consult.
 
 ### Token-usage trail
 

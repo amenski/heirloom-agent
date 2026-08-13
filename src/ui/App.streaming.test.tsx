@@ -364,3 +364,81 @@ describe("App streaming markdown", () => {
     expect(callbacks).not.toBeNull();
   });
 });
+
+describe("mid-turn steering (queue mailbox)", () => {
+  it("the loop's poll consumes the queue head mid-turn and echoes it", async () => {
+    const pollResults: (string | null)[] = [];
+    const ctx = makeCtx(async (_input: string, cb: any) => {
+      // Hold the turn open until the harness has queued a follow-up, then
+      // poll the mailbox exactly like the agent loop does per decision point.
+      await new Promise((r) => setTimeout(r, 150));
+      pollResults.push(cb.pollSteeringMessage());
+      pollResults.push(cb.pollSteeringMessage());
+      cb.onText("steered reply");
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("first");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    // Typed while the turn is in flight: lands in the queue.
+    inst.stdin.write("steer me");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    // First poll consumed the head; the second found nothing (consumed, not
+    // replayed). The queue is drained empty by the turn-end drain.
+    expect(pollResults).toEqual(["steer me", null]);
+    // The injected message is echoed into the transcript like a submission.
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).toContain("steer me");
+  });
+
+  it("Esc interrupts the turn and queued input survives into the next turn", async () => {
+    const inputs: string[] = [];
+    const controller = new AbortController();
+    const ctx = makeCtx(async (input: string, cb: any) => {
+      inputs.push(input);
+      if (inputs.length === 1) {
+        // Hold the first turn until Esc aborts it (the bridge's signal), with
+        // a timeout as a safety net so a missed keypress fails the test rather
+        // than hanging it.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 500);
+          controller.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+        return { stopReason: "aborted", messages: [], newMessages: [] };
+      }
+      cb.onText("second reply");
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    ctx.provideAbortController = () => controller;
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("first");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    // Queued while the turn runs.
+    inst.stdin.write("kept message");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    // Esc → PromptInput onInterrupt → abort → the turn ends as "aborted".
+    inst.stdin.write("\x1b");
+    await flush();
+    await flush();
+    await flush();
+
+    // The queue survived the interrupt and drained into a fresh turn.
+    expect(inputs).toEqual(["first", "kept message"]);
+  });
+});

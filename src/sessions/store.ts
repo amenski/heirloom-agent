@@ -32,7 +32,7 @@ export interface CompactionSummary {
  * Canonical agent-emitted decision vocabulary (one per resolution path in
  * src/agent.ts). Each value names exactly how a tool call was resolved:
  *   allow-by-rule    — a user/config allow rule matched, no prompt shown
- *   allow-by-posture — auto-approve posture let an ordinary ask through (UI-side; agent-side approximation, see note)
+ *   allow-by-posture — an auto-approve posture upgraded an ask without showing a prompt
  *   ask-approved     — an interactive prompt was answered yes
  *   ask-denied       — an interactive prompt was answered no
  *   deny-by-rule     — a deny rule matched (destructive/guarded/config)

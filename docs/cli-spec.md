@@ -162,6 +162,16 @@ byte), and Ctrl+Shift+P arrives as 0x10 (shift is not encoded) — both are
 documented in `src/ui/keybindings.ts`; user-supplied keybindings can bind
 those actions to chords that do encode.
 
+**Mid-turn input (steering).** Typing during a running turn is queued
+(`src/ui/App.tsx` `messageQueueRef`). The agent loop polls the mailbox once
+per decision point — before each provider call, never mid-stream — and
+injects a queued message as a `User message (typed mid-turn): …` block in
+the volatile prefix, persisting it as a real user message so the session
+record stays honest. Esc interrupts the current call and returns to the
+prompt; queued input is never dropped and runs in the next turn. Slash
+commands typed mid-turn stay queued and run at turn end (FIFO). Shipped
+2026-08-13; mechanics in subsystems/react-loop.md.
+
 ## 8. Output conventions
 
 - Assistant text streams to stdout (interactive) or stdout-only final reply

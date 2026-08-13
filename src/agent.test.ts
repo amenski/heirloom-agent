@@ -4,7 +4,7 @@ import { PermissionEngine } from "./permissions/index.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
 import type { Provider, StreamEvent } from "./providers/types.js";
-import type { Message } from "./types.js";
+import type { Message, ToolCall } from "./types.js";
 import { todoStore } from "./tools/todo.js";
 import { executeTool } from "./tools/index.js";
 
@@ -274,6 +274,310 @@ describe("runAgent", () => {
       await runAgent("hi", { provider, tools: [], executeTool, sessionStore: sessionStore as any, sessionId: "s1" });
 
       expect(sessionStore.appendPermission).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("parallel mixed batches", () => {
+    const mixedTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "read_file" },
+      { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+      { type: "tool_call_start", id: "call_2", name: "write_to_file" },
+      { type: "tool_call_delta", id: "call_2", arguments: '{"path":"out.txt","content":"x"}' },
+      { type: "tool_call_start", id: "call_3", name: "read_file" },
+      { type: "tool_call_delta", id: "call_3", arguments: '{"path":"b.txt"}' },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    // Default engine allows in-tree reads via the builtin "./**" rules; the
+    // write is allowed by an explicit rule so ordering tests stay focused on
+    // concurrency rather than prompting.
+    const mixedPermissions = () => new PermissionEngine(
+      { rules: [{ tool: "write_to_file", kind: "any", pattern: "", action: "allow", origin: "config" }] },
+      "/workspace",
+    );
+
+    function fakeSessionStore() {
+      return { appendPermission: vi.fn(async () => {}), appendToken: vi.fn(async () => {}) };
+    }
+
+    it("runs reads concurrently and writes sequentially after them", async () => {
+      const { provider } = makeProvider([mixedTurn(), textTurn("done")]);
+      const log: string[] = [];
+      let readsStarted = 0;
+      let readsDone: () => void = () => {};
+      const readsInFlight = new Promise<void>((r) => { readsDone = r; });
+      const executeTool = vi.fn(async (call: ToolCall) => {
+        log.push(`start:${call.name}`);
+        if (call.name === "read_file") {
+          readsStarted++;
+          if (readsStarted === 2) readsDone();
+          // Hold both reads in flight until the second has started — if the
+          // batch were serial, the first read would await forever.
+          await readsInFlight;
+        }
+        return { content: "ok" };
+      });
+
+      await runAgent("do it", {
+        provider,
+        tools: [],
+        executeTool,
+        permissions: mixedPermissions(),
+      });
+
+      // Both reads are in flight before either returns, and the write only
+      // starts once the reads have settled.
+      expect(log).toEqual([
+        "start:read_file",
+        "start:read_file",
+        "start:write_to_file",
+      ]);
+    });
+
+    it("replays tool results in the assistant's original toolCalls order", async () => {
+      const { provider } = makeProvider([mixedTurn(), textTurn("done")]);
+      const executeTool = vi.fn(async (call: ToolCall) => {
+        if (call.name === "read_file" && call.arguments.path === "a.txt") {
+          // Slow first read: a completion-order replay would emit call_3's
+          // result before call_1's.
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        return { content: `result:${call.arguments.path}` };
+      });
+
+      const result = await runAgent("do it", {
+        provider,
+        tools: [],
+        executeTool,
+        permissions: mixedPermissions(),
+      });
+
+      const toolResults = result.newMessages
+        .filter((m) => m.role === "tool")
+        .map((m) => m.content);
+      expect(toolResults).toEqual([
+        "result:a.txt",
+        "result:out.txt",
+        "result:b.txt",
+      ]);
+    });
+
+    it("records a deny-by-rule audit row for a denied call in a mixed batch", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "read_file" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+          { type: "tool_call_start", id: "call_2", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_2", arguments: '{"command":"rm -rf /"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("ok"),
+      ]);
+      const executeTool = vi.fn(async (call: ToolCall) => ({ content: `result:${call.name}` }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("do it", {
+        provider,
+        tools: [],
+        executeTool,
+        permissions: new PermissionEngine(undefined, "/workspace"),
+        sessionStore: sessionStore as any,
+        sessionId: "s1",
+      });
+
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        tool: "run_bash",
+        subject: "rm -rf /",
+        decision: "deny-by-rule",
+      }));
+      // The denied call never executed; the parallel read did.
+      expect(executeTool).toHaveBeenCalledTimes(1);
+      expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({ name: "read_file" }));
+    });
+
+    it("prompts exactly once for an ask call in a mixed batch", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "read_file" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+          { type: "tool_call_start", id: "call_2", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_2", arguments: '{"command":"npm test"}' },
+          { type: "tool_call_start", id: "call_3", name: "read_file" },
+          { type: "tool_call_delta", id: "call_3", arguments: '{"path":"b.txt"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("done"),
+      ]);
+      const askUser = vi.fn(async () => true);
+      const executeTool = vi.fn(async (call: ToolCall) => ({ content: `result:${call.name}` }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("do it", {
+        provider,
+        tools: [],
+        executeTool,
+        permissions: new PermissionEngine(undefined, "/workspace"),
+        askUser,
+        sessionStore: sessionStore as any,
+        sessionId: "s1",
+      });
+
+      // The ask resolved once — no double prompt, and all three calls ran
+      // (the reads concurrently, the ask sequentially in between).
+      expect(askUser).toHaveBeenCalledTimes(1);
+      expect(askUser).toHaveBeenCalledWith("run_bash", { command: "npm test" });
+      expect(executeTool).toHaveBeenCalledTimes(3);
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        tool: "run_bash",
+        decision: "ask-approved",
+      }));
+    });
+
+    it("emits allow-by-posture when an auto-approve posture upgrades an ask", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "call_1", name: "read_file" },
+          { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+          { type: "tool_call_start", id: "call_2", name: "run_bash" },
+          { type: "tool_call_delta", id: "call_2", arguments: '{"command":"npm test"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("done"),
+      ]);
+      const askUser = vi.fn(async (): Promise<boolean | "posture"> => "posture");
+      const executeTool = vi.fn(async (call: ToolCall) => ({ content: `result:${call.name}` }));
+      const sessionStore = fakeSessionStore();
+
+      await runAgent("do it", {
+        provider,
+        tools: [],
+        executeTool,
+        permissions: new PermissionEngine(undefined, "/workspace"),
+        askUser,
+        sessionStore: sessionStore as any,
+        sessionId: "s1",
+      });
+
+      expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+        tool: "run_bash",
+        decision: "allow-by-posture",
+      }));
+      // Upgraded by posture, not denied — the call still executed.
+      expect(askUser).toHaveBeenCalledTimes(1);
+      expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({ name: "run_bash" }));
+    });
+
+    it("acts on failedStreak (5 consecutive failures) in a parallel batch", async () => {
+      const failingTurn: TurnScript = [];
+      for (let i = 1; i <= 5; i++) {
+        failingTurn.push(
+          { type: "tool_call_start", id: `call_${i}`, name: "read_file" },
+          { type: "tool_call_delta", id: `call_${i}`, arguments: JSON.stringify({ path: `f${i}.txt` }) },
+        );
+      }
+      failingTurn.push(
+        { type: "tool_call_start", id: "call_6", name: "write_to_file" },
+        { type: "tool_call_delta", id: "call_6", arguments: '{"path":"out.txt","content":"x"}' },
+        { type: "done", finishReason: "tool_calls" },
+      );
+      const { provider, receivedMessages } = makeProvider([failingTurn]);
+      const executeTool = vi.fn(async (call: ToolCall) =>
+        call.name === "read_file" ? { content: "", error: "ENOENT" } : { content: "write ran" });
+
+      const result = await runAgent("read everything", {
+        provider,
+        tools: [],
+        executeTool,
+        permissions: new PermissionEngine(undefined, "/workspace"),
+      });
+
+      // The 5th consecutive failure escalates exactly like the sequential
+      // loop: warning injected and the turn ends — the write after the reads
+      // never runs, and the loop does not continue to a second provider call.
+      expect(result.messages.some(
+        (m) => m.role === "system" && String(m.content).includes("5 consecutive tool calls have failed"),
+      )).toBe(true);
+      expect(executeTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: "write_to_file" }));
+      expect(receivedMessages).toHaveLength(1);
+    });
+  });
+
+  describe("mid-turn steering (pollSteeringMessage)", () => {
+    const toolTurn = (): TurnScript => [
+      { type: "tool_call_start", id: "call_1", name: "read" },
+      { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+      { type: "done", finishReason: "tool_calls" },
+    ];
+
+    it("injects a queued message before the next provider call, never mid-stream", async () => {
+      const { provider, receivedMessages } = makeProvider([toolTurn(), textTurn("steered")]);
+      const poll = vi.fn()
+        .mockReturnValueOnce(null)                     // before the first call: nothing queued yet
+        .mockReturnValueOnce("stop what you're doing") // before the second call: the steering hit
+
+      await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "file contents" }),
+        pollSteeringMessage: poll,
+      });
+
+      // The first request is untouched; the second carries the steering block
+      // in its volatile prefix (attached to the pushed user message).
+      expect(JSON.stringify(receivedMessages[0])).not.toContain("typed mid-turn");
+      expect(JSON.stringify(receivedMessages[1])).toContain("User message (typed mid-turn): stop what you're doing");
+      // Polled exactly once per decision point (two provider calls).
+      expect(poll).toHaveBeenCalledTimes(2);
+    });
+
+    it("persists the injected message as a real user message in the conversation", async () => {
+      const { provider } = makeProvider([toolTurn(), textTurn("steered")]);
+      const poll = vi.fn()
+        .mockReturnValueOnce("stop what you're doing")
+        .mockReturnValueOnce(null);
+
+      const result = await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "file contents" }),
+        pollSteeringMessage: poll,
+      });
+
+      // The stored message is the raw typed text — not the volatile-prefix
+      // wrapper — and it sits before the assistant reply that responds to it,
+      // so the session record's ordering stays honest.
+      const steeringIdx = result.messages.findIndex(
+        (m) => m.role === "user" && m.content === "stop what you're doing",
+      );
+      expect(steeringIdx).toBeGreaterThan(-1);
+      expect(result.messages[steeringIdx]).toEqual({ role: "user", content: "stop what you're doing" });
+      const after = result.messages.slice(steeringIdx + 1);
+      // The tool-call assistant message has content null; the text reply that
+      // follows the steering message carries the actual response.
+      expect(after.find((m) => m.role === "assistant" && m.content)?.content).toBe("steered");
+    });
+
+    it("consumes a queued message exactly once — the second poll returns null", async () => {
+      let queued: string | null = "steer me";
+      const { provider, receivedMessages } = makeProvider([toolTurn(), textTurn("done")]);
+      const polls: (string | null)[] = [];
+
+      await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "file contents" }),
+        pollSteeringMessage: () => {
+          const hit = queued;
+          queued = null;
+          polls.push(hit);
+          return hit;
+        },
+      });
+
+      expect(polls).toEqual(["steer me", null]);
+      // The message appears in exactly one provider request — not replayed.
+      const withSteering = receivedMessages.filter((req) => JSON.stringify(req).includes("typed mid-turn"));
+      expect(withSteering).toHaveLength(1);
     });
   });
 

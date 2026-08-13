@@ -32,6 +32,11 @@ through to `resolveTheme` at startup.
   semantic slots + 19-color `SyntaxColors` + `statusBar` sub-palette),
   faithful ANSI-256 approximations with the tuned promptFg/accent contrast
   convention. Still pending: the `ansi ×2` presets.
+- **Accepted limitation (decided 2026-08-13):** a theme change applies to
+  new output and the live frame only. Already-flushed scrollback keeps the
+  colors baked in at push time until `/clear` or restart — `<Static>` is
+  flush-once by design (the input-stall fix) and ANSI codes are pre-baked
+  into committed line strings. See feature-plans.md §8.
 
 ## 3. Gutter & prompt contrast
 

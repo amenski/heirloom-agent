@@ -88,6 +88,39 @@ pointer is mutated) and wires the sub-run's `getTodos` to it — so a
 sub-agent's plan updates never clobber the parent's panel, and the
 sub-agent's own context gets its own plan.
 
+### Mid-turn steering (shipped 2026-08-13)
+
+The volatile prefix is assembled at the request-build site each sub-turn
+(`src/agent.ts`); the agent also polls an optional mailbox there —
+`AgentOptions.pollSteeringMessage: () => string | null`, once per decision
+point (before each provider call, never mid-stream). A hit is injected as a
+`User message (typed mid-turn): …` block in that call's volatile prefix AND
+pushed to `messages` as a real user message at the poll site, so the
+conversation order stays honest (the message sits before the
+assistant/tool messages that respond to it) and `newMessages`/`onNewMessages`
+persistence picks it up automatically. The TUI's queue (`App.tsx`
+`messageQueueRef`) is the mailbox: the poll consumes message-kind items only
+(slash commands stay queued for the turn-end drain, preserving FIFO order),
+and Esc interrupt never touches the queue — anything not consumed mid-turn
+(e.g. typed during the final stream) drains into the next turn. Sub-agents
+get no mailbox (optional contract).
+
+### Batch execution (shipped 2026-08-13)
+
+The loop pre-resolves a multi-call assistant batch once, **only to
+partition it**: allowed reads run through `Promise.allSettled`, writes and
+asks run sequentially afterwards in original call order; every call is
+re-resolved at execution time, so a mid-batch "yes, for session" approval
+still applies to later calls in the batch. Tool results (and denies) are
+replayed to the provider in the assistant's original `toolCalls` order —
+the provider contract requires it. Both paths share one `processCall`
+body, so the fast path and the sequential fallback are
+behavior-identical: audit rows, `failedStreak` escalation (5 consecutive),
+repeat-call detection, and reflection retry. The ask branch resolves
+`askUser` to `boolean | "posture"` — `"posture"` means an auto-approve
+posture upgraded an ordinary ask, emitted as the `allow-by-posture` audit
+value (permission-spec.md §11).
+
 ### Error taxonomy
 
 Tool errors are plain strings with informal prefixes (tool-spec.md §7);

@@ -94,6 +94,8 @@ then follow the reading paths below.
 | Doc | Covers |
 |-----|--------|
 | [claude-code-parity.md](./claude-code-parity.md) | Gap analysis vs Claude Code (forward-looking) |
+| [permission-profile.md](./permission-profile.md) | PermissionProfile ACL design (draft): schema, evaluation order, Seatbelt phase |
+| [feature-plans.md](./feature-plans.md) | Per-feature plans for the remaining roadmap: SOTA research, current state, design, decisions |
 | [improvement-roadmap.md](./improvement-roadmap.md) | Roadmap with shipped/unshipped waves |
 | [agent-memory-that-evolves.md](./agent-memory-that-evolves.md) | Memory-design research essay (context only) |
 

@@ -833,9 +833,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           // Auto-approve posture bypasses an ordinary rule-derived ask, but
           // never a result the bash normalizer couldn't safely classify, and
           // never a secret-adjacent path guard — both must always surface the
-          // real prompt, regardless of posture.
+          // real prompt, regardless of posture. "posture" (not true) tells
+          // agent.ts to record allow-by-posture instead of ask-approved.
           if (ctx.mutable.posture === "autoApprove" && !wasUnresolved && !isGuarded) {
-            return true;
+            return "posture";
           }
 
           return new Promise<boolean>((resolve) => {
@@ -843,6 +844,24 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             const folderRule = ctx.permissions.folderScopeRule(toolName, args);
             setAskPrompt({ resolve, toolName, args, winningRule, defaultRule, folderRule, cursor: 0 });
           });
+        },
+        // Mid-turn steering mailbox: the agent loop polls this once per
+        // decision point (before each provider call) and injects the message
+        // at the next decision point — never mid-stream. Consumes only
+        // message-kind items; slash commands stay queued for the drain so
+        // FIFO order holds. Esc/abort never touches the queue (decision B),
+        // so anything not consumed mid-turn still drains at turn end.
+        pollSteeringMessage: () => {
+          const head = messageQueueRef.current[0];
+          if (!head || head.kind !== "message") return null;
+          messageQueueRef.current.shift();
+          syncQueueState();
+          // Echo the injected message like a normal submission, so the
+          // transcript shows what the user typed mid-turn.
+          scheduleOutput("");
+          scheduleOutput(USER_ECHO_TAG + head.text);
+          scheduleOutput("");
+          return head.text;
         },
       };
 

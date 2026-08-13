@@ -1,6 +1,6 @@
 import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall, ToolDef, ToolOutput } from "./types.js";
-import type { PermissionEngine } from "./permissions/index.js";
+import type { PermissionEngine, ResolveResult } from "./permissions/index.js";
 import type { ModeConfig } from "./modes/loader.js";
 import type { Compactor } from "./compaction/compactor.js";
 import type { DiagnosticRunner } from "./diagnostics/index.js";
@@ -106,10 +106,25 @@ export interface AgentOptions {
   onLoopDetected?: (msg: string) => void;
   onMaxTurns?: (messages: Message[]) => void;
   onUsage?: (input: number, output: number, cached?: number) => void;
-  askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+  /**
+   * Interactive approval bridge for ask-tier calls. Resolves true (approved)
+   * or false (denied); resolves "posture" when an auto-approve posture
+   * upgraded the ask to allow without showing a prompt — recorded as
+   * allow-by-posture in the audit trail (permission-spec.md §11).
+   */
+  askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | "posture">;
   /** Live reader for the update_todo_list store; injected into the volatile
    *  prefix each sub-turn so the model always sees current plan state. */
   getTodos?: () => TodoItem[];
+  /**
+   * Mid-turn steering mailbox: polled once before each provider call (a
+   * decision point — never mid-stream). A non-null result is injected as a
+   * "User message (typed mid-turn): …" block in that call's volatile prefix
+   * and pushed to `messages` as a real user message, so the session record
+   * stays honest. A hit is consumed — the next poll returns whatever the
+   * mailbox holds then.
+   */
+  pollSteeringMessage?: () => string | null;
 }
 
 /**
@@ -282,7 +297,15 @@ export async function runAgent(
     // but the todo list changes mid-turn, so it is re-read and appended here per
     // sub-turn — same withVolatilePrefix mechanism, one extra section.
     const todoBlock = options.getTodos ? formatTodoBlock(options.getTodos()) : "";
-    const prefix = [volatileContext, todoBlock].filter(Boolean).join("\n\n");
+    // Mid-turn steering mailbox: poll once per decision point; a hit joins the
+    // volatile assembly below AND is pushed to `messages` as a real user
+    // message. Pushed at the poll site (not flushed after the turn) so the
+    // conversation order stays honest — the message sits before the
+    // assistant/tool messages that respond to it — and newMessages/
+    // onNewMessages persistence picks it up automatically.
+    const steering = options.pollSteeringMessage?.() ?? null;
+    if (steering) messages.push({ role: "user", content: steering });
+    const prefix = [volatileContext, todoBlock, steering ? `User message (typed mid-turn): ${steering}` : ""].filter(Boolean).join("\n\n");
     const requestMessages = prefix ? withVolatilePrefix(messages, prefix) : messages;
     for await (const event of provider.streamChat(requestMessages, tools, { signal: options.signal, effort, thinkingEnabled })) {
       switch (event.type) {
@@ -402,91 +425,44 @@ export async function runAgent(
 
     await diagnostics?.snapshot();
 
-    // Fast path: when every tool call is a read-only operation with
-    // pre-resolved allow/deny permissions (no askUser prompts), execute
-    // them in parallel. Multi-file reads are the common case — without
-    // this, three read_file calls take 3×RTT serially.
-    const allReads = toolCalls.length > 1 &&
-      toolCalls.every(tc => READ_TOOLS.has(tc.name));
-
-    let tookParallelPath = false;
-
-    if (allReads) {
-      // Pre-resolve permissions: bail to sequential if any call needs askUser.
-      let hasAsk = false;
+    // Pre-resolve every call once so the partition below is decided from a
+    // single snapshot (resolve is pure — no side effects). The partition
+    // only decides which reads may run concurrently; each call is resolved
+    // again at execution time, so a mid-batch session-rule approval (from a
+    // prompt in this same batch) still applies to the calls after it.
+    const resolved = new Map<string, ResolveResult>();
+    if (permissions) {
       for (const tc of toolCalls) {
-        if (permissions) {
-          const { action } = permissions.resolve(tc.name, tc.arguments);
-          if (action === "ask") { hasAsk = true; break; }
-        }
-      }
-
-      if (!hasAsk) {
-        tookParallelPath = true;
-
-        // Fire all onToolStart at once so the UI sees the batch.
-        for (const tc of toolCalls) {
-          options.onToolStart?.(tc.name, tc.arguments);
-        }
-
-        // Handle denies first — no execution needed.
-        for (const tc of toolCalls) {
-          if (!permissions) continue;
-          const { action } = permissions.resolve(tc.name, tc.arguments);
-          if (action === "deny") {
-            options.onDiagnostic?.("denied");
-            messages.push({
-              role: "tool",
-              toolCallId: tc.id,
-              content: `Permission denied for ${tc.name}`,
-            });
-          }
-        }
-
-        // Execute every allow call concurrently via Promise.allSettled.
-        const toRun = toolCalls.filter(tc => {
-          if (!permissions) return true;
-          const { action } = permissions.resolve(tc.name, tc.arguments);
-          return action !== "deny";
-        });
-
-        if (toRun.length > 0) {
-          const results = await Promise.allSettled(
-            toRun.map(tc => executeTool(tc)),
-          );
-
-          for (let i = 0; i < toRun.length; i++) {
-            const tc = toRun[i];
-            const r = results[i];
-            const output: ToolOutput = r.status === "fulfilled"
-              ? r.value
-              : { content: "", error: (r.reason as Error)?.message ?? "Unknown error" };
-
-            options.onToolResult?.(tc.name, output);
-
-            const callKey = `${tc.name}:${JSON.stringify(tc.arguments)}`;
-            seenCalls.set(callKey, (seenCalls.get(callKey) || 0) + 1);
-
-            if (output.error) {
-              failedStreak++;
-            } else {
-              failedStreak = 0;
-            }
-
-            messages.push({
-              role: "tool",
-              toolCallId: tc.id,
-              content: output.error ? `Error: ${output.error}` : output.content,
-            });
-          }
-        }
+        resolved.set(tc.id, permissions.resolve(tc.name, tc.arguments));
       }
     }
 
-    if (!tookParallelPath) {
-    for (const tc of toolCalls) {
-      options.onToolStart?.(tc.name, tc.arguments);
+    // Fast path: partition, don't bail — when the batch holds at least one
+    // pre-allowed read, those reads execute concurrently via
+    // Promise.allSettled and everything else (writes, asks, denies,
+    // unallowed reads) is processed sequentially afterwards in the
+    // assistant's original call order. Multi-file reads are the common
+    // case — without this, three read_file calls take 3×RTT serially. A
+    // batch with no allowed reads has nothing to parallelize and stays
+    // fully sequential.
+    const parallelReads = toolCalls.filter((tc) => {
+      if (!READ_TOOLS.has(tc.name)) return false;
+      if (!permissions) return true;
+      return resolved.get(tc.id)?.action === "allow";
+    });
+    const canRunParallel = toolCalls.length > 1 && parallelReads.length > 0;
 
+    // Shared per-call body for both execution paths — exactly the
+    // sequential loop's behavior, including permission audit rows, askUser,
+    // failedStreak escalation, repeat-call detection, and the reflection
+    // retry. `preResult` supplies an already-executed result (a parallel
+    // read) so the call is not executed twice. Returns true when the turn
+    // must end (tool stop, loop detected, or the 5-consecutive-failure
+    // escalation).
+    const processCall = async (
+      tc: ToolCall,
+      preResult: ToolOutput | undefined,
+    ): Promise<boolean> => {
       if (permissions) {
         const { action, winningRule, wasUnresolved } = permissions.resolve(tc.name, tc.arguments);
         const subject = permissionSubjectText(tc.name, tc.arguments);
@@ -505,37 +481,43 @@ export async function runAgent(
           options.onDiagnostic?.("denied");
           await audit("deny-by-rule", `deny rule matched (${winningRule?.origin ?? "rule"})`);
           messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-          continue;
+          return false;
         }
         if (action === "ask") {
           if (options.askUser) {
             const allowed = await options.askUser(tc.name, tc.arguments);
-            if (!allowed) {
+            if (allowed === "posture") {
+              // Auto-approve posture upgraded the ask to allow without
+              // showing a prompt — recorded distinctly from an interactive
+              // yes (permission-spec.md §11).
+              await audit("allow-by-posture", "auto-approve posture upgraded an ordinary ask");
+            } else if (!allowed) {
               const msg = "PERMISSION_DENIED: denied by user";
               options.onDiagnostic?.("denied");
               await audit("ask-denied", "denied by user at prompt");
               messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-              continue;
+              return false;
+            } else {
+              // Approved via askUser. The TUI (App.tsx) writes a finer-grained
+              // once/session/always row when it actually shows a prompt, but it
+              // writes nothing when an auto-approve posture short-circuits the
+              // prompt — so the agent records the coarse "approved" outcome here
+              // to guarantee a row exists on every approval path. On the
+              // interactive path this coexists with the UI's fine-grained row
+              // (see UI-side approximation note in permission-spec.md).
+              await audit(
+                wasUnresolved ? "unresolved-ask" : "ask-approved",
+                wasUnresolved
+                  ? "approved by user; bash segment was unresolved (fail-closed ask)"
+                  : "approved by user at prompt",
+              );
             }
-            // Approved via askUser. The TUI (App.tsx) writes a finer-grained
-            // once/session/always row when it actually shows a prompt, but it
-            // writes nothing when an auto-approve posture short-circuits the
-            // prompt — so the agent records the coarse "approved" outcome here
-            // to guarantee a row exists on every approval path. On the
-            // interactive path this coexists with the UI's fine-grained row
-            // (see UI-side approximation note in permission-spec.md).
-            await audit(
-              wasUnresolved ? "unresolved-ask" : "ask-approved",
-              wasUnresolved
-                ? "approved by user; bash segment was unresolved (fail-closed ask)"
-                : "approved by user (or auto-approve posture)",
-            );
           } else {
             const msg = "PERMISSION_DENIED: headless — rule resolved to ask";
             options.onDiagnostic?.("denied");
             await audit("headless-deny", "resolved to ask with no interactive prompter (headless)");
             messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-            continue;
+            return false;
           }
         } else if (action === "allow") {
           // Rule-derived allow with no prompt at all — still worth an audit
@@ -544,7 +526,7 @@ export async function runAgent(
         }
       }
 
-      const result = await executeTool(tc);
+      const result = preResult ?? await executeTool(tc);
       options.onToolResult?.(tc.name, result);
 
       const callKey = `${tc.name}:${JSON.stringify(tc.arguments)}`;
@@ -587,7 +569,7 @@ export async function runAgent(
         // attempt_completion: the tool signaled the task is done — end the
         // turn cleanly. stopReason stays "done" (it completed, not aborted).
         turnEnded = true;
-        break;
+        return true;
       }
 
       if (result.error && callCount >= 3 && !warnedRepeat) {
@@ -599,7 +581,7 @@ export async function runAgent(
       } else if (result.error && callCount >= 4 && warnedRepeat) {
         options.onLoopDetected?.("loop detected");
         turnEnded = true;
-        break;
+        return true;
       }
 
       if (failedStreak >= 5 && !warnedFailures) {
@@ -609,9 +591,55 @@ export async function runAgent(
         });
         warnedFailures = true;
         turnEnded = true;
-        break;
+        return true;
+      }
+
+      return false;
+    };
+
+    let tookParallelPath = false;
+
+    if (canRunParallel) {
+      tookParallelPath = true;
+
+      // Fire all onToolStart at once so the UI sees the batch.
+      for (const tc of toolCalls) {
+        options.onToolStart?.(tc.name, tc.arguments);
+      }
+
+      // Execute the allowed reads concurrently; results are collected and
+      // replayed at their original positions below.
+      const preResults = new Map<string, ToolOutput>();
+      const settled = await Promise.allSettled(
+        parallelReads.map(tc => executeTool(tc)),
+      );
+      for (let i = 0; i < parallelReads.length; i++) {
+        const r = settled[i];
+        preResults.set(
+          parallelReads[i].id,
+          r.status === "fulfilled"
+            ? r.value
+            : { content: "", error: (r.reason as Error)?.message ?? "Unknown error" },
+        );
+      }
+
+      // Original-order replay: walk the assistant's toolCalls and emit each
+      // outcome at its position — precomputed results for the parallel
+      // reads, sequential execution for the rest. Writes stay strictly
+      // ordered; an ask in the batch is prompted exactly once and never
+      // executed in parallel.
+      for (const tc of toolCalls) {
+        const ended = await processCall(tc, preResults.get(tc.id));
+        if (ended) break;
       }
     }
+
+    if (!tookParallelPath) {
+      for (const tc of toolCalls) {
+        options.onToolStart?.(tc.name, tc.arguments);
+        const ended = await processCall(tc, undefined);
+        if (ended) break;
+      }
     }
 
     if (diagnostics?.available) {

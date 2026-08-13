@@ -2,6 +2,12 @@
 
 **Status:** forward-looking roadmap · refreshed 2026-08-08 · not a spec — shipped items are marked ✅ with commit hashes; unshipped items are plans, not behavior.
 
+> **Remaining items now have detailed plans.** The open items below were
+> researched against Claude Code, Codex, Gemini CLI, aider, and opencode on
+> 2026-08-13 and written up feature-by-feature with designs and decision
+> points in [feature-plans.md](./feature-plans.md) — that doc is the current
+> work queue; this one records history and the borrowed-idea backlog.
+
 
 Status (**refreshed 2026-08-08**): **the entire do-now tier and the whole
 in-flight wave have shipped.** What remains is the design-first tier — items
@@ -139,7 +145,7 @@ findings. Verified against the code on 2026-08-08 (not from memory):
 | Item | What it is | Notes |
 |---|---|---|
 | **Streaming-markdown refactor** | `src/ui/core/stream-blocks.ts` + `markdown-inline.ts`, rewriting `MarkdownText`/`App` streaming. | Started 2026-08-08. Must preserve two earlier fixes it supersedes: holding back a line whose inline span (`**`, `` ` ``, `~~`) hasn't closed yet, and keeping the block-start `●` out of the raw markdown so headings/lists still parse. |
-| **Sessions index** | A queryable index over the JSONL session store (list/resume ergonomics, observability). | **Not started** — `src/sessions/` is still `store.ts` + `redact.ts` only. |
+| **Sessions index** | A queryable index over the JSONL session store (list/resume ergonomics, observability). | **✅ Shipped** — `sessions-index.json` (`src/sessions/store.ts`, `updateIndexEntry`/`rebuildIndex`), consumed by `list()`; verified 2026-08-13. Optional polish (search in the picker) is unplanned — see feature-plans.md §11. |
 
 ## 🆕 Newly-known items (surfaced during the wave)
 
