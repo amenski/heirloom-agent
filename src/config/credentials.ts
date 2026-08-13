@@ -1,12 +1,14 @@
 import { readFileSync, existsSync, statSync, chmodSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveHome } from "./loader.js";
 
 // Resolved lazily (per call, not baked in at module load) so tests can mock
-// `homedir()`. This is the single source of truth for where credentials live;
-// auth/wizard.ts imports these helpers so the write and read paths cannot drift.
+// the home (and because HEIRLOOM_HOME may change between calls). Honors the
+// same override as the config loader (resolveHome). This is the single source
+// of truth for where credentials live; auth/wizard.ts imports these helpers so
+// the write and read paths cannot drift.
 export function credsDir(): string {
-  return join(homedir(), ".heirloom");
+  return join(resolveHome());
 }
 
 export function credsFile(): string {

@@ -31,6 +31,14 @@ describe("SessionStore", () => {
     return join(TEST_HOME, ".heirloom", "sessions", SESSION_SLUG);
   }
 
+  it("routes sessions under an explicit home argument", async () => {
+    const custom = join(TEST_HOME, "custom-home");
+    const mod = await import("./store.js");
+    const s = new mod.SessionStore(custom);
+    const id = await s.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "ask" });
+    expect(existsSync(join(custom, "sessions", SESSION_SLUG, `${id}.jsonl`))).toBe(true);
+  });
+
   describe("create and load", () => {
     it("creates a session and loads it back", async () => {
       const id = await store.create({

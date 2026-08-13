@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfig, migrateLegacyPermissions } from "./loader.js";
+import { loadConfig, migrateLegacyPermissions, resolveHome } from "./loader.js";
+import { homedir } from "node:os";
 
 describe("validatePermissions (rule shape)", () => {
   let dir: string;
@@ -456,5 +457,21 @@ describe("loadConfig telemetryEnabled (deleted key)", () => {
     const { config, warnings } = loadConfig(projectDir);
     expect(warnings.some((w) => w.includes('unknown field "telemetryEnabled"'))).toBe(true);
     expect((config as Record<string, unknown>).telemetryEnabled).toBeUndefined();
+  });
+});
+
+describe("resolveHome", () => {
+  it("honors HEIRLOOM_HOME", () => {
+    expect(resolveHome()).toBe(homeDir);
+  });
+
+  it("falls back to the user home when unset", () => {
+    const prev = process.env.HEIRLOOM_HOME;
+    delete process.env.HEIRLOOM_HOME;
+    try {
+      expect(resolveHome()).toBe(join(homedir(), ".heirloom"));
+    } finally {
+      if (prev !== undefined) process.env.HEIRLOOM_HOME = prev;
+    }
   });
 });

@@ -117,11 +117,10 @@ then follow the reading paths below.
 
 ## Known gaps & unverified assumptions (as of 2026-08-13)
 
-1. **`HEIRLOOM_HOME` is only partially honored.** Config, modes, theme
-   dropdown, prompt history, and the stall watchdog honor it; credentials,
-   sessions, checkpoints, and memory hardcode `~/.heirloom`. An
-   intentional-but-undocumented split — a future change should route all
-   stores through the override.
+1. ~~**`HEIRLOOM_HOME` is only partially honored.**~~ **Resolved 2026-08-13**:
+   `resolveHome()` is now the single source of truth and every subsystem
+   (credentials, sessions, checkpoints, memory included) routes through
+   it.
 2. **Model catalog IDs are catalog-relative, not canonical.**
    `src/providers/models.json` ships sandbox IDs (`deepseek-v4-pro`,
    `gpt-5.6-sol`, …). Docs cite them as-is because they are what the

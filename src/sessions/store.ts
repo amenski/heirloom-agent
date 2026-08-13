@@ -1,8 +1,8 @@
 import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../types.js";
 import { redactSecrets } from "./redact.js";
+import { resolveHome } from "../config/loader.js";
 
 const KNOWN_VERSION = 1;
 
@@ -210,17 +210,15 @@ function formatCompactionText(summary: CompactionSummary): string {
 
 export class SessionStore {
   private _cwd: string;
+  private readonly sessionDir: string;
 
-  constructor() {
+  constructor(home: string = resolveHome()) {
     this._cwd = process.cwd();
+    this.sessionDir = join(home, "sessions", slugify(this._cwd));
   }
 
   private get slug(): string {
     return slugify(this._cwd);
-  }
-
-  private get sessionDir(): string {
-    return join(homedir(), ".heirloom", "sessions", this.slug);
   }
 
   private filePath(sessionId: string): string {

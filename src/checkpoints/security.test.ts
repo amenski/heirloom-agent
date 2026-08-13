@@ -26,6 +26,14 @@ describe("checkpoint secret handling", () => {
     return join(TEST_HOME, ".heirloom", "checkpoints", "test-session", ".git");
   }
 
+  it("routes the shadow repo under an explicit home argument", async () => {
+    const custom = join(TEST_HOME, "custom-home");
+    const mod = await import("./index.js");
+    const cm = new mod.CheckpointManager("test-session", workspaceDir, custom);
+    await cm.save("msg");
+    expect(existsSync(join(custom, "checkpoints", "test-session", ".git"))).toBe(true);
+  });
+
   beforeEach(async () => {
     TEST_HOME = mkdtempSync(join(tmpdir(), "heirloom-chkpt-home-"));
 

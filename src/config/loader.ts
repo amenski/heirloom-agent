@@ -179,7 +179,7 @@ function deepMerge<T extends Record<string, unknown>>(
   return result;
 }
 
-function resolveHome(): string {
+export function resolveHome(): string {
   return process.env.HEIRLOOM_HOME || join(homedir(), ".heirloom");
 }
 

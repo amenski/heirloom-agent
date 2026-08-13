@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
+
+import { resolveHome } from "../config/loader.js";
 
 export interface CheckpointEntry {
   hash: string;
@@ -36,9 +37,9 @@ export class CheckpointManager {
   private initialized = false;
   private _lock: Promise<void> = Promise.resolve();
 
-  constructor(sessionId: string, workspaceDir?: string) {
+  constructor(sessionId: string, workspaceDir?: string, home: string = resolveHome()) {
     this.workspaceDir = resolve(workspaceDir ?? process.cwd());
-    this.shadowDir = join(homedir(), ".heirloom", "checkpoints", sessionId);
+    this.shadowDir = join(home, "checkpoints", sessionId);
   }
 
   get workspace(): string {

@@ -328,19 +328,11 @@ enable.
 | `GROQ_API_KEY` | Groq API key |
 | `ANTHROPIC_API_KEY`, `TOGETHER_API_KEY` | Detected for provider inference; no bundled presets |
 
-### HEIRLOOM_HOME support table
+### HEIRLOOM_HOME support
 
-| Subsystem | Honors `HEIRLOOM_HOME`? |
-|-----------|-------------------------|
-| Config loader (`src/config/loader.ts:183`) | ✅ |
-| Mode loader (`src/modes/loader.ts:81`) | ✅ |
-| Theme dropdown (`src/ui/components/ThemeDropdown`) | ✅ |
-| Prompt history (`src/ui/core/history-store.ts:31`) | ✅ |
-| Stall watchdog (`src/diagnostics/stall-watchdog.ts:22`) | ✅ |
-| Credentials (`src/config/credentials.ts`) | ❌ hardcodes `~/.heirloom` |
-| Sessions (`src/sessions/store.ts`) | ❌ hardcodes `~/.heirloom` |
-| Checkpoints (`src/checkpoints/index.ts`) | ❌ hardcodes `~/.heirloom` |
-| Memory (`src/memory/store.ts`) | ❌ hardcodes `~/.heirloom` |
-
-This intentional-but-undocumented split is flagged in the review note
-(docs/README.md §Known gaps).
+`resolveHome()` (`src/config/loader.ts`) is the single source of truth:
+`HEIRLOOM_HOME` if set, else `~/.heirloom`. Every subsystem routes through
+it — config, modes, theme dropdown, prompt history, stall watchdog,
+credentials, sessions, checkpoints, and memory. A full install under a
+custom home is portable: `HEIRLOOM_HOME=/tmp/hh heirloom` keeps everything
+(config, credentials, sessions, checkpoints, memory) under `/tmp/hh`.

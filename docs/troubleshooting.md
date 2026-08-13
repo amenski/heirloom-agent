@@ -14,10 +14,8 @@
   are coming from.
 - **Keys in `settings.json` `env.API_KEY`** work but are discouraged —
   settings.json is meant to be shareable (config-spec.md §8).
-- **`HEIRLOOM_HOME` is only partially honored** — config, modes, theme
-  dropdown, prompt history, and the stall watchdog use it; credentials,
-  sessions, checkpoints, and memory hardcode `~/.heirloom` (table:
-  config-spec.md §15).
+- **`HEIRLOOM_HOME`** relocates the whole install — config, credentials,
+  sessions, checkpoints, and memory all honor it (config-spec.md §15).
 
 ## Terminal requirements
 

@@ -1,8 +1,9 @@
 import { appendFile, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { redactSecrets } from "../sessions/redact.js";
+
+import { resolveHome } from "../config/loader.js";
 
 const MAX_INJECTION_TOKENS = 1024;
 
@@ -15,10 +16,10 @@ export class MemoryStore {
   private memoryDir: string;
   private projectDir: string;
 
-  constructor(workspaceDir?: string) {
+  constructor(workspaceDir?: string, home: string = resolveHome()) {
     const cwd = workspaceDir ?? process.cwd();
     this.projectSlug = slugify(cwd);
-    this.memoryDir = join(homedir(), ".heirloom", "memory");
+    this.memoryDir = join(home, "memory");
     this.projectDir = join(this.memoryDir, this.projectSlug);
   }
 
