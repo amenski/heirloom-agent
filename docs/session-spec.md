@@ -91,7 +91,8 @@ transcript stays on disk for rewind and audit.
 {"type":"permission","at":"...","toolCallId":"call_1","tool":"run_bash",
  "subject":"rm -rf /","decision":"deny-by-rule",
  "reason":"deny rule matched (builtin-destructive)",
- "winningRule":{...}}
+ "winningRule":{...},
+ "source":"subagent"}
 ```
 
 One row per permission decision. The canonical agent-emitted `decision`
@@ -109,6 +110,12 @@ vocabulary (one value per resolution path in `agent.ts`):
 
 `subject` and `reason` are both secret-redacted. `winningRule` is the rule
 that produced the outcome, absent on `defaultMode` fallthrough.
+
+**`source` — writer identity (decision H, subsystems.md §7).** Rows written
+by sub-agents spawned via `new_task` carry `"source":"subagent"`; top-level
+(parent) rows omit the field. Readers must tolerate both. Sub-agent rows
+are written by `agent.ts` through the orchestrator's audit-only view of the
+parent store — see subsystems.md §7 for what the view allows.
 
 **Legacy / UI-side values.** The finer-grained `"once" | "session" |
 "always" | "deny"` are still accepted on read and write: the TUI writes
@@ -138,13 +145,15 @@ One row per `update_todo_list` call, written by the tool handler via
 `SessionStore.queryTodos` (chronological); on resume, the last snapshot is
 restored into the panel and the model's first turn context
 (`src/ui/App.tsx`). Ignored by `load()`/`loadEffective()`. Sub-agents
-(`new_task`) explicitly pass `sessionStore: undefined` — their plans are
-ephemeral and never pollute the parent's session.
+(`new_task`) get the parent store behind an audit-only view (subsystems.md
+§7): `appendTodo` is blocked on the view, so their plans stay ephemeral and
+never pollute the parent's session.
 
 ### `token` — per-turn token-usage entry
 
 ```json
-{"type":"token","at":"...","turnTokens":4210,"totalUsed":88123,"budgetMax":200000}
+{"type":"token","at":"...","turnTokens":4210,"totalUsed":88123,"budgetMax":200000,
+ "source":"subagent"}
 ```
 
 One row per model turn, written by `agent.ts` after the turn's assistant
@@ -155,6 +164,9 @@ message is assembled (`SessionStore.appendToken`).
   `estimateTokens` used by compaction, so `remaining = budgetMax -
   totalUsed` agrees with the headroom compaction sees.
 - `budgetMax` — the context-window ceiling (default `128000`).
+- `source` — optional writer identity: `"subagent"` for rows written by a
+  sub-agent (`new_task`, decision H — subsystems.md §7); absent for
+  top-level (parent) rows. Readers must tolerate both.
 
 `remaining` is **derived on read**, never stored. Queried via
 `SessionStore.queryTokenUsage(sessionId)`. Like `permission` rows, `token`

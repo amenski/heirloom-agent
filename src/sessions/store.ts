@@ -58,6 +58,13 @@ export type PermissionDecision =
   | "session"
   | "always";
 
+/**
+ * Who produced an audit row. Absent for top-level (parent) writes; sub-agents
+ * spawned via `new_task` tag their rows `"subagent"` (decision H —
+ * feature-plans.md §10; subsystems.md §7).
+ */
+export type AuditSource = "subagent";
+
 export interface PermissionAuditRecord {
   toolCallId?: string;
   tool: string;
@@ -68,6 +75,8 @@ export interface PermissionAuditRecord {
   winningRule?: { tool: string; kind: string; pattern: string; action: string; origin: string };
   /** Human-readable note on why this decision was reached (e.g. "denied by user at prompt"). */
   reason?: string;
+  /** Who produced this row — absent for top-level (parent) writes. */
+  source?: AuditSource;
 }
 
 export interface TokenUsageRecord {
@@ -77,6 +86,8 @@ export interface TokenUsageRecord {
   totalUsed: number;
   /** The context-window ceiling this session is budgeted against. */
   budgetMax: number;
+  /** Who produced this row — absent for top-level (parent) writes. */
+  source?: AuditSource;
 }
 
 export interface SessionRecord {
@@ -760,4 +771,44 @@ export class SessionStore {
     results.sort((a, b) => b.id.localeCompare(a.id));
     return results;
   }
+}
+
+/**
+ * Restricted, audit-only view of a parent SessionStore handed to sub-agents
+ * spawned via `new_task` (src/orchestrator/index.ts; decision H —
+ * feature-plans.md §10, subsystems.md §7).
+ *
+ * Exactly three members exist on the view:
+ *
+ * - `appendPermission` / `appendToken` — forwarded to the parent store with
+ *   `source: "subagent"` stamped on the row, so the parent session's JSONL
+ *   gains a debuggable audit trail of every sub-agent permission decision
+ *   and token-usage turn.
+ * - `getMessageCount` — always 0: agent.ts's compaction-persist path keys
+ *   off `persistedCount > 0`, and a sub-agent must never write a compaction
+ *   marker into the parent transcript (its message indices would corrupt
+ *   resume).
+ *
+ * Every other SessionStore member is absent (undefined) by construction: a
+ * sub-agent can never append messages, state, todo snapshots, or anything
+ * else into the parent session. Todo isolation is untouched — the
+ * orchestrator still threads a fresh TodoStore, and `appendTodo` is simply
+ * blocked here. The view needs no re-audit when SessionStore grows: new
+ * members default to blocked.
+ */
+export function subagentAuditStore(parent: SessionStore): SessionStore {
+  return new Proxy(parent, {
+    get(target, prop) {
+      if (prop === "appendPermission") {
+        return (sessionId: string, record: PermissionAuditRecord): Promise<void> =>
+          target.appendPermission(sessionId, { ...record, source: "subagent" });
+      }
+      if (prop === "appendToken") {
+        return (sessionId: string, record: TokenUsageRecord): Promise<void> =>
+          target.appendToken(sessionId, { ...record, source: "subagent" });
+      }
+      if (prop === "getMessageCount") return async () => 0;
+      return undefined;
+    },
+  });
 }

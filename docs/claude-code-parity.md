@@ -179,9 +179,9 @@ reconstruction.
 
 **Heirloom today (code-verified 2026-08-11):** `src/orchestrator/index.ts` has an `Orchestrator` class + a `new_task` tool def, now **wired** in both the TUI (`cli.tsx:181–189`) and headless `-p` (`exec-runner.ts:141–150`) registries. Sub-agents run a real `runAgent` turn in the requested mode's toolset, inheriting the parent's **live** permission engine (rules + approval posture — no escalation) and the parent's provider factory (follows mid-session `/model` switches). Enforcement today: depth cap 3, max 10 sub-agent turns; sub-agent tools = target mode's group tools + `new_task` (for recursion).
 
-**Gap vs. Claude Code:** `--agents` inline definitions / subagent frontmatter (per-mode model, description, tool overrides) and the roadmap's design doc for permission inheritance + recursion limits.
+**Gap vs. Claude Code:** `--agents` inline definitions / subagent frontmatter (per-mode model, description, tool overrides). The permission-inheritance + recursion-limits design doc shipped 2026-08-13 ([subsystems/orchestration.md](./subsystems/orchestration.md) §7), along with sub-agent audit/token rows tagged `source: "subagent"` in the parent session.
 
-**Recommendation:** partially built — `new_task` is usable now. The next slice (frontmatter-style agent definitions + the permission-inheritance design doc) should ride on the permission-model work; keep it behind the roadmap's design doc until that settles.
+**Recommendation:** partially built — `new_task` is usable now and documented. The next slice (frontmatter-style agent definitions) should ride on the permission-model work.
 
 ---
 

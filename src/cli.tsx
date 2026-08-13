@@ -13,7 +13,9 @@ import { runAgent } from "./agent.js";
 import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
-import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode } from "./tools/index.js";
+import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground } from "./tools/index.js";
+import { jobManager } from "./tools/jobs.js";
 import { todoStore } from "./tools/todo.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
@@ -36,13 +38,14 @@ import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers, disconnectAllMCPServers } from "./mcp/connector.js";
 import App from "./ui/App.js";
 import type { Message } from "./types.js";
-import type { ModelCapabilities } from "./providers/types.js";
+import type { ModelCapabilities, ProviderBalance } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
 import { chip, meter } from "./ui/core/chips.js";
 import { ANSI_CLEAR_SCREEN } from "./ui/constants.js";
 import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./ui/core/refresh-rates.js";
 import { installResizeRepaintFix } from "./ui/core/resize-repaint.js";
 import { expandFileMentions } from "./ui/core/file-mentions.js";
+import { BUILTIN_SLASH_COMMANDS } from "./ui/core/slash-commands.js";
 import { probeSyncOutput } from "./terminal-probe.js";
 import { resolveKeybindings, parseKeyCombo, type KeybindingMap, type KeybindingConfig as KeybindingSystemConfig } from "./ui/keybindings.js";
 import type { WorkflowIntegrationConfig, ModelEntry } from "./ui/types.js";
@@ -183,12 +186,28 @@ async function main() {
   // the live session one so sub-agents inherit the parent's rules + approval
   // posture and cannot escalate (24.3). askUser is re-pointed per turn by
   // runAgentTurnCore — the prompt bridge is recreated each turn.
+  // Lifecycle hooks (docs/hooks-spec.md): constructed once per session and
+  // threaded into the agent loop, the orchestrator, the App, and the notify
+  // completion boundaries. A no-op when no hooks are configured (opt-in).
+  const hooks = new HookRunner({
+    config: configResult.config.hooks,
+    disableAllHooks: configResult.config.disableAllHooks,
+    debug: parsed.debug,
+    cwd: process.cwd(),
+    sessionId: () => sessionId,
+    getPermissionMode: () => shared.posture,
+  });
+  // Startup trust check (spec §6): headless skips unseen project hooks with a
+  // stderr warning; interactive runs defer the ask to first dispatch.
+  hooks.verifyTrust();
+
   const orchestrator = new Orchestrator({
     provider: () => getProvider(),
     registry,
     modeLoader,
     permissions,
     getSignal: () => shared.abort.signal,
+    hooks,
   });
   orchestrator.register(registry);
 
@@ -281,6 +300,33 @@ async function main() {
     shared.activeMode = { ...mode };
     await sessionStore.appendState(sessionId, { mode: slug });
     return mode.name;
+  });
+
+  // commands.timeoutToBackground (plan §3, decision D — default ON): run_bash
+  // timeout → background migration for the model-facing tool set.
+  setTimeoutToBackground(configResult.config.commands?.timeoutToBackground ?? true);
+
+  // Background-job completion → notify hook (plan §3): a job finishing is a
+  // completion boundary like a turn ending, so the same notify script fires
+  // with a job payload (STATUS=job_done — notify-spec.md §3-4). The TUI status
+  // segment for the same event is rendered by App, which subscribes to
+  // JobManager directly. Fire-and-forget — see src/notify.ts.
+  jobManager.onCompleted((report) => {
+    const jobNotifyInput = {
+      status: "job_done" as const,
+      durationMs: report.runningMs,
+      body: (report.stdout + report.stderr).slice(-2000),
+      title: report.command,
+      job: { id: report.id, command: report.command, exitCode: report.exitCode },
+    };
+    fireNotify(
+      configResult.config.notify,
+      jobNotifyInput,
+      { debug: parsed.debug },
+    );
+    // Notification hooks fire alongside the notify script — never instead of
+    // it (hooks-spec.md §7).
+    fireNotificationHooks(hooks, jobNotifyInput);
   });
 
   const memoryStore = new MemoryStore();
@@ -541,6 +587,7 @@ async function main() {
       getProvider,
       sessionId,
       permissions,
+      hooks,
       toolRegistry: registry,
       compactor: getCompactor(),
       diagnostics,
@@ -599,7 +646,7 @@ async function main() {
         // the orchestrator before delegating — otherwise sub-agents holding
         // the stale closure would auto-deny every ask-tier action.
         orchestrator.setAskUser(cb.askUser);
-        return runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow);
+        return runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow, hooks);
       },
       resumeSession: async (id: string) => {
         try {
@@ -805,21 +852,36 @@ function listKnownModels(): ModelEntry[] {
   return entries;
 }
 
-function completer(line: string, knownModeSlugs: string[]): [string[], string] {
+/** Slash commands offered by Tab completion: the autocomplete menu's set plus the headless-routed extras (cli-spec.md §5). */
+const SLASH_COMMANDS = [
+  ...BUILTIN_SLASH_COMMANDS.map(c => c.label),
+  "/cost", "/context", "/modes", "/skill", "/sessions",
+];
+
+/**
+ * Completion engine behind prompt Tab (cli-spec.md §5). Contract: returns
+ * `[hits, base]` where `base` is the typed stem — a suffix of `line` — and
+ * applying a completion replaces that stem with a hit.
+ */
+export function completer(line: string, knownModeSlugs: string[]): [string[], string] {
+  // Empty/whitespace-only line (bare Tab at the prompt start): complete slash
+  // commands; the whole line is the stem.
+  if (line.trim() === "") {
+    return [SLASH_COMMANDS.slice(), line];
+  }
   const modelArgMatch = line.match(/^\/model\s+(\S*)$/);
   if (modelArgMatch) {
     const partial = modelArgMatch[1];
     const all = listKnownModels().map(e => `${e.provider}/${e.model}`);
     const hits = all.filter(m => m.startsWith(partial));
-    return [hits, line.slice(0, line.length - partial.length)];
+    return [hits, partial];
   }
   const modeArgMatch = line.match(/^\/mode\s+(\S*)$/);
   if (modeArgMatch) {
     const partial = modeArgMatch[1];
     const hits = knownModeSlugs.filter(s => s.startsWith(partial));
-    return [hits, line.slice(0, line.length - partial.length)];
+    return [hits, partial];
   }
-  const SLASH_COMMANDS = ["/help", "/exit", "/clear", "/mode", "/compact", "/checkpoint", "/restore", "/checkpoints", "/sessions", "/new", "/skills", "/skill", "/modes", "/model", "/effort", "/context"];
   if (line.startsWith("/")) {
     const hits = SLASH_COMMANDS.filter(c => c.startsWith(line));
     if (hits.length === 1) return [hits.map(h => h + " "), line];
@@ -828,19 +890,28 @@ function completer(line: string, knownModeSlugs: string[]): [string[], string] {
   const atMatch = line.match(/@(\S*)$/);
   if (atMatch) {
     const partial = atMatch[1];
-    const dir = partial.includes("/") ? dirname(partial) : ".";
-    const prefix = partial.includes("/") ? partial.split("/").pop()! : partial;
-    try {
-      const base = resolve(process.cwd(), dir);
-      const entries = readdirSync(base, { withFileTypes: true });
-      const hits = entries.filter(e => !e.name.startsWith(".") && e.name.startsWith(prefix)).map(e => {
-        const relPath = dir === "." ? e.name : `${dir}/${e.name}`;
-        return `@${relPath}${e.isDirectory() ? "/" : ""}`;
-      });
-      return [hits, line.slice(0, line.lastIndexOf("@")) + "@" + (dir === "." ? "" : dir + "/")];
-    } catch { return [[], line]; }
+    return [pathHits(partial).map(h => `@${h}`), `@${partial}`];
+  }
+  // A bare path token mid-line ("look at docs/fea"): complete as a path.
+  const tail = line.match(/(\S*)$/)?.[1] ?? "";
+  if (tail && !tail.startsWith("/") && !tail.startsWith("@") && tail.includes("/")) {
+    return [pathHits(tail), tail];
   }
   return [[], line];
+}
+
+/** Filesystem completions for a path stem, relative to cwd; directories get a trailing "/" so the next Tab drills in. */
+function pathHits(partial: string): string[] {
+  const dir = partial.includes("/") ? dirname(partial) : ".";
+  const prefix = partial.includes("/") ? partial.split("/").pop()! : partial;
+  try {
+    const base = resolve(process.cwd(), dir);
+    const entries = readdirSync(base, { withFileTypes: true });
+    return entries.filter(e => !e.name.startsWith(".") && e.name.startsWith(prefix)).map(e => {
+      const relPath = dir === "." ? e.name : `${dir}/${e.name}`;
+      return relPath + (e.isDirectory() ? "/" : "");
+    });
+  } catch { return []; }
 }
 
 function extractDecisions(summary: string | null): string[] {
@@ -947,12 +1018,43 @@ export async function handleSlashCore(
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
     case "/help": {
-      console.log("Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /skills, /skill <name>, /model <p/m>, /cost, /context, /effort\nUse `heirloom auth` to configure a provider.");
+      console.log("Commands: /exit, /help, /mode <name>, /clear, /modes, /sessions, /new, /skills, /skill <name>, /model <p/m>, /cost, /context, /usage, /effort\nUse `heirloom auth` to configure a provider.");
       return;
     }
     case "/cost": {
       console.log(`Session: ${(shared.sessionInput / 1000).toFixed(1)}k in / ${(shared.sessionOutput / 1000).toFixed(1)}k out`);
       const cost = getCostStr(); console.log(`Estimated cost: $${cost ?? "0.0000"}`);
+      return;
+    }
+    case "/usage": {
+      // Headless /usage — the TUI opens the UsageView instead (App.tsx). Same
+      // rows: a balance line (live query, decision I — no caching) plus the
+      // per-model token breakdown. getBalance is optional on the adapter;
+      // absent, null, or a failed query all read as "not supported".
+      let balance: ProviderBalance | null = null;
+      try {
+        const provider = getProvider();
+        balance = (await provider.getBalance?.()) ?? null;
+      } catch {
+        balance = null;
+      }
+      if (balance) {
+        const remaining = balance.total - balance.granted;
+        console.log(`Balance (${balance.currency}): total $${balance.total.toFixed(2)} / granted $${balance.granted.toFixed(2)} / remaining $${remaining.toFixed(2)}`);
+      } else {
+        console.log(`Balance: not supported for ${shared.providerName}`);
+      }
+      console.log(`Session: ${(shared.sessionInput / 1000).toFixed(1)}k in / ${(shared.sessionOutput / 1000).toFixed(1)}k out`);
+      const usageByModel = (shared.modelUsage ?? {}) as Record<string, { input: number; output: number; cached: number }>;
+      const modelKeys = Object.keys(usageByModel);
+      if (modelKeys.length === 0) {
+        console.log("Tokens by model: none recorded yet this session");
+      } else {
+        for (const model of modelKeys) {
+          const u = usageByModel[model];
+          console.log(`  ${model}: ${u.input.toLocaleString("en-US")} in / ${u.output.toLocaleString("en-US")} out / ${u.cached.toLocaleString("en-US")} cached`);
+        }
+      }
       return;
     }
     case "/context": {
@@ -1061,6 +1163,23 @@ export async function handleSlashCore(
       return;
     }
     case "/modes": for (const m of await modeLoader.listAll()) console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`); return;
+    case "/sessions": {
+      // Headless session list for the cwd, matching the TUI picker's row
+      // shape (SessionList.tsx): id, excerpt, age, message count. Newest
+      // first — sessionStore.list() sorts by id, which is timestamp-prefixed.
+      const sessions = await sessionStore.list();
+      if (sessions.length === 0) { console.log("No sessions for this project."); return; }
+      const ageOf = (iso: string): string => {
+        const diff = Date.now() - new Date(iso).getTime();
+        if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+        return new Date(iso).toISOString().slice(0, 10);
+      };
+      for (const s of sessions) {
+        console.log(`  ${s.id}  ${s.title || s.firstMessage || s.id.slice(0, 12)}  ${ageOf(s.updatedAt)}  ${s.messageCount} msgs`);
+      }
+      return;
+    }
     case "/mode": {
       const slug = input.slice(6).trim();
       if (!slug) {
@@ -1123,7 +1242,7 @@ export async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number, hooks?: HookRunner): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -1133,8 +1252,14 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   // their contents to the model's view of the prompt. The transcript echo and
   // the persisted session keep the raw text — the user's own words — while the
   // model additionally sees the file contents. Unresolvable mentions are left
-  // in the prompt as plain text (emails, usernames, typos).
-  const mentionBlocks = await expandFileMentions(input);
+  // in the prompt as plain text (emails, usernames, typos). Mentions are
+  // permission-gated like the read_file tool: a path a read rule denies is
+  // replaced with a "not injected" note instead of silently dropped.
+  const mentionBlocks = await expandFileMentions(
+    input,
+    undefined,
+    (raw) => (permissions.resolve("read_file", { path: raw }).action === "deny" ? "deny" : "allow"),
+  );
   const processed = mentionBlocks.length > 0
     ? `${mentionBlocks.join("\n\n")}\n\n${input}`
     : input;
@@ -1185,34 +1310,38 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
     // Mid-turn steering mailbox (App's queue); the loop polls it before each
     // provider call and injects a queued message at the next decision point.
     pollSteeringMessage: cb.pollSteeringMessage,
+    hooks,
     });
   } catch (err) {
+    const failNotifyInput = {
+      status: "failed" as const,
+      durationMs: Date.now() - notifyStart,
+      body: "",
+      title: notifyTitle,
+      failReason: err instanceof Error ? err.message : String(err),
+    };
     fireNotify(
       notifyScript,
-      {
-        status: "failed",
-        durationMs: Date.now() - notifyStart,
-        body: "",
-        title: notifyTitle,
-        failReason: err instanceof Error ? err.message : String(err),
-        passthroughEnv: notifyEnv,
-      },
+      { ...failNotifyInput, passthroughEnv: notifyEnv },
       { debug: shared.debug },
     );
+    // Notification hooks fire alongside the notify script (hooks-spec.md §7).
+    fireNotificationHooks(hooks, failNotifyInput);
     throw err;
   }
 
   const lastReply = result.messages[result.messages.length - 1]?.content ?? "";
+  const completedNotifyInput = {
+    status: "completed" as const,
+    durationMs: Date.now() - notifyStart,
+    body: lastReply,
+    title: notifyTitle,
+  };
   fireNotify(
     notifyScript,
-    {
-      status: "completed",
-      durationMs: Date.now() - notifyStart,
-      body: lastReply,
-      title: notifyTitle,
-      passthroughEnv: notifyEnv,
-    },
+    { ...completedNotifyInput, passthroughEnv: notifyEnv },
     { debug: shared.debug },
   );
+  fireNotificationHooks(hooks, completedNotifyInput);
   return result;
 }

@@ -3,6 +3,7 @@ import type { Message } from "../types.js";
 import type { ThemeContextValue, ThemeDefinition } from "./theme.js";
 import type { KeybindingMap, KeybindingConfig, KeybindingAction } from "./keybindings.js";
 import type { StatusLineManager } from "./statusline/index.js";
+import type { HookRunner } from "../hooks/index.js";
 
 export interface ModelEntry {
   provider: string;
@@ -110,6 +111,9 @@ export interface AppContext {
 
   getProvider: () => Provider;
   sessionId: string;
+  /** Lifecycle hooks dispatcher (docs/hooks-spec.md). Undefined when the
+   *  session has no hooks configured. */
+  hooks?: HookRunner;
   activeMode: any;
   permissions: any;
   toolRegistry: any;

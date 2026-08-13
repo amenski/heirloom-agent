@@ -18,6 +18,7 @@ const MODAL_COMMANDS = new Set([
   "undo",
   "mcp",
   "permissions",
+  "usage",
   "help",
   // Read-only diagnostics, same shape as /help: prints and returns without
   // mutating session state, so it is safe to run without queueing behind an

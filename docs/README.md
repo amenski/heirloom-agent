@@ -77,6 +77,7 @@ then follow the reading paths below.
 | [skill-spec.md](./skill-spec.md) | Agent Skills loading, trigger, trust |
 | [rules-spec.md](./rules-spec.md) | `.heirloom/rules/` + research notes |
 | [notify-spec.md](./notify-spec.md) | notify hook env contract |
+| [hooks-spec.md](./hooks-spec.md) | Lifecycle hooks contract: events, payload, exit codes, trust model |
 | [web-search-spec.md](./web-search-spec.md) | Bing RSS search tier + anti-drift rules |
 | [theme-spec.md](./theme-spec.md) | Theme engine, presets, detection |
 | [mcp-spec.md](./mcp-spec.md) | MCP stdio protocol, tool registration, strictMcpConfig |

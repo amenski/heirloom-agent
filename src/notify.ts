@@ -17,18 +17,23 @@ import { redactSecrets } from "./sessions/redact.js";
 const TITLE_MAX = 120;
 
 export interface NotifyInput {
-  /** "completed" for a normal turn end, "failed" when the turn threw. */
-  status: "completed" | "failed";
+  /** "completed" for a normal turn end, "failed" when the turn threw,
+   *  "job_done" when a background job finished (notify-spec.md §3). */
+  status: "completed" | "failed" | "job_done";
   /** Turn duration in milliseconds; coerced to whole seconds. */
   durationMs: number;
-  /** Raw text of the last assistant reply (redacted here). */
+  /** Raw text of the last assistant reply (redacted here). For "job_done",
+   *  the tail of the job's accumulated output. */
   body: string;
-  /** Session title, or the first-prompt prefix when there is no title. */
+  /** Session title, or the first-prompt prefix when there is no title. For
+   *  "job_done", the job's command. */
   title: string;
   /** Failure reason text — only meaningful when status is "failed". */
   failReason?: string;
   /** User `env` block from settings (e.g. SLACK_WEBHOOK_URL), passed through. */
   passthroughEnv?: Record<string, string | undefined>;
+  /** Background-job payload — present only when status is "job_done". */
+  job?: { id: string; command: string; exitCode: number | null };
 }
 
 /**
@@ -36,10 +41,16 @@ export interface NotifyInput {
  * side-effect free so it can be unit-tested without spawning anything.
  *
  * - DURATION is a whole-second integer string.
- * - STATUS is "completed" | "failed".
+ * - STATUS is "completed" | "failed" | "job_done".
  * - FAIL_REASON is present only on failure (and only when non-empty).
- * - BODY is the last assistant reply, secret-redacted.
- * - TITLE is the session title / first-prompt prefix, trimmed to a sane length.
+ * - BODY is the last assistant reply, secret-redacted (for "job_done", the
+ *   tail of the job's output).
+ * - TITLE is the session title / first-prompt prefix (for "job_done", the
+ *   job's command), trimmed to a sane length.
+ * - JOB_ID / JOB_COMMAND / JOB_EXIT are present only when status is
+ *   "job_done"; JOB_COMMAND is secret-redacted (commands can carry inline
+ *   secrets, e.g. curl -H "Authorization: Bearer …"), JOB_EXIT is omitted
+ *   when the exit code is unknown (a killed job).
  * - The user `env` block is spread in first so our contract vars always win.
  */
 export function buildNotifyEnv(input: NotifyInput): Record<string, string> {
@@ -57,6 +68,12 @@ export function buildNotifyEnv(input: NotifyInput): Record<string, string> {
 
   if (input.status === "failed" && input.failReason) {
     env.FAIL_REASON = input.failReason;
+  }
+
+  if (input.status === "job_done" && input.job) {
+    env.JOB_ID = input.job.id;
+    env.JOB_COMMAND = redactSecrets(input.job.command ?? "").slice(0, TITLE_MAX);
+    if (input.job.exitCode !== null) env.JOB_EXIT = String(input.job.exitCode);
   }
 
   return env;

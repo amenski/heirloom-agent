@@ -71,7 +71,7 @@ export class Compactor {
     }
   }
 
-  async compact(messages: Message[]): Promise<Message[]> {
+  async compact(messages: Message[], extraPrompt?: string): Promise<Message[]> {
     if (!this.needsCompaction(messages)) return messages;
 
     const keepCount = keepBoundary(messages);
@@ -80,14 +80,14 @@ export class Compactor {
 
     if (old.length === 0) return messages;
 
-    let summaryContent = await this.summarize(old, this.lastChangedFiles);
+    let summaryContent = await this.summarize(old, this.lastChangedFiles, extraPrompt);
 
     const changedFiles = [...this.lastChangedFiles];
     if (changedFiles.length > 0) {
       const fidelityOk = this.fidelityCheck(summaryContent, changedFiles);
       if (!fidelityOk && this.fidelityRegenerationCount < 1) {
         this.fidelityRegenerationCount++;
-        summaryContent = await this.summarize(old, this.lastChangedFiles);
+        summaryContent = await this.summarize(old, this.lastChangedFiles, extraPrompt);
       } else if (!fidelityOk) {
         console.warn("[compaction] Fidelity check failed, deferring compaction");
         return messages;
@@ -119,7 +119,7 @@ export class Compactor {
     return this.summarize(messages, this.lastChangedFiles);
   }
 
-  private async summarize(messages: Message[], changedFiles?: Set<string>): Promise<string> {
+  private async summarize(messages: Message[], changedFiles?: Set<string>, extraPrompt?: string): Promise<string> {
     const conversation = messages.map(m => {
       if (m.role === "tool") {
         return `[tool result: ${m.content.slice(0, 200)}]`;
@@ -132,6 +132,9 @@ export class Compactor {
     }).join("\n");
 
     let prompt = COMPACTION_PROMPT;
+    if (extraPrompt) {
+      prompt += `\n${extraPrompt}`;
+    }
     if (changedFiles && changedFiles.size > 0) {
       const fileList = [...changedFiles].join(", ");
       prompt += `\nFiles modified in this session: ${fileList}\nMake sure your summary mentions these files.`;

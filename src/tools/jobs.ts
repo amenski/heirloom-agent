@@ -9,7 +9,9 @@ import { ToolRegistry } from "./registry.js";
 // it all in memory would leak. Each stream keeps the most recent 1MB and flags
 // the truncation so check_job can say so.
 const MAX_STREAM_CHARS = 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
+/** Default per-job timeout (run_bash_background default; also what a run_bash
+ *  timeout-migrated job gets). */
+export const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 const MAX_JOBS = 10;
 const COMPLETED_JOB_TTL_MS = 5 * 60_000; // 5 minutes
 
@@ -28,6 +30,10 @@ export interface Job {
   startTime: number;
   endTime: number | null;
   timeoutMs: number;
+  /** Live-output events fire only for jobs started with `stream: true` (via
+   *  the run_bash_background tool — plan §3 decision E: no global telemetry).
+   *  Timeout-migrated jobs are tracked but never stream. */
+  stream: boolean;
 }
 
 export interface JobStatusReport {
@@ -50,9 +56,10 @@ const jobTimeouts = new WeakMap<Job, ReturnType<typeof setTimeout>>();
  * Terminate the whole process tree. `detached: true` makes the spawned shell a
  * process-group leader (setsid on POSIX), so killing -pid reaches the shell and
  * every child it started — a plain proc.kill() would orphan grandchildren.
- * SIGTERM first, SIGKILL fallback for processes that ignore it.
+ * SIGTERM first, SIGKILL fallback for processes that ignore it. Exported for
+ * run_bash's kill-on-timeout path.
  */
-function killTree(proc: ChildProcess): void {
+export function killTree(proc: ChildProcess): void {
   if (proc.pid === undefined) return;
   const signalTree = (signal: NodeJS.Signals): void => {
     try {
@@ -77,13 +84,69 @@ function killTree(proc: ChildProcess): void {
  * safe. A session resume loses the in-memory map — documented behavior: the OS
  * processes keep running, but job tracking does not survive a restart.
  */
+export type JobCompletionListener = (report: JobStatusReport) => void;
+export type JobOutputListener = (jobId: string, chunk: string) => void;
+
 export class JobManager {
   private jobs = new Map<string, Job>();
+  private completionListeners = new Set<JobCompletionListener>();
+  private outputListeners = new Set<JobOutputListener>();
+
+  /**
+   * Subscribe to job-completion events — fired exactly once per job when its
+   * status leaves "running" (done/failed/killed), with the same report shape
+   * check_job returns. Returns an unsubscribe function.
+   */
+  onCompleted(cb: JobCompletionListener): () => void {
+    this.completionListeners.add(cb);
+    return () => { this.completionListeners.delete(cb); };
+  }
+
+  /**
+   * Subscribe to live output chunks. Fires only for jobs started with
+   * `stream: true` (the run_bash_background tool — plan §3 decision E); a
+   * subscriber never sees output from non-streamable jobs (e.g. timeout
+   * migrations). Returns an unsubscribe function.
+   */
+  onOutput(cb: JobOutputListener): () => void {
+    this.outputListeners.add(cb);
+    return () => { this.outputListeners.delete(cb); };
+  }
+
+  private emitCompleted(job: Job): void {
+    if (this.completionListeners.size === 0) return;
+    const report = this.buildReport(job);
+    for (const cb of this.completionListeners) {
+      try { cb(report); } catch { /* a listener must never break job tracking */ }
+    }
+  }
+
+  private emitOutput(job: Job, chunk: string): void {
+    if (!job.stream || this.outputListeners.size === 0) return;
+    for (const cb of this.outputListeners) {
+      try { cb(job.id, chunk); } catch { /* a listener must never break job tracking */ }
+    }
+  }
+
+  private buildReport(job: Job): JobStatusReport {
+    return {
+      id: job.id,
+      command: job.command,
+      status: job.status,
+      exitCode: job.exitCode,
+      stdout: job.stdout,
+      stderr: job.stderr,
+      stdoutTruncated: job.stdoutTruncated,
+      stderrTruncated: job.stderrTruncated,
+      runningMs: Date.now() - job.startTime,
+    };
+  }
 
   start(
     command: string,
     cwd: string,
     timeoutMs: number,
+    opts?: { stream?: boolean },
   ): { ok: true; id: string } | { ok: false; error: string } {
     // Make room first: drop completed jobs past the TTL, then enforce the cap.
     this.cleanup();
@@ -121,52 +184,108 @@ export class JobManager {
       startTime: Date.now(),
       endTime: null,
       timeoutMs,
+      stream: opts?.stream ?? false,
     };
     this.jobs.set(id, job);
+    this.track(job);
 
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      job.stdout = appendCapped(job.stdout, chunk.toString(), () => { job.stdoutTruncated = true; });
+    return { ok: true, id };
+  }
+
+  /**
+   * Take over an already-spawned detached child (run_bash timeout migration).
+   * Pre-migration output is seeded into the capped buffers so check_job shows
+   * the whole run, not just what the background phase produced. The adopted
+   * job is NOT streamable (plan §3 decision E — only jobs started via the
+   * run_bash_background tool stream live output).
+   */
+  adopt(
+    proc: ChildProcess,
+    opts: { command: string; cwd: string; timeoutMs: number; stdout?: string; stderr?: string },
+  ): { ok: true; id: string } | { ok: false; error: string } {
+    this.cleanup();
+    const runningCount = [...this.jobs.values()].filter((j) => j.status === "running").length;
+    if (runningCount >= MAX_JOBS) {
+      return { ok: false, error: `Too many background jobs (max ${MAX_JOBS}). Wait for one to finish or kill it first.` };
+    }
+    if (!fs.existsSync(opts.cwd)) {
+      return { ok: false, error: `Working directory does not exist: ${opts.cwd}` };
+    }
+
+    const id = randomUUID();
+    const job: Job = {
+      id,
+      command: opts.command,
+      proc,
+      stdout: "",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      status: "running",
+      exitCode: null,
+      startTime: Date.now(),
+      endTime: null,
+      timeoutMs: opts.timeoutMs,
+      stream: false,
+    };
+    // run_bash's foreground buffers are already capped below MAX_STREAM_CHARS,
+    // but cap defensively in case a future caller passes more.
+    if (opts.stdout) {
+      job.stdout = appendCapped("", opts.stdout, () => { job.stdoutTruncated = true; });
+    }
+    if (opts.stderr) {
+      job.stderr = appendCapped("", opts.stderr, () => { job.stderrTruncated = true; });
+    }
+    this.jobs.set(id, job);
+    this.track(job);
+
+    return { ok: true, id };
+  }
+
+  /**
+   * Wire a job's process to the capped buffers, status transitions, timeout,
+   * and the completion/output events. Shared by start() and adopt().
+   */
+  private track(job: Job): void {
+    job.proc.stdout?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      job.stdout = appendCapped(job.stdout, text, () => { job.stdoutTruncated = true; });
+      this.emitOutput(job, text);
     });
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      job.stderr = appendCapped(job.stderr, chunk.toString(), () => { job.stderrTruncated = true; });
+    job.proc.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      job.stderr = appendCapped(job.stderr, text, () => { job.stderrTruncated = true; });
+      this.emitOutput(job, text);
     });
-    proc.on("error", (err) => {
+    job.proc.on("error", (err) => {
       job.stderr += (job.stderr ? "\n" : "") + `[heirloom] failed to start: ${err.message}`;
       job.exitCode = -1;
       job.endTime = Date.now();
-      if (job.status === "running") job.status = "failed";
+      if (job.status === "running") {
+        job.status = "failed";
+        this.emitCompleted(job);
+      }
       clearJobTimeout(job);
     });
-    proc.on("exit", (code) => {
+    job.proc.on("exit", (code) => {
       job.exitCode = code;
       job.endTime = Date.now();
       if (job.status === "running") {
         job.status = code === 0 ? "done" : "failed";
+        this.emitCompleted(job);
       }
       clearJobTimeout(job);
     });
 
-    const timeout = setTimeout(() => this.timeoutJob(id), timeoutMs);
+    const timeout = setTimeout(() => this.timeoutJob(job.id), job.timeoutMs);
     timeout.unref();
     jobTimeouts.set(job, timeout);
-
-    return { ok: true, id };
   }
 
   check(jobId: string): JobStatusReport | null {
     const job = this.jobs.get(jobId);
     if (!job) return null;
-    return {
-      id: job.id,
-      command: job.command,
-      status: job.status,
-      exitCode: job.exitCode,
-      stdout: job.stdout,
-      stderr: job.stderr,
-      stdoutTruncated: job.stdoutTruncated,
-      stderrTruncated: job.stderrTruncated,
-      runningMs: Date.now() - job.startTime,
-    };
+    return this.buildReport(job);
   }
 
   kill(jobId: string): { ok: boolean; error?: string } {
@@ -177,6 +296,10 @@ export class JobManager {
     job.endTime = Date.now();
     killTree(job.proc);
     clearJobTimeout(job);
+    // Fired here rather than on the process 'exit' (which still arrives, but
+    // after the status is already "killed" — the running-guard prevents a
+    // double emit), so listeners see the kill promptly.
+    this.emitCompleted(job);
     return { ok: true };
   }
 
@@ -213,14 +336,16 @@ export class JobManager {
     job.status = "failed";
     job.endTime = Date.now();
     killTree(job.proc);
+    this.emitCompleted(job);
   }
 }
 
-function appendCapped(buf: string, chunk: string, onTruncate: () => void): string {
+/** Keep the most recent `maxChars` (default MAX_STREAM_CHARS) of a stream, flagging the truncation. */
+export function appendCapped(buf: string, chunk: string, onTruncate: () => void, maxChars: number = MAX_STREAM_CHARS): string {
   if (!chunk) return buf;
   let next = buf + chunk;
-  if (next.length > MAX_STREAM_CHARS) {
-    next = next.slice(-MAX_STREAM_CHARS);
+  if (next.length > maxChars) {
+    next = next.slice(-maxChars);
     onTruncate();
   }
   return next;
@@ -246,7 +371,9 @@ const runBackgroundHandler: ToolHandler = async (args, ctx) => {
     ? Math.floor(args.timeout)
     : DEFAULT_TIMEOUT_MS;
 
-  const result = jobManager.start(command, cwd, timeoutMs);
+  // stream: true — only tool-started jobs emit live-output events (plan §3
+  // decision E); timeout-migrated jobs are tracked but never stream.
+  const result = jobManager.start(command, cwd, timeoutMs, { stream: true });
   if (!result.ok) return { content: "", error: result.error };
   return {
     content: [

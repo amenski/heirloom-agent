@@ -18,11 +18,12 @@ N. Title` headings intact when editing — renumbering breaks those references.
 | [§4](./subsystems/token-optimization.md) | Token Optimization | Prompt-caching-friendly prefixes, test-by-deletion, per-turn token costs |
 | [§5](./subsystems/session-lifecycle.md) | Session Lifecycle | Turn boundaries, resume, what a session owns |
 | [§6](./subsystems/failure-modes.md) | Failure Modes & Robustness | Retry policy, stale-file detection, loop detection, degradation rules |
-| §7 | Future Phases | Deferred concerns — kept below, it's a short table |
+| [§7](./subsystems/orchestration.md) | Orchestration | `new_task` sub-agents: inheritance semantics, recursion limits, isolation model, sub-agent audit tagging (decision H) |
+| §8 | Future Phases | Deferred concerns — kept below, it's a short table |
 
 ---
 
-## 7. What We Haven't Covered (Future Phases)
+## 8. What We Haven't Covered (Future Phases)
 
 | Concern | Status | When |
 |---------|--------|------|

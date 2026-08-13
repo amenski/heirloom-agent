@@ -1,8 +1,11 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { Orchestrator } from "./index.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ModeLoader } from "../modes/loader.js";
 import { PermissionEngine } from "../permissions/index.js";
+import { SessionStore, slugify } from "../sessions/store.js";
 import { executeTool as realExecuteTool, registry as realRegistry } from "../tools/index.js";
 import { todoStore } from "../tools/todo.js";
 import type { Provider, StreamEvent } from "../providers/types.js";
@@ -235,5 +238,135 @@ describe("Orchestrator", () => {
     expect(out.error).toBeUndefined();
     expect(providerFactory).toHaveBeenCalledTimes(3);
     expect(out.content).toContain("**Result**: level 0 done");
+  });
+
+  describe("sub-agent audit (decision H)", () => {
+    // A distinct temp dir (not the store-test one — vitest runs files in
+    // parallel workers sharing a cwd, and each file rmSyncs its own).
+    const AUDIT_HOME = join(process.cwd(), ".test-sessions-orchestrator");
+    const AUDIT_CWD = "/workspace";
+    let store: SessionStore;
+    let parentId: string;
+
+    beforeEach(async () => {
+      vi.spyOn(process, "cwd").mockReturnValue(AUDIT_CWD);
+      store = new SessionStore(AUDIT_HOME);
+      parentId = await store.create({ cwd: AUDIT_CWD, provider: "fake", model: "fake", mode: "code" });
+    });
+
+    afterEach(() => {
+      rmSync(AUDIT_HOME, { recursive: true, force: true });
+      vi.restoreAllMocks();
+    });
+
+    function parentJsonlTypes(): string[] {
+      const raw = readFileSync(
+        join(AUDIT_HOME, "sessions", slugify(AUDIT_CWD), `${parentId}.jsonl`),
+        "utf-8",
+      );
+      return raw.split("\n").filter(Boolean).map((l) => JSON.parse(l).type);
+    }
+
+    it("writes sub-agent permission and token rows into the parent session tagged source: \"subagent\"", async () => {
+      const { registry } = makeRegistry();
+      // run_bash is ask-tier under the default askAll engine; headless (no
+      // askUser bridge) resolves to a headless-deny audit row.
+      const { provider } = makeProvider([
+        toolCallTurn("c1", "run_bash", '{"command":"npm test"}'),
+        textTurn("sub done"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const orchestrator = new Orchestrator({
+        provider: () => provider,
+        registry,
+        modeLoader: new ModeLoader(),
+        permissions,
+      });
+      orchestrator.register(registry);
+
+      const out = await registry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "run tests", mode: "code" } },
+        { ...ctx, sessionStore: store, sessionId: parentId },
+      );
+
+      expect(out.error).toBeUndefined();
+
+      const history = await store.queryPermissionHistory(parentId);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ decision: "headless-deny", source: "subagent" });
+
+      // One token row per sub-agent turn, all tagged.
+      const usage = await store.queryTokenUsage(parentId);
+      expect(usage.length).toBeGreaterThanOrEqual(1);
+      expect(usage.every((r) => r.source === "subagent")).toBe(true);
+    });
+
+    it("keeps parent rows untagged and sub-agent messages out of the parent transcript", async () => {
+      // A parent-side row written directly stays untagged.
+      await store.appendPermission(parentId, { tool: "read_file", subject: "./a.ts", decision: "allow-by-rule" });
+
+      const { registry } = makeRegistry();
+      const { provider } = makeProvider([
+        toolCallTurn("c1", "read_file", '{"path":"a.txt"}'),
+        textTurn("sub done"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const orchestrator = new Orchestrator({
+        provider: () => provider,
+        registry,
+        modeLoader: new ModeLoader(),
+        permissions,
+      });
+      orchestrator.register(registry);
+
+      const out = await registry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "read a file", mode: "code" } },
+        { ...ctx, sessionStore: store, sessionId: parentId },
+      );
+      expect(out.error).toBeUndefined();
+
+      const history = await store.queryPermissionHistory(parentId);
+      expect(history.map((r) => r.source)).toEqual([undefined, "subagent"]);
+
+      // Sub-agent messages never land in the parent transcript — the parent
+      // session has zero messages, and the JSONL holds only audit rows
+      // (permission/token) beyond the meta record.
+      const loaded = await store.load(parentId);
+      expect(loaded!.messages).toEqual([]);
+      expect(new Set(parentJsonlTypes())).toEqual(new Set(["meta", "permission", "token"]));
+    });
+
+    it("keeps sub-agent todo updates out of the parent session file", async () => {
+      // Uses the REAL module-level registry (like the todo-store isolation
+      // test above) so the real update_todo_list handler runs against the
+      // per-call context the orchestrator builds.
+      const { provider: subProvider } = makeProvider([
+        toolCallTurn("c1", "update_todo_list", JSON.stringify({
+          todos: [{ content: "Sub step A", status: "in_progress" }],
+        })),
+        textTurn("sub done"),
+      ]);
+      const orchestrator = new Orchestrator({
+        provider: () => subProvider,
+        registry: realRegistry,
+        modeLoader: new ModeLoader(),
+      });
+      orchestrator.register(realRegistry);
+
+      const out = await realRegistry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "sub plan", mode: "code" } },
+        { workingDir: AUDIT_CWD, sessionId: parentId, signal: new AbortController().signal, sessionStore: store },
+      );
+
+      expect(out.error).toBeUndefined();
+      // The parent's checklist panel store was never touched.
+      expect(todoStore.getTodos()).toEqual([]);
+
+      // No todo snapshot row (and no message) ever reaches the parent JSONL —
+      // the audit-only view blocks appendTodo; the transcript stays empty.
+      const types = parentJsonlTypes();
+      expect(types).not.toContain("todo");
+      expect(types).not.toContain("message");
+    });
   });
 });

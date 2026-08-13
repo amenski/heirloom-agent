@@ -6,6 +6,7 @@ import type { AppContext } from "./types.js";
 import { __resetInputWireForTests } from "./hooks/useTerminalInput.js";
 import { stripAnsi } from "./test-helpers.js";
 import { todoStore } from "../tools/todo.js";
+import { jobManager } from "../tools/jobs.js";
 import { ModeLoader } from "../modes/loader.js";
 
 // ── Test doubles ──
@@ -369,10 +370,22 @@ describe("mid-turn steering (queue mailbox)", () => {
   it("the loop's poll consumes the queue head mid-turn and echoes it", async () => {
     const pollResults: (string | null)[] = [];
     const ctx = makeCtx(async (_input: string, cb: any) => {
-      // Hold the turn open until the harness has queued a follow-up, then
-      // poll the mailbox exactly like the agent loop does per decision point.
-      await new Promise((r) => setTimeout(r, 150));
-      pollResults.push(cb.pollSteeringMessage());
+      // Keep the turn open until the harness's queued follow-up has actually
+      // landed in the mailbox, then poll it exactly like the agent loop does
+      // per decision point. Waiting on the observable state — the mailbox
+      // itself — instead of a fixed sleep makes this deterministic under
+      // machine load: a loaded scheduler can only delay the poll, it can
+      // never make it run before the queue is populated. The deadline turns
+      // a genuinely broken wire into a loud failure instead of a hang.
+      const deadline = Date.now() + 5000;
+      let first: string | null = null;
+      while (first === null && Date.now() < deadline) {
+        first = cb.pollSteeringMessage();
+        if (first === null) await new Promise((r) => setTimeout(r, 50));
+      }
+      pollResults.push(
+        first ?? "TIMEOUT: queued steering message never landed in the mailbox",
+      );
       pollResults.push(cb.pollSteeringMessage());
       cb.onText("steered reply");
       return { stopReason: "done", messages: [], newMessages: [] };
@@ -440,5 +453,53 @@ describe("mid-turn steering (queue mailbox)", () => {
 
     // The queue survived the interrupt and drained into a fresh turn.
     expect(inputs).toEqual(["first", "kept message"]);
+  });
+});
+
+describe("background jobs (plan §3)", () => {
+  afterEach(() => {
+    jobManager.killAll();
+  });
+
+  it("streams a model-started job's output as dim transcript rows and shows a completion segment", async () => {
+    const ctx = makeCtx(async () => ({ stopReason: "done", messages: [], newMessages: [] }));
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    await flush();
+
+    const result = jobManager.start("echo job-stream-row", process.cwd(), 5000, { stream: true });
+    expect(result.ok).toBe(true);
+    const shortId = result.ok ? result.id.slice(0, 4) : "";
+
+    // Wait for the job to finish and the 200ms coalesce flush to land.
+    const deadline = Date.now() + 5000;
+    let frame = stripAnsi(inst.lastFrame() ?? "");
+    while (!frame.includes(`[job ${shortId}] job-stream-row`) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      frame = stripAnsi(inst.lastFrame() ?? "");
+    }
+    expect(frame).toContain(`[job ${shortId}] job-stream-row`);
+    expect(frame).toContain(`job ${shortId} done (exit 0)`);
+  });
+
+  it("stays silent in the transcript for a non-streamable (timeout-migrated) job", async () => {
+    const ctx = makeCtx(async () => ({ stopReason: "done", messages: [], newMessages: [] }));
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    await flush();
+
+    const result = jobManager.start("echo not-streamed-row", process.cwd(), 5000);
+    expect(result.ok).toBe(true);
+    const jobId = result.ok ? result.id : "";
+    const deadline = Date.now() + 5000;
+    let frame = stripAnsi(inst.lastFrame() ?? "");
+    while (!frame.includes(`job ${jobId.slice(0, 4)} done (exit 0)`) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      frame = stripAnsi(inst.lastFrame() ?? "");
+    }
+    // The completion segment appeared, but no live output rows (decision E).
+    expect(frame).toContain(`job ${jobId.slice(0, 4)} done (exit 0)`);
+    expect(frame).not.toContain("[not-streamed-row]");
+    expect(frame).not.toContain("not-streamed-row");
   });
 });

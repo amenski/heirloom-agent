@@ -89,10 +89,18 @@ are fatal — `main()` exits 1 (`src/cli.tsx`).
   "compaction": { "auto": true, "threshold": 0.7 },  // auto gates automatic compaction (default true)
   "contextWindow": 128000,                 // fallback context window
   "workflow": { "gitStatus": true, "gitPollInterval": 30000 },
+  "commands": { "timeoutToBackground": true },  // run_bash timeout → background migration (default true)
   "statusline": { "providers": [] },       // see §6
   "favoriteModels": ["deepseek/deepseek-v4-pro"],
   "recentModels": [{ "id": "openai/gpt-5.6-sol", "at": 1786602502208 }],
-  "notify": "/path/to/notify-script"       // see notify-spec.md
+  "notify": "/path/to/notify-script",      // see notify-spec.md
+  "hooks": {                                // lifecycle hooks — see §14
+    "PreToolUse": [
+      { "matcher": "run_bash|edit", "command": "hook-scripts/guard.sh" }
+    ],
+    "UserPromptSubmit": [ { "command": "hook-scripts/log-prompt.sh" } ]
+  },
+  "disableAllHooks": false                 // master switch — nothing runs when true
 }
 ```
 
@@ -293,7 +301,45 @@ Controls the git-status poller behind the status bar.
   `0` (or negative) means **on-demand only**: the poller refreshes once at
   startup and then never again on a timer.
 
-## 13. No telemetry
+## 13. `commands`
+
+Command-group behavior knobs.
+
+- `commands.timeoutToBackground` (boolean, **default `true`**) — when a
+  `run_bash` call hits its fixed 120 s timeout, the process is **moved to the
+  background** (a job id is returned for `check_job`) instead of killed.
+  Set to `false` to restore the old kill-on-timeout behavior. Either way,
+  interactive-looking commands (editors, pagers, `git`/`sleep`, bare shells,
+  REPLs — see tool-spec.md §5) are always killed, and commands that finish
+  under the cap are unaffected.
+
+## 14. `hooks`
+
+Lifecycle hooks are **opt-in, untrusted execution surface**: user-configured
+shell commands fired on agent events. The full contract — the 15-event set,
+payload, exit codes, ordering with the permission engine, and the
+trust-on-first-use model — is `hooks-spec.md`. This section only covers the
+config shape.
+
+- `hooks` (object of event name → entry array). Each entry is
+  `{ matcher?, command }`:
+  - `command` — a single shell string, spawned via `/bin/sh -c` with cwd =
+    the project root.
+  - `matcher` (tool events only: `PreToolUse`, `PermissionRequest`,
+    `PostToolUse`, `PostToolUseFailure`): omitted or `"*"` = all tools; a
+    string matching `^[A-Za-z0-9_|,]+$` = an exact-name list
+    (`run_bash|edit`); anything else = an unanchored JS regex. An invalid
+    regex is a **config error** (fail fast, naming the entry). Matchers on
+    other events are accepted and ignored.
+  - Per event key, **project wins over global** (same merge as the rest of
+    the file): the project's array replaces the global's; events the project
+    doesn't mention keep the global entries. Entries keep their origin for
+    the TOFU trust model (global hooks are trusted implicitly, project hooks
+    must be confirmed — hooks-spec.md §6).
+- `disableAllHooks` (boolean, default `false`) — master switch: nothing
+  runs, not even trusted hooks.
+
+## 15. No telemetry
 
 Heirloom collects **no telemetry**. This is a deliberate guarantee, not a
 default that a config key can flip. There is no telemetry subsystem in the
@@ -306,7 +352,7 @@ The **only automatic network contact** is the npm update check
 (update-check.md) — and it is inert while the package is `private`, which
 this repo is.
 
-## 14. Deprecated keys
+## 16. Deprecated keys
 
 | Key | Status | Replacement |
 |-----|--------|-------------|
@@ -314,9 +360,9 @@ this repo is.
 | `debugLogEnabled` (boolean) | Parsed but ignored; emits a warning | Use the `--debug` CLI flag |
 | `workflow.gitCommands` (boolean) | Parsed but ignored; emits a warning | None — no git-command subsystem consumes it |
 | `workflow.detectBuildTools` (boolean) | Parsed but ignored; emits a warning | None — no build-tool detection subsystem consumes it |
-| `telemetryEnabled` (boolean) | **Removed** — now an unknown-field warning | None — Heirloom has no telemetry (see §13) |
+| `telemetryEnabled` (boolean) | **Removed** — now an unknown-field warning | None — Heirloom has no telemetry (see §15) |
 
-## 15. Environment variables
+## 17. Environment variables
 
 | Variable | Purpose |
 |----------|---------|

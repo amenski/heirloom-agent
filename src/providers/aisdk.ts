@@ -3,7 +3,7 @@ import type { JSONSchema7, ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { Message, ToolDef } from "../types.js";
-import type { Provider, StreamEvent } from "./types.js";
+import type { Provider, ProviderBalance, StreamEvent } from "./types.js";
 import type { ProviderPreset } from "./presets.js";
 import { logRequest, logResponse } from "../debug/logger.js";
 
@@ -95,6 +95,74 @@ function createAIInstance(apiType: string, baseUrl: string, apiKey: string, mode
 }
 
 /**
+ * Live prepaid balance for the providers that expose one. Host-based branching
+ * lives here, in the ADAPTER — the CLI only ever sees the optional
+ * `Provider.getBalance` method and treats null as "not supported here".
+ *
+ *   deepseek  GET {baseUrl}/user/balance   → balance_infos, USD entry
+ *             (total_balance / granted_balance are strings; remaining is
+ *             derived as total - granted = the topped-up, unrestricted part)
+ *   openrouter GET https://openrouter.ai/api/v1/credits
+ *             (remaining_credits is the whole balance — OpenRouter has no
+ *             grant concept, so total = remaining and granted = 0)
+ *
+ * Any failure (unsupported host, non-200, unparseable body, network error)
+ * resolves to null — never throws.
+ */
+async function fetchBalance(baseUrl: string, apiKey: string): Promise<ProviderBalance | null> {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return null;
+  }
+
+  try {
+    if (host === "api.deepseek.com") {
+      const res = await fetch(`${baseUrl}/user/balance`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as {
+        balance_infos?: { currency: string; total_balance: string; granted_balance: string }[];
+      };
+      const usd = body.balance_infos?.find((b) => b.currency === "USD");
+      if (!usd) return null;
+      return {
+        currency: usd.currency,
+        total: parseFloat(usd.total_balance),
+        granted: parseFloat(usd.granted_balance),
+      };
+    }
+
+    if (host === "openrouter.ai") {
+      const res = await fetch("https://openrouter.ai/api/v1/credits", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as {
+        data?: { total_credits?: number; total_usage?: number; remaining_credits?: number };
+      };
+      const data = body.data;
+      if (!data) return null;
+      // Prefer the reported remaining balance; fall back to total − usage.
+      const remaining =
+        typeof data.remaining_credits === "number"
+          ? data.remaining_credits
+          : typeof data.total_credits === "number" && typeof data.total_usage === "number"
+            ? data.total_credits - data.total_usage
+            : null;
+      if (remaining === null) return null;
+      return { currency: "USD", total: remaining, granted: 0 };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Reasoning levels the AI SDK's standardized `reasoning` option accepts
  * (LanguageModelV4CallOptions). Note "max" is absent — see toReasoningLevel.
  */
@@ -124,6 +192,8 @@ function toReasoningLevel(effort: string | undefined): SdkReasoningLevel | undef
 export function createAISDKProvider(preset: ProviderPreset, model: string, apiKey: string): Provider {
   return {
     name: model,
+
+    getBalance: () => fetchBalance(preset.baseUrl, apiKey),
 
     async *streamChat(
       messages: Message[],

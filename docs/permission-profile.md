@@ -1,8 +1,8 @@
 # Permission Profile — Parallel ACL Design
 
-**Status:** forward-looking design (draft for owner review) · 2026-08-13 ·
-nothing in this doc is built; no code follows this contract until it is
-approved and the status line changes.
+**Status:** forward-looking design · **approved 2026-08-13** · not yet built —
+code follows this contract from phase (b); the status line changes again
+when the first phase ships.
 
 This is the design doc that feature-plans.md §9 requires as step 1 of the
 PermissionProfile workstream (decision **K**: full parallel ACL model, Codex
@@ -209,13 +209,15 @@ startup notice. This mirrors Codex's backend choice and finally closes the
   **Verify:** sandbox-escape fixture tests (write outside workspace,
   network to non-allowlisted host) fail closed.
 
-## 11. Owner review checklist
+## 11. Owner review — resolved 2026-08-13
 
-1. **L** — approve profile-gate → rules → posture? (§4)
-2. **M** — approve keep-both-one-surface with the two consolidations? (§5)
-3. §7 honesty — acceptable that bash egress/fs side effects stay
-   rule-engine-governed until the Seatbelt phase? (The alternative —
-   pretending a network allowlist governs the shell — was rejected as a
-   false security promise.)
-4. Level names & defaults — Codex-compatible (`workspace-write` default)
-   or heirloom-native?
+1. **L** — approved: profile-gate → rules → posture. (§4)
+2. **M** — approved: keep both systems, one `authorize()` surface, with
+   the two consolidations (`isEditToolInWorkspace` profile-derived;
+   edit-path rule dedup measured post-build). (§5)
+3. §7 honesty — accepted: bash egress and fs side effects stay
+   rule-engine-governed until the Seatbelt phase.
+4. Level names & defaults — Codex-compatible, `workspace-write` default.
+   (§3)
+
+Phase (b) is unblocked.

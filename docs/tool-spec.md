@@ -41,7 +41,7 @@ not a failure to retry.
 | `read_file` | 2,000 lines | Footer: `(file truncated at 2000 lines)` |
 | `glob` | 500 paths | Hard cap, no footer |
 | `search` | 50 matches | `grep … | head -50` |
-| `run_bash` | 120 s fixed timeout, 512 KB output buffer | Timeout kills the process; `Exit code: N` |
+| `run_bash` | 120 s fixed timeout, 512 KB output buffer | Timeout moves the process to the background and returns a job id (unless interactive-looking, or `commands.timeoutToBackground: false` — then killed); overflow keeps the last 512 KB with a note |
 | `run_bash_background` | 10 concurrent jobs; default 300 s per job | `Too many background jobs (max 10)…` |
 | `web_fetch` | 40,000 chars/call, 2 MB body cap, 15 s timeout | Footer: `(truncated — call web_fetch again with offset: N to continue)` |
 | `web_search` | 8,000 chars/call, 512 KB body cap, 10 s timeout, `limit` 1–8 | Footer: `… (truncated)` |
@@ -159,6 +159,20 @@ Full-file write; creates parent directories.
 - Success: stdout, or `(no output)` when empty.
 - Failure/non-zero exit: `Exit code: N` followed by stdout and stderr — a
   failing test run is information, not noise.
+- **Timeout → background migration**: when the 120 s cap fires and the
+  command does not look interactive, the child process is moved into
+  `JobManager` instead of killed, and the result is
+  `Command exceeded 120s timeout — moved to background as job <id>…` so the
+  model polls `check_job`. Output accumulated before the handover is seeded
+  into the job, so `check_job` shows the whole run. Gated by
+  `commands.timeoutToBackground` (config-spec.md §13; **default ON**). With
+  the key off — or for an interactive-looking command (editors, pagers,
+  monitors, stdin-driven CLIs like `git`/`psql`/`sleep`, and bare shells or
+  REPLs like `bash`/`node` invoked without a script operand) — the process
+  is killed and the result is `Exit code: null` + accumulated output.
+- **Overflow**: output beyond 512 KB keeps the **last** 512 KB and appends
+  `(output truncated — kept last 512KB)`; the process keeps running (the
+  120 s timeout still bounds it).
 
 ### Background jobs (`run_bash_background`, `check_job`, `kill_job`)
 For commands that outlive 120 s (dev servers, builds, test runs):
@@ -170,6 +184,13 @@ For commands that outlive 120 s (dev servers, builds, test runs):
   code, and accumulated stdout/stderr.
 - `kill_job(job_id)` — kills the whole process tree; no-op if the job
   already finished.
+
+Jobs started via `run_bash_background` stream their output live into the TUI
+transcript as dim `[job <id>]` rows (per-job ~200 ms coalescing, plan §3).
+When a job finishes, the TUI status line shows `● job <id> done (exit N)` and
+the notify hook fires with a `job_done` payload (notify-spec.md §3). Commands
+migrated from a `run_bash` timeout are tracked the same way but never stream
+live output — only tool-started jobs do (plan §3 decision E).
 
 ## 6. Meta tools
 

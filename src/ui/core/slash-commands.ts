@@ -1,5 +1,5 @@
 export type SlashCommandKind =
-  | "model" | "mode" | "effort" | "theme" | "new" | "resume" | "continue" | "undo" | "mcp" | "permissions" | "exit" | "help" | "clear" | "skills" | "plan" | "raw" | "doctor" | "compact";
+  | "model" | "mode" | "effort" | "theme" | "new" | "resume" | "continue" | "undo" | "mcp" | "permissions" | "usage" | "exit" | "help" | "clear" | "skills" | "plan" | "raw" | "doctor" | "compact";
 
 export interface SlashCommandItem {
   kind: SlashCommandKind;
@@ -20,6 +20,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommandItem[] = [
   { kind: "undo", name: "undo", label: "/undo", description: "Restore to a previous point" },
   { kind: "mcp", name: "mcp", label: "/mcp", description: "Show MCP server status" },
   { kind: "permissions", name: "permissions", label: "/permissions", description: "Show this session's permission decision history" },
+  { kind: "usage", name: "usage", label: "/usage", description: "Show account balance and token usage" },
   { kind: "plan", name: "plan", label: "/plan", description: "Toggle plan mode (propose before implementing)" },
   { kind: "raw", name: "raw", label: "/raw", description: "Cycle display mode (lite | normal | raw-scrollback)" },
   { kind: "clear", name: "clear", label: "/clear", description: "Clear conversation history" },

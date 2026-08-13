@@ -102,15 +102,16 @@ Typed at the prompt inside the TUI. Three surfaces:
 1. **Autocomplete menu** — `BUILTIN_SLASH_COMMANDS`
    (`src/ui/core/slash-commands.ts`): `/skills`, `/model`, `/mode`,
    `/effort`, `/theme`, `/new`, `/resume`, `/continue`, `/undo`, `/mcp`,
-   `/permissions`, `/plan`, `/raw`, `/clear`, `/compact`, `/doctor`,
-   `/help`, `/exit`.
-2. **Text dispatcher** — `handleSlashCore` (`src/cli.tsx:926`): `/help`,
-   `/cost`, `/context`, `/doctor`, `/skills`, `/skill <name>`, `/clear`,
-   `/compact`, `/modes`, `/mode [slug]`, `/model [provider/model]`,
-   `/effort [value]`.
+   `/permissions`, `/usage`, `/plan`, `/raw`, `/clear`, `/compact`,
+   `/doctor`, `/help`, `/exit`.
+2. **Text dispatcher** — `handleSlashCore` (`src/cli.tsx:987`): `/help`,
+   `/cost`, `/context`, `/usage`, `/doctor`, `/skills`, `/skill <name>`,
+   `/clear`, `/compact`, `/modes`, `/mode [slug]`, `/model [provider/model]`,
+   `/effort [value]`, `/sessions`.
 3. **TUI handlers** (`src/ui/App.tsx` `handleSlashCommand`): `/theme`,
    `/new`, `/resume`, `/continue`, `/sessions` (alias for the session
-   list), `/undo`, `/mcp`, `/permissions`, `/plan`, `/raw`, `/exit`.
+   list), `/undo`, `/mcp`, `/permissions`, `/usage`, `/plan`, `/raw`,
+   `/exit`.
 
 **Routed but not in the autocomplete menu:** `/cost`, `/context`, `/modes`,
 `/skill <name>`, `/sessions`.
@@ -121,6 +122,46 @@ The in-app help screen (`src/ui/HelpOverlay.tsx`) lists the commands above
 
 Unknown `/command` → `Unknown: <cmd>\nType /help.`, never sent to the LLM.
 Input not starting with `/` is always a user message.
+
+**Headless `/sessions`.** `handleSlashCore`'s `/sessions` case lists the
+current project's sessions (the TUI opens the interactive picker instead;
+this is the non-interactive path): one line per session, newest first, with
+id, excerpt (`title` with `firstMessage` fallback), age (`5m ago` / `3h ago`
+/ date — the SessionList row shape), and message count. Empty project →
+`No sessions for this project.` Exits 0.
+
+**`/usage`** (feature-plans.md §7). In the TUI it opens a bordered view
+(`src/ui/views/UsageView.tsx`, Esc closes — the `/mcp` pattern) showing an
+account **balance block** and a **per-model token breakdown**. In headless
+mode (`handleSlashCore`'s `/usage` case) it prints the same rows and exits 0:
+one balance line or `Balance: not supported for <provider>`, the session
+token totals, and one line per model with tokens. The balance is queried
+**live on every open** — the adapter's optional `getBalance` is called fresh,
+nothing is cached (decision I). Which providers support a balance query, and
+the exact response parsing, are documented in provider-spec.md §2.1; the
+provider name printed when unsupported is the active provider, not the model.
+
+**Completion (Tab).** A bare Tab completes contextually. At the start of the
+line (or after whitespace) it completes a slash command. After `@` the file
+mention picker handles insertion (Tab inserts the highlighted path). With
+neither menu open, Tab falls back to `ctx.completer` (`src/cli.tsx`
+`completer()`), which completes `/mode <s>` and `/model <p/m>` args,
+`@`-paths, and bare mid-line path tokens containing `/` (`docs/fea` →
+`docs/feature-plans.md`). The completer's contract is `[hits, base]`: `base`
+is the typed stem — a suffix of the line — that the chosen hit replaces. A
+Tab with no completion is swallowed (Tab never types a tab character);
+Shift+Tab cycles posture.
+
+**@-mentions.** `@path` tokens at word boundaries are read and attached to
+the model's view of the prompt as `<file>` blocks
+(`src/ui/core/file-mentions.ts` `expandFileMentions`), capped at 60 KB per
+file; unreadable or binary files are skipped (the mention stays in the
+prompt as text). Before injection each mentioned path is resolved through
+the permission engine's `read_file` rules: a path resolving to `deny` is
+injected as `<file path="…">[not injected: denied by permissions]</file>`
+instead of its content; `ask`/`allow` inject normally (best-effort, Claude
+Code parity — the deny rule is the gate; there is no interactive prompt at
+expansion time). Shipped 2026-08-13 (feature-plans.md §5).
 
 ## 6. Posture & display toggles
 

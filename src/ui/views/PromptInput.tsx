@@ -29,7 +29,7 @@ import { ansi256 } from "../theme.js";
 
 export type PromptSubmission = {
   text: string;
-  command?: "new" | "resume" | "continue" | "undo" | "mcp" | "exit";
+  command?: "new" | "resume" | "continue" | "undo" | "mcp" | "usage" | "exit";
   imageUrls?: string[];
 };
 
@@ -57,11 +57,19 @@ interface Props {
   onModelPickerOpen?: () => void;
   onCyclePosture?: () => void;
   onOpenModePicker?: () => void;
+  /**
+   * Context completion engine (ctx.completer, cli.tsx): slash commands at the
+   * start of the line, path completion for mid-word tokens. Applied on a bare
+   * Tab when neither the slash menu nor the @-file picker is open. Returns
+   * [hits, base] where base is the typed stem — a suffix of the line — to
+   * replace with the chosen hit.
+   */
+  completer?: (line: string) => [string[], string];
 }
 
 const PromptInput = React.memo(function PromptInput({
   screenWidth, promptHistory, busy, placeholder, statusLine, modelPill,
-  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture, onOpenModePicker,
+  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture, onOpenModePicker, completer,
 }: Props): React.ReactElement {
   const theme = useTheme();
   const undoRedoRef = useRef(createPromptUndoRedoState());
@@ -208,6 +216,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "mcp") { onSubmit({ text: "/mcp", command: "mcp" }); resetInput(); return; }
     if (item.kind === "theme") { onSubmit({ text: "/theme" }); resetInput(); return; }
     if (item.kind === "permissions") { onSubmit({ text: "/permissions" }); resetInput(); return; }
+    if (item.kind === "usage") { onSubmit({ text: "/usage", command: "usage" }); resetInput(); return; }
     if (item.kind === "plan") { onSubmit({ text: "/plan" }); resetInput(); return; }
     if (item.kind === "exit") { onSubmit({ text: "/exit", command: "exit" }); return; }
     if (item.kind === "clear") { onSubmit({ text: item.label }); resetInput(); return; }
@@ -377,6 +386,25 @@ const PromptInput = React.memo(function PromptInput({
 
     if (key.shift && key.tab) {
       onCyclePosture?.();
+      return;
+    }
+
+    // Bare Tab with no menu open: fall back to ctx.completer — slash commands
+    // at the start of the line, path completion for mid-word tokens. The
+    // slash menu and @-picker above keep precedence; this fires only when
+    // neither applies. The completer sees the line up to the cursor, so a
+    // mid-line Tab completes the token at the cursor, not the line's end.
+    if (key.tab && !key.shift && completer) {
+      const lineUpToCursor = curText.text.slice(0, curText.cursor);
+      const [hits, base] = completer(lineUpToCursor);
+      if (hits.length > 0) {
+        const head = lineUpToCursor.slice(0, lineUpToCursor.length - base.length);
+        const completion = head + hits[0];
+        updateBuffer((s) => ({
+          text: completion + s.text.slice(s.cursor),
+          cursor: completion.length,
+        }));
+      }
       return;
     }
 

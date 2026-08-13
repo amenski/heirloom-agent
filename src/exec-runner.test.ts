@@ -63,6 +63,7 @@ vi.mock("./tools/index.js", () => ({
   registry: { getAllDefs: () => [], register: () => {} },
   setSessionId: () => {},
   setSignal: () => {},
+  setTimeoutToBackground: () => {},
 }));
 
 // The notify hook is mocked so the completion-site tests below can assert
@@ -575,5 +576,59 @@ describe("runExecMode wires self-reflection + error-recovery (engagement)", () =
     // The malformed call is never executed; recovery re-prompts for valid JSON.
     expect(executeToolSpy).not.toHaveBeenCalled();
     expect(providerTurns).toBe(2);
+  });
+});
+
+// Headless lifecycle hooks (hooks-spec.md): UserPromptSubmit gates the prompt
+// before it enters the agent — exit 2 blocks the run with a stderr notice,
+// exit-0 stdout appends to the prompt as context. Global-settings hooks are
+// trusted implicitly, so a headless run executes them (untrusted project
+// hooks are skipped per §6 — covered in src/hooks/trust.test.ts).
+describe("runExecMode lifecycle hooks (headless)", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.HEIRLOOM_HOME = HOME_DIR;
+    createProviderSpy.mockClear();
+    providerFactory = () => scriptedProvider();
+    scriptedCall = null;
+  });
+
+  afterEach(() => {
+    delete process.env.HEIRLOOM_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  function writeGlobalSettings(settings: Record<string, unknown>): void {
+    writeFileSync(join(HOME_DIR, "settings.json"), JSON.stringify(settings), "utf-8");
+  }
+
+  it("blocks the run when a UserPromptSubmit hook exits 2, notifying on stderr", async () => {
+    writeGlobalSettings({ hooks: { UserPromptSubmit: [{ command: "exit 2" }] } });
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("UserPromptSubmit hook blocked the message");
+    expect(createProviderSpy).toHaveBeenCalledTimes(1); // provider built, but the prompt never reached it
+  });
+
+  it("appends exit-0 UserPromptSubmit stdout to the prompt as context", async () => {
+    writeGlobalSettings({ hooks: { UserPromptSubmit: [{ command: "echo HOOK-CONTEXT" }] } });
+    const seenMessages: Array<Array<{ role: string; content?: string }>> = [];
+    providerFactory = () => ({
+      name: "fake",
+      async *streamChat(messages: Array<{ role: string; content?: string }>) {
+        seenMessages.push([...messages]);
+        yield { type: "text_delta", content: "done" };
+        yield { type: "done", finishReason: "stop" };
+      },
+    });
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    const lastUser = [...seenMessages[0]].reverse().find((m) => m.role === "user");
+    expect(String(lastUser?.content ?? "")).toContain("HOOK-CONTEXT");
   });
 });

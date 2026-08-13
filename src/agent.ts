@@ -8,6 +8,7 @@ import type { ErrorReflector } from "./selfreflection/index.js";
 import type { ErrorRecovery } from "./errorrecovery/index.js";
 import type { SkillDef } from "./skills/index.js";
 import type { MemoryStore } from "./memory/store.js";
+import type { HookRunner } from "./hooks/index.js";
 import type { SessionStore, CompactionSummary, PermissionDecision } from "./sessions/store.js";
 import { buildStablePreamble, buildVolatileContext, type PromptContext } from "./prompt.js";
 import { estimateTokens, estimateOverheadTokens } from "./compaction/budget.js";
@@ -125,6 +126,10 @@ export interface AgentOptions {
    * mailbox holds then.
    */
   pollSteeringMessage?: () => string | null;
+  /** Lifecycle hooks dispatcher (docs/hooks-spec.md). Hooks only ever see
+   *  calls that survived rule resolution (§5); a hook deny routes through the
+   *  permission engine as deny-by-rule / ask-denied. */
+  hooks?: HookRunner;
 }
 
 /**
@@ -223,7 +228,10 @@ export async function runAgent(
       ? await options.sessionStore.getMessageCount(options.sessionId)
       : 0;
     const before = messages.length;
-    messages = await compactor.compact(messages);
+    // PreCompact hooks run immediately before the compactor; their stdout is
+    // appended to the compaction prompt (hooks-spec.md §2).
+    const preCompact = options.hooks ? await options.hooks.dispatch("PreCompact", {}) : undefined;
+    messages = await compactor.compact(messages, preCompact?.stdout ?? undefined);
     if (messages[0]?.role !== "system") {
       // Reinsert the stable preamble only — no volatile RepoMap/env here,
       // consistent with the per-turn path above (the next user turn will
@@ -251,6 +259,7 @@ export async function runAgent(
         compactionSummary,
       );
     }
+    if (options.hooks) await options.hooks.dispatch("PostCompact", {});
     options.onCompacted?.(`${before} → ${messages.length} messages`);
   }
 
@@ -463,6 +472,20 @@ export async function runAgent(
       tc: ToolCall,
       preResult: ToolOutput | undefined,
     ): Promise<boolean> => {
+      // Lifecycle hooks (hooks-spec.md §5): hooks only ever see calls that
+      // survived rule resolution, and they can only narrow what survives —
+      // a hook `allow` can never upgrade a rule-derived ask.
+      const hookBlocks = async (event: "PreToolUse" | "PermissionRequest"): Promise<boolean> => {
+        if (!options.hooks) return false;
+        const r = await options.hooks.dispatch(event, { tool_name: tc.name, tool_input: tc.arguments });
+        return r.blocked;
+      };
+      const hookDenied = (event: "PreToolUse" | "PermissionRequest"): void => {
+        const msg = `PERMISSION_DENIED: denied by ${event} hook`;
+        options.onDiagnostic?.("denied");
+        messages.push({ role: "tool", toolCallId: tc.id, content: msg });
+      };
+
       if (permissions) {
         const { action, winningRule, wasUnresolved } = permissions.resolve(tc.name, tc.arguments);
         const subject = permissionSubjectText(tc.name, tc.arguments);
@@ -484,6 +507,13 @@ export async function runAgent(
           return false;
         }
         if (action === "ask") {
+          // PermissionRequest hooks fire before the user prompt; a deny is
+          // recorded as ask-denied, as if the user answered no.
+          if (await hookBlocks("PermissionRequest")) {
+            await audit("ask-denied", "denied by PermissionRequest hook");
+            hookDenied("PermissionRequest");
+            return false;
+          }
           if (options.askUser) {
             const allowed = await options.askUser(tc.name, tc.arguments);
             if (allowed === "posture") {
@@ -512,6 +542,14 @@ export async function runAgent(
                   : "approved by user at prompt",
               );
             }
+            // User-approved (or posture-upgraded) asks still pass through
+            // PreToolUse — a deny here routes through the permission engine
+            // as deny-by-rule, indistinguishable from policy in the audit trail.
+            if (await hookBlocks("PreToolUse")) {
+              await audit("deny-by-rule", "deny rule matched (PreToolUse hook)");
+              hookDenied("PreToolUse");
+              return false;
+            }
           } else {
             const msg = "PERMISSION_DENIED: headless — rule resolved to ask";
             options.onDiagnostic?.("denied");
@@ -523,10 +561,34 @@ export async function runAgent(
           // Rule-derived allow with no prompt at all — still worth an audit
           // row so "why did this run without asking me" is answerable.
           await audit("allow-by-rule", `allow rule matched (${winningRule?.origin ?? "rule"})`);
+          if (await hookBlocks("PreToolUse")) {
+            await audit("deny-by-rule", "deny rule matched (PreToolUse hook)");
+            hookDenied("PreToolUse");
+            return false;
+          }
         }
+      } else if (await hookBlocks("PreToolUse")) {
+        // No permission engine — the hook is the only gate.
+        hookDenied("PreToolUse");
+        return false;
       }
 
       const result = preResult ?? await executeTool(tc);
+      executedAny = true;
+      // PostToolUse / PostToolUseFailure: hook stdout appends to the result
+      // (hooks-spec.md §2) before it reaches the model or the UI preview.
+      if (options.hooks) {
+        const postEvent = result.error ? "PostToolUseFailure" : "PostToolUse";
+        const hr = await options.hooks.dispatch(postEvent, { tool_name: tc.name, tool_input: tc.arguments });
+        if (hr.stdout && hr.stdout.trim() !== "") {
+          const note = hr.stdout.trimEnd();
+          if (result.error) {
+            result.error = `${result.error}\n${note}`;
+          } else {
+            result.content = result.content ? `${result.content}\n${note}` : note;
+          }
+        }
+      }
       options.onToolResult?.(tc.name, result);
 
       const callKey = `${tc.name}:${JSON.stringify(tc.arguments)}`;
@@ -598,6 +660,10 @@ export async function runAgent(
     };
 
     let tookParallelPath = false;
+    // True when at least one call in the batch actually executed — a batch
+    // whose calls were all denied produced no results, so the batch-level
+    // hook must not fire for it (hooks only see surviving calls, spec §5).
+    let executedAny = false;
 
     if (canRunParallel) {
       tookParallelPath = true;
@@ -640,6 +706,12 @@ export async function runAgent(
         const ended = await processCall(tc, undefined);
         if (ended) break;
       }
+    }
+
+    // Per-call hooks fired inside processCall; the batch-level event fires
+    // once the batch is done (hooks-spec.md §2).
+    if (options.hooks && executedAny) {
+      await options.hooks.dispatch("PostToolBatch", { tool_calls: toolCalls.map((tc) => tc.name) });
     }
 
     if (diagnostics?.available) {

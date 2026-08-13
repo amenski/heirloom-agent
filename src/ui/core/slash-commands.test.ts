@@ -21,6 +21,7 @@ const ROUTED_KINDS: ReadonlySet<SlashCommandKind> = new Set<SlashCommandKind>([
   "undo",
   "mcp",
   "permissions",
+  "usage",
   "exit",
   "help",
   "clear",
@@ -84,6 +85,12 @@ describe("slash command registry routing", () => {
     const names = getSlashCommands().map((c) => c.name);
     expect(names).toContain("permissions");
     expect(names).toContain("raw");
+  });
+
+  it("registers /usage with a routed 'usage' kind", () => {
+    const cmd = findExactSlashCommand(getSlashCommands(), "/usage");
+    expect(cmd?.kind).toBe("usage");
+    expect(ROUTED_KINDS.has("usage")).toBe(true);
   });
 
   it("does not register the removed dead commands", () => {

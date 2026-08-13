@@ -627,4 +627,59 @@ describe("SessionStore", () => {
       expect((await store.list()).find((s) => s.id === id)).toBeUndefined();
     });
   });
+
+  describe("subagent audit view (decision H)", () => {
+    it("forwards permission and token rows tagged source: \"subagent\"; parent rows stay untagged", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      const { subagentAuditStore } = await import("./store.js");
+      const view = subagentAuditStore(store);
+
+      await view.appendPermission(id, { tool: "run_bash", subject: "npm test", decision: "headless-deny" });
+      await view.appendToken(id, { turnTokens: 140, totalUsed: 500, budgetMax: 128000 });
+
+      const history = await store.queryPermissionHistory(id);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ tool: "run_bash", subject: "npm test", decision: "headless-deny", source: "subagent" });
+
+      const usage = await store.queryTokenUsage(id);
+      expect(usage[0]).toMatchObject({ turnTokens: 140, totalUsed: 500, budgetMax: 128000, source: "subagent" });
+
+      // A parent-side write through the real store stays untagged (it was
+      // appended after the sub-agent row above).
+      await store.appendPermission(id, { tool: "read_file", subject: "./a.ts", decision: "allow-by-rule" });
+      const all = await store.queryPermissionHistory(id);
+      expect(all.map((r) => r.source)).toEqual(["subagent", undefined]);
+    });
+
+    it("blocks every non-audit write, so a sub-agent cannot touch the parent transcript", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      const { subagentAuditStore } = await import("./store.js");
+      const view = subagentAuditStore(store);
+
+      expect(view.appendMessage).toBeUndefined();
+      expect(view.appendTodo).toBeUndefined();
+      expect(view.appendCompaction).toBeUndefined();
+      expect(view.appendState).toBeUndefined();
+      expect(view.append).toBeUndefined();
+      expect(view.create).toBeUndefined();
+      expect(view.deleteSession).toBeUndefined();
+      expect(view.load).toBeUndefined();
+
+      await view.appendPermission(id, { tool: "run_bash", subject: "npm test", decision: "deny" });
+
+      // The JSONL holds exactly the meta record plus the one audit row.
+      const { readFile } = await import("node:fs/promises");
+      const raw = await readFile(join(sessionDir(), `${id}.jsonl`), "utf-8");
+      const types = raw.split("\n").filter(Boolean).map((l) => JSON.parse(l).type);
+      expect(types).toEqual(["meta", "permission"]);
+    });
+
+    it("reports getMessageCount 0 so agent.ts's compaction-persist path stays dormant", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendMessage(id, { role: "user", content: "hi" });
+      const { subagentAuditStore } = await import("./store.js");
+      const view = subagentAuditStore(store);
+      expect(await view.getMessageCount(id)).toBe(0);
+    });
+  });
 });

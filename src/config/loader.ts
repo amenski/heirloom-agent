@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PermissionConfig, PermissionRule, PatternKind, PermissionAction } from "../permissions/index.js";
+import type { HooksConfig } from "../hooks/types.js";
+import { parseHooksConfig } from "../hooks/config.js";
 
 // ── Deep Code settings.json schema ──
 
@@ -73,6 +75,13 @@ export interface DeepCodeSettings {
   /** Per-skill enable/disable */
   enabledSkills?: Record<string, boolean>;
 
+  // ── Hooks ──
+  /** Lifecycle hooks (docs/hooks-spec.md) — parsed per source so project
+   *  entries keep their origin for the TOFU trust model. */
+  hooks?: HooksConfig;
+  /** Master switch (hooks-spec.md §1): nothing runs, not even trusted hooks. */
+  disableAllHooks?: boolean;
+
   // ── Debug (deprecated — use the --debug CLI flag) ──
   debugLogEnabled?: boolean;
 
@@ -109,6 +118,13 @@ export interface DeepCodeSettings {
   compaction?: {
     auto?: boolean;
     threshold?: number;
+  };
+  /** Command-group behavior knobs (heirloom extension) */
+  commands?: {
+    /** When run_bash hits its 120s timeout, move the process to the
+     *  background (job id returned to the model) instead of killing it —
+     *  unless the command looks interactive (default true). */
+    timeoutToBackground?: boolean;
   };
   /** Context window override (heirloom extension) */
   contextWindow?: number;
@@ -213,6 +229,8 @@ const KNOWN_KEYS = new Set([
   "notify",
   "webSearchTool",
   "enabledSkills",
+  "hooks",
+  "disableAllHooks",
   "debugLogEnabled",
   "strictMcpConfig",
   "temperature",
@@ -222,6 +240,7 @@ const KNOWN_KEYS = new Set([
   "keybindings",
   "workflow",
   "compaction",
+  "commands",
   "contextWindow",
   "statusline",
   "favoriteModels",
@@ -702,6 +721,23 @@ export function loadConfig(projectDir?: string): LoadResult {
     }
   }
 
+  // ── hooks ──
+  // Parsed from the per-source raws (not the merged object) so each entry
+  // keeps its origin for the TOFU trust model (hooks-spec.md §6). Merge
+  // semantics: per event key, project replaces global; events the project
+  // doesn't mention keep the global entries.
+  const hooks = parseHooksConfig(globalRaw?.hooks, projectRaw?.hooks, "config", errors);
+  if (hooks) config.hooks = hooks;
+
+  // ── disableAllHooks (master switch) ──
+  if ("disableAllHooks" in merged) {
+    if (typeof merged.disableAllHooks === "boolean") {
+      config.disableAllHooks = merged.disableAllHooks;
+    } else {
+      errors.push("config.disableAllHooks: must be a boolean");
+    }
+  }
+
   // ── debugLogEnabled (deprecated) ──
   if ("debugLogEnabled" in merged) {
     if (typeof merged.debugLogEnabled === "boolean") {
@@ -814,6 +850,24 @@ export function loadConfig(projectDir?: string): LoadResult {
       config.contextWindow = merged.contextWindow;
     } else {
       errors.push("config.contextWindow: must be a number");
+    }
+  }
+
+  // commands
+  if ("commands" in merged) {
+    if (isObject(merged.commands)) {
+      const c = merged.commands as Record<string, unknown>;
+      const commands: NonNullable<DeepCodeSettings["commands"]> = {};
+      if ("timeoutToBackground" in c) {
+        if (typeof c.timeoutToBackground === "boolean") {
+          commands.timeoutToBackground = c.timeoutToBackground;
+        } else {
+          errors.push("config.commands.timeoutToBackground: must be a boolean");
+        }
+      }
+      config.commands = commands;
+    } else {
+      errors.push("config.commands: must be an object");
     }
   }
 

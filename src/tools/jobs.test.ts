@@ -149,3 +149,91 @@ describe("JobManager", () => {
     expect(jobManager.check(runningId)).not.toBeNull();
   });
 });
+
+describe("job completion/output events (plan §3)", () => {
+  beforeEach(() => {
+    jobManager.cleanup();
+  });
+
+  afterEach(() => {
+    jobManager.killAll();
+  });
+
+  it("fires onCompleted exactly once with the check_job report when a job finishes", async () => {
+    const reports: JobStatusReport[] = [];
+    const off = jobManager.onCompleted((r) => reports.push(r));
+    try {
+      const result = jobManager.start("echo hello-bg-events", process.cwd(), 5000, { stream: true });
+      const jobId = result.ok ? result.id : "";
+      await checkDone(jobId);
+      expect(reports).toHaveLength(1);
+      expect(reports[0].id).toBe(jobId);
+      expect(reports[0].status).toBe("done");
+      expect(reports[0].exitCode).toBe(0);
+      expect(reports[0].stdout).toContain("hello-bg-events");
+    } finally {
+      off();
+    }
+  });
+
+  it("fires onCompleted for a failing job and for a kill", async () => {
+    const reports: JobStatusReport[] = [];
+    const off = jobManager.onCompleted((r) => reports.push(r));
+    try {
+      const fail = jobManager.start("exit 3", process.cwd(), 5000);
+      const failId = fail.ok ? fail.id : "";
+      await checkDone(failId);
+      expect(reports).toHaveLength(1);
+      expect(reports[0].status).toBe("failed");
+      expect(reports[0].exitCode).toBe(3);
+
+      const kill = jobManager.start("sleep 30", process.cwd(), 60_000);
+      const killId = kill.ok ? kill.id : "";
+      jobManager.kill(killId);
+      await waitFor(() => jobManager.check(killId)!.status === "killed");
+      expect(reports).toHaveLength(2);
+      expect(reports[1].status).toBe("killed");
+      expect(reports[1].exitCode).toBeNull();
+    } finally {
+      off();
+    }
+  });
+
+  it("unsubscribe stops future completion events", async () => {
+    const reports: JobStatusReport[] = [];
+    const off = jobManager.onCompleted((r) => reports.push(r));
+    off();
+    const result = jobManager.start("true", process.cwd(), 5000);
+    await checkDone(result.ok ? result.id : "");
+    expect(reports).toHaveLength(0);
+  });
+
+  it("delivers live output chunks for a streamable (model-started) job", async () => {
+    const chunks: string[] = [];
+    const off = jobManager.onOutput((id, chunk) => chunks.push(chunk));
+    try {
+      const result = jobManager.start("echo one; sleep 1; echo two", process.cwd(), 5000, { stream: true });
+      const jobId = result.ok ? result.id : "";
+      expect(jobId).not.toBe("");
+      await checkDone(jobId);
+      const all = chunks.join("");
+      expect(all).toContain("one");
+      expect(all).toContain("two");
+    } finally {
+      off();
+    }
+  });
+
+  it("stays silent for non-streamable jobs (decision E: model-started only)", async () => {
+    const chunks: string[] = [];
+    const off = jobManager.onOutput(() => chunks.push("x"));
+    try {
+      const result = jobManager.start("echo should-not-stream", process.cwd(), 5000);
+      const jobId = result.ok ? result.id : "";
+      await checkDone(jobId);
+      expect(chunks).toHaveLength(0);
+    } finally {
+      off();
+    }
+  });
+});

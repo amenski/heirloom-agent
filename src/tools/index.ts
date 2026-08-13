@@ -68,6 +68,10 @@ export function setSetMode(fn: (slug: string) => Promise<string | null>): void {
   ctx.setMode = fn;
 }
 
+export function setTimeoutToBackground(v: boolean): void {
+  ctx.timeoutToBackground = v;
+}
+
 export async function executeTool(call: ToolCall): Promise<ToolOutput> {
   return registry.execute(call, ctx);
 }

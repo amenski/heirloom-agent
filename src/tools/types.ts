@@ -35,6 +35,10 @@ export interface ToolContext {
   /** Mode-switch callback (switch_mode tool). Resolves to the mode name, or
    *  null for an unknown slug. Absent when mode switching is not wired. */
   setMode?: (slug: string) => Promise<string | null>;
+  /** commands.timeoutToBackground (config-spec.md §13, default ON): when
+   *  run_bash hits its 120s cap, migrate the child to JobManager instead of
+   *  killing it. Absent (undefined) means the default — ON. */
+  timeoutToBackground?: boolean;
 }
 
 export interface ToolRegistration {

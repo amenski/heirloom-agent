@@ -9,6 +9,7 @@ import { Box, Text, useInput, useApp } from "ink";
 import { previewEdit } from "../permissions/diffpreview.js";
 import type { AppContext, StatusSegment, GitStatus } from "./types.js";
 import type { PermissionRule } from "../permissions/index.js";
+import type { HookEntry } from "../hooks/types.js";
 import { extractToolSubject } from "../permissions/rules.js";
 import type { KeybindingConfig } from "./keybindings.js";
 
@@ -40,6 +41,8 @@ import {
   createStreamBlockState,
   type StreamBlockState,
 } from "./core/stream-blocks.js";
+import { JobOutputCoalescer } from "./core/job-stream.js";
+import { jobManager } from "../tools/jobs.js";
 import HintBar from "./HintBar.js";
 import TodoPanel from "./TodoPanel.js";
 import { todoStore } from "../tools/todo.js";
@@ -50,6 +53,7 @@ import { explainToolAction } from "./explain-action.js";
 import { buildWelcomeLines } from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
+import HookTrustPrompt from "./views/HookTrustPrompt.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
 import SkillList from "./views/SkillList.js";
@@ -57,6 +61,7 @@ import ModeList from "./views/ModeList.js";
 import UndoSelector from "./views/UndoSelector.js";
 import McpStatusList from "./views/McpStatusList.js";
 import PermissionHistoryList from "./views/PermissionHistoryList.js";
+import UsageView from "./views/UsageView.js";
 import ResumeChooser from "./views/ResumeChooser.js";
 import { buildReplayLines } from "./core/replay.js";
 import { opensModal } from "./core/modal-commands.js";
@@ -179,6 +184,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const [statusLineProviderSegments, setStatusLineProviderSegments] = useState<
     StatusSegment[]
   >(() => ctx.statusLineManager?.segments ?? []);
+  // Status segments for finished background jobs (`● job 3a2f done (exit 0) ·
+  // 12 lines`), pushed in from JobManager completion events. Separate state
+  // because buildStatusBar rewrites statusLine wholesale; combined at render
+  // like the provider segments. Capped so a long session with many jobs
+  // cannot grow the row without bound.
+  const [jobDoneSegments, setJobDoneSegments] = useState<StatusSegment[]>([]);
   // Todo checklist state, mirrored from the shared store so the panel
   // re-renders on every update_todo_list call. Initialized from the store
   // (empty at mount).
@@ -213,6 +224,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     questions: AskQuestionItem[];
     resolve: (answers: Record<string, string> | null) => void;
   } | null>(null);
+  // TOFU trust confirmation for an unseen project hook (hooks-spec.md §6).
+  // Same ask-tier pattern as askUser: a Promise resolved by a modal.
+  const [hookTrustPrompt, setHookTrustPrompt] = useState<{
+    entry: HookEntry;
+    resolve: (trusted: boolean) => void;
+  } | null>(null);
 
   // Permission/execution posture, cycled by Shift+Tab: normal → autoApprove → plan.
   // - normal: permissions ask per policy.
@@ -245,6 +262,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   }, [showUndoSelector]);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const [showPermissionHistory, setShowPermissionHistory] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
   // Startup resume chooser: null until a resumed session offers the load/compact
   // choice, then holds the message count for the prompt. Set in the mount effect.
   const [resumeChoice, setResumeChoice] = useState<{ count: number } | null>(null);
@@ -303,6 +321,19 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   }, []);
 
+  // Lifecycle hooks (hooks-spec.md): SessionStart fires once at session
+  // startup, after the TOFU trust check, before the first turn. The App owns
+  // the ask-tier trust confirmation (same Promise+modal pattern as askUser):
+  // an unseen project hook prompts exactly once per session until trusted.
+  useEffect(() => {
+    if (!ctx.hooks) return;
+    ctx.hooks.confirmTrust = (entry) =>
+      new Promise<boolean>((resolve) => {
+        setHookTrustPrompt({ entry, resolve });
+      });
+    void ctx.hooks.dispatch("SessionStart", {});
+  }, [ctx.hooks]);
+
   // Config-driven statusline providers: subscribe and run the async refresh
   // loop. Segments are pushed in from outside render; the loop never blocks or
   // crashes the render (each provider is isolated in the manager).
@@ -312,6 +343,78 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     mgr.onUpdate(setStatusLineProviderSegments);
     mgr.start();
     return () => mgr.stop();
+  }, []);
+
+  // Background-job completion (plan §3): a finished job surfaces a status
+  // segment — `● job 3a2f done (exit 0) · 12 lines` — newest first, capped.
+  // Subscribed once at mount; cleanup unsubscribes.
+  useEffect(() => {
+    const offCompleted = jobManager.onCompleted((report) => {
+      setJobDoneSegments((prev) => {
+        const shortId = report.id.slice(0, 4);
+        const exit = report.exitCode !== null ? ` (exit ${report.exitCode})` : "";
+        const lineCount = (report.stdout + report.stderr)
+          .split("\n")
+          .filter((l) => l.trim() !== "").length;
+        const segment: StatusSegment = {
+          id: `job-${report.id}`,
+          text: `● job ${shortId} ${report.status}${exit} · ${lineCount} lines`,
+          dimColor: true,
+        };
+        return [segment, ...prev].slice(0, 5);
+      });
+    });
+    return offCompleted;
+  }, []);
+
+  // Background-job live output (plan §3, decision E): JobManager emits output
+  // events only for jobs started via the run_bash_background tool, so this
+  // streams exactly those — no global job telemetry. Chunks are coalesced per
+  // job at ~200ms and committed as dim transcript rows; <Static> renders each
+  // row once, so the cadence costs a single row per flush, never a repaint
+  // storm. A completing job flushes its buffered tail immediately.
+  useEffect(() => {
+    const coalescers = new Map<string, JobOutputCoalescer>();
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    const flushJob = (jobId: string) => {
+      const timer = timers.get(jobId);
+      if (timer) clearTimeout(timer);
+      timers.delete(jobId);
+      const coalescer = coalescers.get(jobId);
+      if (!coalescer) return;
+      coalescer.flush();
+      if (!coalescer.hasPending) coalescers.delete(jobId);
+    };
+    const appendJobRows = (jobId: string, text: string) => {
+      const body = text.replace(/\n$/, "");
+      if (!body) return;
+      const shortId = jobId.slice(0, 4);
+      const rows = body.split("\n").map((l) => `[job ${shortId}] ${l}`);
+      setOutputLines((prev) => [
+        ...prev,
+        ...rows.map((l) => (theme.colorEnabled ? `\x1b[2m${l}\x1b[0m` : l)),
+      ]);
+    };
+    const offOutput = jobManager.onOutput((jobId, chunk) => {
+      let coalescer = coalescers.get(jobId);
+      if (!coalescer) {
+        coalescer = new JobOutputCoalescer((text) => appendJobRows(jobId, text));
+        coalescers.set(jobId, coalescer);
+      }
+      coalescer.push(chunk);
+      if (!timers.has(jobId)) {
+        timers.set(jobId, setTimeout(() => {
+          timers.delete(jobId);
+          flushJob(jobId);
+        }, 200));
+      }
+    });
+    const offCompleted = jobManager.onCompleted((report) => flushJob(report.id));
+    return () => {
+      offOutput();
+      offCompleted();
+      for (const t of timers.values()) clearTimeout(t);
+    };
   }, []);
 
   // Mirror the shared todo store into React state. The store pushes a new array
@@ -581,7 +684,27 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     async (input: string, imageUrls?: string[]) => {
       if (!input.trim()) return;
 
+      // The turn gate closes before the (potentially slow) hook dispatch so a
+      // submission typed while a UserPromptSubmit hook runs cannot start a
+      // second concurrent turn; a block reopens the gate.
       turnActiveRef.current = true;
+
+      // UserPromptSubmit fires before a top-level submitted message enters the
+      // agent (hooks-spec.md §2). Mid-turn steered injections never pass
+      // through here (they go via pollSteeringMessage inside the loop), so
+      // they are skipped by construction. Block = message not sent, user
+      // notified; exit-0 stdout is appended to the prompt as context.
+      if (ctx.hooks) {
+        const ups = await ctx.hooks.dispatch("UserPromptSubmit", { prompt: input });
+        if (ups.blocked) {
+          turnActiveRef.current = false;
+          pushOutput("[UserPromptSubmit hook blocked the message]");
+          return;
+        }
+        if (ups.stdout.trim() !== "") {
+          input = `${input}\n\n${ups.stdout.trimEnd()}`;
+        }
+      }
 
       // Fresh checklist per turn: clear the previous turn's (dimmed) list. The
       // store subscriber above clears the panel synchronously. After the turn
@@ -912,6 +1035,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           }
         }
 
+        // MessageDisplay (TUI-only): fires when an assistant message renders
+        // (hooks-spec.md §2).
+        if (ctx.hooks && result.newMessages) {
+          const lastAssistant = [...result.newMessages]
+            .reverse()
+            .find((m: any) => m.role === "assistant");
+          if (lastAssistant?.content) {
+            await ctx.hooks.dispatch("MessageDisplay", { message: lastAssistant.content });
+          }
+        }
+
         announceToScreenReader("Heirloom has finished processing", "polite");
       } catch (err) {
         flushStream();
@@ -1103,6 +1237,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowPermissionHistory(true);
       return;
     }
+    if (trimmed === "/usage") {
+      setShowUsage(true);
+      return;
+    }
     if (trimmed.startsWith("/raw")) {
       const arg = trimmed.slice(4).trim();
       if (arg === "normal") rawMode.setMode("normal");
@@ -1150,6 +1288,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         description: "Show session token totals and cost",
         category: "command",
         execute: () => handleSlashCommand("/cost"),
+      },
+      {
+        id: "cmd-usage",
+        label: "/usage",
+        description: "Show account balance and token usage",
+        category: "command",
+        execute: () => handleSlashCommand("/usage"),
       },
       {
         id: "cmd-context",
@@ -1406,6 +1551,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
+    if (showUsage) {
+      return;
+    }
+
     if (askQuestionPrompt) {
       return;
     }
@@ -1489,6 +1638,12 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     // hangs at a blank prompt. The transcript stays in scrollback untouched —
     // only the interactive frame goes away.
     setExitHint(`Resume: heirloom --resume ${ctx.sessionId}`);
+    // Stop fires on /exit; SessionEnd immediately after, before teardown
+    // (hooks-spec.md §2).
+    if (ctx.hooks) {
+      await ctx.hooks.dispatch("Stop", {});
+      await ctx.hooks.dispatch("SessionEnd", {});
+    }
     await waitUntilRenderFlush().catch(() => {});
     exit();
     ctx.onExit();
@@ -1499,8 +1654,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const term = useTerminalInfo();
 
   const modalOpen =
-    !!askPrompt || !!askQuestionPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
-    showUndoSelector || showMcpStatus || showPermissionHistory || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
+    !!askPrompt || !!askQuestionPrompt || !!hookTrustPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
+    showUndoSelector || showMcpStatus || showPermissionHistory || showUsage || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   const prevModalOpenRef = useRef(modalOpen);
   modalOpenRef.current = modalOpen;
@@ -1551,6 +1706,16 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
             askQuestionPrompt.resolve(answers);
           }}
           width={term.columns}
+        />
+      )}
+
+      {hookTrustPrompt && (
+        <HookTrustPrompt
+          entry={hookTrustPrompt.entry}
+          resolve={(trusted) => {
+            setHookTrustPrompt(null);
+            hookTrustPrompt.resolve(trusted);
+          }}
         />
       )}
 
@@ -1706,6 +1871,26 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showUsage && (
+        <UsageView
+          providerName={ctx.providerName}
+          getBalance={async () => {
+            // Live query on every open (decision I — no caching). A provider
+            // that can't be constructed or lacks getBalance reads as null.
+            try {
+              return (await ctx.getProvider().getBalance?.()) ?? null;
+            } catch {
+              return null;
+            }
+          }}
+          modelUsage={ctx.mutable.modelUsage}
+          sessionInput={ctx.mutable.sessionInput}
+          sessionOutput={ctx.mutable.sessionOutput}
+          onClose={() => setShowUsage(false)}
+          width={term.columns}
+        />
+      )}
+
       {showModelDropdown && (
         <ModelsDropdown
           open={showModelDropdown}
@@ -1800,7 +1985,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !hookTrustPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showUsage && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={promptHistory}
@@ -1813,12 +1998,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           onModelPickerOpen={() => setShowModelDropdown(true)}
           onCyclePosture={() => cyclePosture()}
           onOpenModePicker={() => setShowModeList(true)}
+          completer={ctx.completer}
           modelPill={ctx.buildModelPill?.()}
           statusLine={
             <StatusBar
               segments={
-                statusLineProviderSegments.length > 0
-                  ? [...statusLine, ...statusLineProviderSegments]
+                statusLineProviderSegments.length > 0 || jobDoneSegments.length > 0
+                  ? [...statusLine, ...jobDoneSegments, ...statusLineProviderSegments]
                   : statusLine
               }
               gitStatus={gitStatus}

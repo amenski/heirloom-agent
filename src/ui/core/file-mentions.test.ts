@@ -94,3 +94,29 @@ describe("expandFileMentions", () => {
     expect(block.includes("… [truncated]")).toBe(true);
   });
 });
+
+describe("expandFileMentions permission gate", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "heirloom-gate-"));
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it("replaces a denied path with a not-injected note and injects allowed ones", async () => {
+    fs.writeFileSync(path.join(root, "ok.ts"), "export const ok = 1;");
+    fs.writeFileSync(path.join(root, "secret.env"), "TOKEN=abc");
+
+    const blocks = await expandFileMentions(
+      "@ok.ts and @secret.env",
+      root,
+      (raw) => (raw === "secret.env" ? "deny" : "allow"),
+    );
+    expect(blocks).toEqual([
+      '<file path="ok.ts">\nexport const ok = 1;\n</file>',
+      '<file path="secret.env">\n[not injected: denied by permissions]\n</file>',
+    ]);
+  });
+
+  it("without a gate, behavior is unchanged", async () => {
+    fs.writeFileSync(path.join(root, "plain.ts"), "export const p = 1;");
+    const blocks = await expandFileMentions("@plain.ts", root);
+    expect(blocks).toEqual(['<file path="plain.ts">\nexport const p = 1;\n</file>']);
+  });
+});

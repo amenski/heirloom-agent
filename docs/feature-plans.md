@@ -134,7 +134,12 @@ one more block in that prefix.
 
 ---
 
-## 3. Background commands — live output + completion signal
+## ~~3. Background commands — live output + completion signal~~
+
+**✅ shipped 2026-08-13** — JobManager completion/output events, the TUI
+status segment + notify job payload, and the run_bash timeout→background
+migration landed (decisions D/E as locked below); behavior now lives in
+tool-spec.md §2/§5, config-spec.md §13, and notify-spec.md §3-4.
 
 **Priority:** M (user runs dev servers/tests daily) · **Effort:** M
 
@@ -182,7 +187,12 @@ fires a script at turn boundaries only.
 
 ---
 
-## 4. Lifecycle hooks — full event set
+## ~~4. Lifecycle hooks — full event set~~
+
+**✅ shipped 2026-08-13** — full 15-event set implemented against
+hooks-spec.md (`src/hooks/`, deny-only power, TOFU trust, redacted
+payloads); behavior now lives in hooks-spec.md + config-spec.md §14;
+security review of T15 pending.
 
 **Priority:** M · **Effort:** L · **Security-sensitive**
 
@@ -253,7 +263,13 @@ everything; trust prompt appears exactly once per project.
 
 ---
 
-## 5. Completion & @-mention guardrails (todo.md 25.5 remainder)
+## ~~5. Completion & @-mention guardrails (todo.md 25.5 remainder)~~
+
+**✅ shipped 2026-08-13** — `ctx.completer` is now wired into prompt Tab
+(slash commands at line start, @-picker precedence, mid-word path
+completion), @-mentions resolve read rules before injection (denied →
+not-injected note), and headless `/sessions` lists the cwd's sessions;
+behavior now lives in cli-spec.md §5.
 
 **Priority:** P3 · **Effort:** S–M
 
@@ -331,7 +347,12 @@ deny (`App.tsx:1270-1280`). Two gaps: `allow-by-posture` is in the type union
 
 ---
 
-## 7. Usage & balance display (`/usage`)
+## ~~7. Usage & balance display (`/usage`)~~
+
+**✅ shipped 2026-08-13** — `getBalance?()` on the Provider interface
+(deepseek `/user/balance` USD entry, openrouter `/credits`, null elsewhere),
+`/usage` bordered view + headless variant, live query per open (decision I);
+behavior now lives in provider-spec.md §2.1 and cli-spec.md §5.
 
 **Priority:** P3 · **Effort:** S–M
 
@@ -450,20 +471,24 @@ workstream, not a feature: design doc first, then phased build.
    (b) profile schema + config validation — (c) evaluation layer + tests —
    (d) posture/prompt integration — (e) Seatbelt phase.
 
-### Open decisions
+### Decisions (2026-08-13)
 
-- **L — evaluation order** and **M — subsumption** are settled as
-  recommendations in the design doc: [permission-profile.md](./permission-profile.md)
-  (draft 2026-08-13, owner review pending). L: profile-gate → rules →
-  posture, deny-absolute proved per layer (§4). M: keep both systems
-  permanently, composed behind one `authorize()` surface, with two
-  concrete consolidations (`isEditToolInWorkspace` becomes profile-derived;
-  edit-path rule dedup measured post-build) (§5). Owner review checklist
-  at §11 — the four questions there gate phase (b).
+- **L** and **M** settled and **approved by the owner**: profile-gate →
+  rules → posture with deny-absolute proved per layer (§4); both systems
+  kept permanently behind one `authorize()` surface with the two
+  consolidations (§5). Bash-limitation honesty accepted; level names
+  Codex-compatible (`workspace-write` default). Full record:
+  [permission-profile.md](./permission-profile.md) §11. Phase (b) is
+  unblocked.
 
 ---
 
-## 10. Orchestrator design doc + sub-agent audit
+## ~~10. Orchestrator design doc + sub-agent audit~~
+
+**✅ shipped 2026-08-13** — design doc at subsystems/orchestration.md §7;
+sub-agent audit/token rows tagged `source: "subagent"` in the parent
+session via the audit-only `subagentAuditStore` wrapper (decision H);
+behavior in session-spec.md.
 
 **Priority:** P3 · **Effort:** S (doc) · closes the roadmap slice
 

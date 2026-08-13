@@ -64,6 +64,57 @@ describe("buildNotifyEnv", () => {
   it("clamps negative durations to 0", () => {
     expect(buildNotifyEnv(base({ durationMs: -50 })).DURATION).toBe("0");
   });
+
+  it("shapes a job_done notification with the job payload", () => {
+    const env = buildNotifyEnv(base({
+      status: "job_done",
+      body: "listening on :3000",
+      title: "npm run dev",
+      job: { id: "3f2a-0000-0000", command: "npm run dev", exitCode: 0 },
+    }));
+    expect(env.STATUS).toBe("job_done");
+    expect(env.DURATION).toBe("3");
+    expect(env.BODY).toBe("listening on :3000");
+    expect(env.TITLE).toBe("npm run dev");
+    expect(env.JOB_ID).toBe("3f2a-0000-0000");
+    expect(env.JOB_COMMAND).toBe("npm run dev");
+    expect(env.JOB_EXIT).toBe("0");
+    expect(env.FAIL_REASON).toBeUndefined();
+  });
+
+  it("omits JOB_EXIT when the exit code is unknown (killed job)", () => {
+    const env = buildNotifyEnv(base({
+      status: "job_done",
+      body: "",
+      title: "sleep 30",
+      job: { id: "abc", command: "sleep 30", exitCode: null },
+    }));
+    expect(env.STATUS).toBe("job_done");
+    expect(env.JOB_ID).toBe("abc");
+    expect("JOB_EXIT" in env).toBe(false);
+  });
+
+  it("redacts secrets in JOB_COMMAND", () => {
+    const env = buildNotifyEnv(base({
+      status: "job_done",
+      body: "",
+      title: "curl",
+      job: {
+        id: "abc",
+        command: "curl -H 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz012345' x",
+        exitCode: 1,
+      },
+    }));
+    expect(env.JOB_COMMAND).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+    expect(env.JOB_COMMAND).toContain("[redacted-api-key]");
+  });
+
+  it("sets no JOB_* vars for non-job statuses", () => {
+    const env = buildNotifyEnv(base());
+    expect("JOB_ID" in env).toBe(false);
+    expect("JOB_COMMAND" in env).toBe(false);
+    expect("JOB_EXIT" in env).toBe(false);
+  });
 });
 
 describe("fireNotify", () => {

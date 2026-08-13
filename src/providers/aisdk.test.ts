@@ -1,0 +1,137 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { createAISDKProvider } from "./aisdk.js";
+import type { ProviderPreset } from "./presets.js";
+
+function preset(baseUrl: string): ProviderPreset {
+  return {
+    api: "openai-compatible",
+    baseUrl,
+    keyEnv: "TEST_API_KEY",
+    defaultModel: "test-model",
+    models: {},
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("Provider.getBalance (openai-compatible adapter)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(): void {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  it("deepseek: GET {baseUrl}/user/balance with Bearer auth, parses the USD balance_infos entry", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        is_available: true,
+        balance_infos: [
+          { currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" },
+          { currency: "USD", total_balance: "1.25", granted_balance: "0.10", topped_up_balance: "1.15" },
+        ],
+      }),
+    );
+
+    const provider = createAISDKProvider(preset("https://api.deepseek.com"), "deepseek-v4-pro", "sk-test");
+    const balance = await provider.getBalance!();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.deepseek.com/user/balance");
+    expect(init.headers).toEqual({ Authorization: "Bearer sk-test" });
+    expect(balance).toEqual({ currency: "USD", total: 1.25, granted: 0.1 });
+  });
+
+  it("deepseek: tolerates a base URL with a path prefix (host is what branches)", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ balance_infos: [{ currency: "USD", total_balance: "5.00", granted_balance: "0.00", topped_up_balance: "5.00" }] }),
+    );
+
+    const provider = createAISDKProvider(preset("https://api.deepseek.com/v1"), "deepseek-v4-pro", "sk-test");
+    await provider.getBalance!();
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.deepseek.com/v1/user/balance");
+  });
+
+  it("deepseek: returns null when balance_infos has no USD entry", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" }] }),
+    );
+
+    const provider = createAISDKProvider(preset("https://api.deepseek.com"), "deepseek-v4-pro", "sk-test");
+    expect(await provider.getBalance!()).toBeNull();
+  });
+
+  it("openrouter: GET https://openrouter.ai/api/v1/credits with Bearer auth, reports remaining credits", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: { total_credits: 20, total_usage: 2.75, remaining_credits: 17.25 } }),
+    );
+
+    const provider = createAISDKProvider(preset("https://openrouter.ai/api/v1"), "anthropic/claude-sonnet-4.6", "sk-or");
+    const balance = await provider.getBalance!();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://openrouter.ai/api/v1/credits");
+    expect(init.headers).toEqual({ Authorization: "Bearer sk-or" });
+    // OpenRouter has no grant concept: the whole remaining balance is total.
+    expect(balance).toEqual({ currency: "USD", total: 17.25, granted: 0 });
+  });
+
+  it("openrouter: falls back to total − usage when remaining_credits is absent", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(jsonResponse({ data: { total_credits: 100.5, total_usage: 25.75 } }));
+
+    const provider = createAISDKProvider(preset("https://openrouter.ai/api/v1"), "m", "sk-or");
+    expect(await provider.getBalance!()).toEqual({ currency: "USD", total: 74.75, granted: 0 });
+  });
+
+  it("returns null for hosts without a balance endpoint (no fetch)", async () => {
+    stubFetch();
+
+    const provider = createAISDKProvider(preset("https://api.openai.com/v1"), "gpt-5.6-sol", "sk-oa");
+    expect(await provider.getBalance!()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const ollama = createAISDKProvider(preset("http://localhost:11434/v1"), "llama3.2", "");
+    expect(await ollama.getBalance!()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns null on a non-200 response", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(jsonResponse({ error: { message: "invalid api key" } }, 401));
+
+    const provider = createAISDKProvider(preset("https://api.deepseek.com"), "m", "bad-key");
+    expect(await provider.getBalance!()).toBeNull();
+  });
+
+  it("returns null on a network error instead of throwing", async () => {
+    stubFetch();
+    fetchMock.mockRejectedValue(new Error("ECONNRESET"));
+
+    const provider = createAISDKProvider(preset("https://api.deepseek.com"), "m", "sk-test");
+    await expect(provider.getBalance!()).resolves.toBeNull();
+  });
+
+  it("returns null on an unparseable response body", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(new Response("not json", { status: 200 }));
+
+    const provider = createAISDKProvider(preset("https://api.deepseek.com"), "m", "sk-test");
+    await expect(provider.getBalance!()).resolves.toBeNull();
+  });
+});

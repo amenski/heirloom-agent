@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runAgent } from "./agent.js";
 import { PermissionEngine } from "./permissions/index.js";
+import { Compactor } from "./compaction/compactor.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
 import type { Provider, StreamEvent } from "./providers/types.js";
@@ -1093,5 +1094,265 @@ describe("runAgent", () => {
       expect(sentMessages.length).toBe(2); // compacted system msg + new user msg
       expect(sentMessages.some((m) => m.content === history[1].content)).toBe(false);
     });
+  });
+});
+
+describe("lifecycle hooks (§5 ordering)", () => {
+  function fakeHooks(impl?: (event: string, extra: Record<string, unknown>) => Promise<{ blocked: boolean; stdout?: string }>) {
+    return {
+      dispatch: vi.fn(impl ?? (async () => ({ blocked: false, stdout: "" }))),
+    } as any;
+  }
+
+  function fakeSessionStore() {
+    return {
+      appendPermission: vi.fn(async () => {}),
+      appendToken: vi.fn(async () => {}),
+      getMessageCount: vi.fn(async () => 5),
+      appendCompaction: vi.fn(async () => {}),
+    };
+  }
+
+  const bashCallTurn: TurnScript = [
+    { type: "tool_call_start", id: "call_1", name: "run_bash" },
+    { type: "tool_call_delta", id: "call_1", arguments: '{"command":"npm test"}' },
+    { type: "done", finishReason: "tool_calls" },
+  ];
+
+  it("a PreToolUse deny on an allow-tier call records deny-by-rule and blocks execution", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(
+      { rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "allow", origin: "config" }] },
+      "/workspace",
+    );
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const sessionStore = fakeSessionStore();
+    const hooks = fakeHooks(async (event) => ({
+      blocked: event === "PreToolUse",
+      stdout: "",
+    }));
+
+    const result = await runAgent("run", { provider, tools: [], executeTool, permissions, sessionStore: sessionStore as any, sessionId: "s1", hooks });
+
+    expect(executeTool).not.toHaveBeenCalled();
+    const toolMsg = result.messages.find((m) => m.role === "tool") as Message;
+    expect(toolMsg.content).toBe("PERMISSION_DENIED: denied by PreToolUse hook");
+    expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+      tool: "run_bash",
+      decision: "deny-by-rule",
+      reason: "deny rule matched (PreToolUse hook)",
+    }));
+  });
+
+  it("a PermissionRequest deny is recorded as ask-denied and the user is never prompted", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(undefined, "/workspace");
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const sessionStore = fakeSessionStore();
+    const askUser = vi.fn(async () => true);
+    const hooks = fakeHooks(async (event) => ({
+      blocked: event === "PermissionRequest",
+      stdout: "",
+    }));
+
+    const result = await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1", hooks });
+
+    expect(askUser).not.toHaveBeenCalled();
+    expect(executeTool).not.toHaveBeenCalled();
+    const toolMsg = result.messages.find((m) => m.role === "tool") as Message;
+    expect(toolMsg.content).toBe("PERMISSION_DENIED: denied by PermissionRequest hook");
+    expect(sessionStore.appendPermission).toHaveBeenCalledWith("s1", expect.objectContaining({
+      decision: "ask-denied",
+      reason: "denied by PermissionRequest hook",
+    }));
+  });
+
+  it("a user deny at the prompt skips PreToolUse hooks entirely", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(undefined, "/workspace");
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const sessionStore = fakeSessionStore();
+    const askUser = vi.fn(async () => false);
+    const hooks = fakeHooks();
+
+    await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1", hooks });
+
+    expect(hooks.dispatch).toHaveBeenCalledWith("PermissionRequest", expect.anything());
+    expect(hooks.dispatch).not.toHaveBeenCalledWith("PreToolUse", expect.anything());
+  });
+
+  it("approved asks pass through PermissionRequest then PreToolUse in order", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(undefined, "/workspace");
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const sessionStore = fakeSessionStore();
+    const askUser = vi.fn(async () => true);
+    const events: string[] = [];
+    const hooks = fakeHooks(async (event) => {
+      events.push(event);
+      return { blocked: false, stdout: "" };
+    });
+
+    await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1", hooks });
+
+    expect(askUser).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["PermissionRequest", "PreToolUse", "PostToolUse", "PostToolBatch"]);
+  });
+
+  it("an exit-0 {decision: allow} never upgrades a rule-derived ask", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(undefined, "/workspace");
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const sessionStore = fakeSessionStore();
+    const askUser = vi.fn(async () => true);
+    const hooks = fakeHooks(async () => ({ blocked: false, stdout: '{"decision":"allow"}' }));
+
+    await runAgent("run", { provider, tools: [], executeTool, permissions, askUser, sessionStore: sessionStore as any, sessionId: "s1", hooks });
+
+    // The rule-derived ask still surfaces — advisory-only power (decision G).
+    expect(askUser).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("appends PostToolUse stdout to the tool result", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(
+      { rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "allow", origin: "config" }] },
+      "/workspace",
+    );
+    const executeTool = vi.fn(async () => ({ content: "base" }));
+    const hooks = fakeHooks(async (event) => ({
+      blocked: false,
+      stdout: event === "PostToolUse" ? "HOOK NOTE" : "",
+    }));
+
+    const result = await runAgent("run", { provider, tools: [], executeTool, permissions, hooks });
+
+    const toolMsg = result.messages.find((m) => m.role === "tool") as Message;
+    expect(toolMsg.content).toBe("base\nHOOK NOTE");
+  });
+
+  it("appends PostToolUseFailure stdout to the failure result", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(
+      { rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "allow", origin: "config" }] },
+      "/workspace",
+    );
+    const executeTool = vi.fn(async () => ({ content: "", error: "boom" }));
+    const hooks = fakeHooks(async (event) => ({
+      blocked: false,
+      stdout: event === "PostToolUseFailure" ? "HOOK NOTE" : "",
+    }));
+
+    const result = await runAgent("run", { provider, tools: [], executeTool, permissions, hooks });
+
+    const toolMsg = result.messages.find((m) => m.role === "tool") as Message;
+    expect(toolMsg.content).toBe("Error: boom\nHOOK NOTE");
+  });
+
+  it("fires PostToolBatch once per batch with the tool names", async () => {
+    const { provider } = makeProvider([
+      [
+        { type: "tool_call_start", id: "call_1", name: "read" },
+        { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+        { type: "tool_call_start", id: "call_2", name: "read" },
+        { type: "tool_call_delta", id: "call_2", arguments: '{"path":"b.txt"}' },
+        { type: "done", finishReason: "tool_calls" },
+      ],
+      textTurn("ok"),
+    ]);
+    const executeTool = vi.fn(async () => ({ content: "c" }));
+    const hooks = fakeHooks();
+
+    await runAgent("run", { provider, tools: [], executeTool, hooks });
+
+    expect(hooks.dispatch).toHaveBeenCalledWith("PostToolBatch", { tool_calls: ["read", "read"] });
+  });
+
+  it("hooks never see calls a rule denied outright", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(
+      { rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "deny", origin: "config" }] },
+      "/workspace",
+    );
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const hooks = fakeHooks();
+
+    await runAgent("run", { provider, tools: [], executeTool, permissions, hooks });
+
+    expect(hooks.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("routes PreCompact stdout into the compaction prompt and fires PostCompact after", async () => {
+    const { provider: runProvider } = makeProvider([
+      [
+        { type: "tool_call_start", id: "call_1", name: "read" },
+        { type: "tool_call_delta", id: "call_1", arguments: '{"path":"a.txt"}' },
+        { type: "tool_call_start", id: "call_2", name: "read" },
+        { type: "tool_call_delta", id: "call_2", arguments: '{"path":"b.txt"}' },
+        { type: "done", finishReason: "tool_calls" },
+      ],
+      textTurn("done"),
+    ]);
+    const { provider: summaryProvider, receivedMessages: summaryMessages } = makeProvider([
+      [
+        { type: "text_delta", content: "the summary" },
+        { type: "done", finishReason: "stop" },
+      ],
+    ]);
+    // threshold 0 forces compaction on every check.
+    const compactor = new Compactor(summaryProvider, 128000, 0, true);
+    const executeTool = vi.fn(async () => ({ content: "c" }));
+    const hooks = fakeHooks(async (event) => ({
+      blocked: false,
+      stdout: event === "PreCompact" ? "HOOK CONTEXT" : "",
+    }));
+
+    await runAgent("run", {
+      provider: runProvider,
+      tools: [],
+      executeTool,
+      compactor,
+      hooks,
+    });
+
+    // The compaction request the provider saw carries the hook stdout appended
+    // to the compaction prompt.
+    expect(summaryMessages.length).toBeGreaterThan(0);
+    const prompt = summaryMessages[0][0] as Message;
+    expect(prompt.content).toContain("HOOK CONTEXT");
+    expect(hooks.dispatch).toHaveBeenCalledWith("PreCompact", {});
+    expect(hooks.dispatch).toHaveBeenCalledWith("PostCompact", {});
+  });
+
+  it("fires a PreToolUse deny even without a permission engine", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const hooks = fakeHooks(async (event) => ({
+      blocked: event === "PreToolUse",
+      stdout: "",
+    }));
+
+    const result = await runAgent("run", { provider, tools: [], executeTool, hooks });
+
+    expect(executeTool).not.toHaveBeenCalled();
+    const toolMsg = result.messages.find((m) => m.role === "tool") as Message;
+    expect(toolMsg.content).toBe("PERMISSION_DENIED: denied by PreToolUse hook");
+  });
+
+  it("does nothing at all when hooks are not configured", async () => {
+    const { provider } = makeProvider([bashCallTurn, textTurn("ok")]);
+    const permissions = new PermissionEngine(
+      { rules: [{ tool: "run_bash", kind: "any", pattern: "", action: "allow", origin: "config" }] },
+      "/workspace",
+    );
+    const executeTool = vi.fn(async () => ({ content: "ran" }));
+    const sessionStore = fakeSessionStore();
+
+    await runAgent("run", { provider, tools: [], executeTool, permissions, sessionStore: sessionStore as any, sessionId: "s1" });
+
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(sessionStore.appendPermission).toHaveBeenCalledTimes(1);
   });
 });

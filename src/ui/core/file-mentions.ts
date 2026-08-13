@@ -88,10 +88,23 @@ const MAX_MENTION_CHARS = 60_000;
  * Reads each resolvable `@`-mention path and returns one `<file path="…">`
  * block per file, ready to prepend to the prompt. Binary files and unreadable
  * paths are skipped silently — the mention stays in the prompt as text.
+ *
+ * `gate` lets the caller subject mentions to permission rules before content
+ * is injected (Claude Code behavior): a path returning "deny" is replaced
+ * with a `[not injected: denied by permissions]` note inside its `<file>`
+ * block instead of silently dropping the mention.
  */
-export async function expandFileMentions(text: string, cwd = process.cwd()): Promise<string[]> {
+export async function expandFileMentions(
+  text: string,
+  cwd = process.cwd(),
+  gate?: (raw: string) => "allow" | "deny",
+): Promise<string[]> {
   const blocks: string[] = [];
   for (const raw of extractMentionedPaths(text)) {
+    if (gate?.(raw) === "deny") {
+      blocks.push(`<file path="${raw}">\n[not injected: denied by permissions]\n</file>`);
+      continue;
+    }
     const abs = path.resolve(cwd, raw);
     let buf: Buffer;
     try {

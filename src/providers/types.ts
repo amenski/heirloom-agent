@@ -26,6 +26,18 @@ export type StreamEvent =
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens?: number }
   | { type: "done"; finishReason: string };
 
+/**
+ * A provider's prepaid account balance, queried live (never cached) for the
+ * `/usage` view. `total` is the current balance; `granted` is the portion of it
+ * that was granted free by the provider (0 when the provider has no grant
+ * concept). `remaining` is derived as `total - granted` by the caller.
+ */
+export interface ProviderBalance {
+  currency: string;
+  total: number;
+  granted: number;
+}
+
 export interface Provider {
   readonly name: string;
   streamChat(
@@ -33,4 +45,12 @@ export interface Provider {
     tools: ToolDef[],
     options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; effort?: string; thinkingEnabled?: boolean },
   ): AsyncGenerator<StreamEvent>;
+  /**
+   * Live prepaid balance for providers that expose one, keyed off the base URL
+   * host (deepseek, openrouter — see provider-spec.md §2.1). Returns null when
+   * the provider has no balance endpoint, the request fails, or the response
+   * does not parse — NEVER throws. Absent on providers without an
+   * implementation.
+   */
+  getBalance?(): Promise<ProviderBalance | null>;
 }

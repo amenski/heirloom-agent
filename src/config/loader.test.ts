@@ -441,6 +441,42 @@ describe("loadConfig workflow keys", () => {
   });
 });
 
+describe("loadConfig commands.timeoutToBackground", () => {
+  it("parses an explicit false (opts out of timeout→background migration)", () => {
+    writeProjectSettings({ commands: { timeoutToBackground: false } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.commands?.timeoutToBackground).toBe(false);
+  });
+
+  it("parses an explicit true", () => {
+    writeProjectSettings({ commands: { timeoutToBackground: true } });
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(config.commands?.timeoutToBackground).toBe(true);
+  });
+
+  it("leaves the key undefined when absent (the consumer applies default ON)", () => {
+    writeProjectSettings({});
+    const { config, warnings } = loadConfig(projectDir);
+    expect(config.commands).toBeUndefined();
+    expect(warnings.some((w) => w.includes('unknown field "commands"'))).toBe(false);
+  });
+
+  it("rejects a non-boolean timeoutToBackground", () => {
+    writeProjectSettings({ commands: { timeoutToBackground: "yes" } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("config.commands.timeoutToBackground: must be a boolean"))).toBe(true);
+  });
+
+  it("rejects a non-object commands block", () => {
+    writeProjectSettings({ commands: "yes" });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("config.commands: must be an object"))).toBe(true);
+  });
+});
+
 describe("loadConfig debugLogEnabled (deprecated)", () => {
   it("emits a deprecation warning pointing at the --debug flag", () => {
     writeProjectSettings({ debugLogEnabled: true });

@@ -6,6 +6,8 @@ import { runAgent } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
 import type { PermissionEngine } from "../permissions/index.js";
+import type { HookRunner } from "../hooks/index.js";
+import { subagentAuditStore } from "../sessions/store.js";
 import { TodoStore } from "../tools/todo.js";
 
 const NEW_TASK_DEF: ToolDef = {
@@ -62,6 +64,9 @@ export interface OrchestratorOptions {
    * an in-flight sub-agent instead of leaving it running to completion.
    */
   getSignal?: () => AbortSignal | undefined;
+  /** Lifecycle hooks dispatcher (docs/hooks-spec.md) — SubagentStart/Stop
+   *  fire around each sub-agent run. */
+  hooks?: HookRunner;
   maxDepth?: number;
   maxSubTurns?: number;
 }
@@ -73,6 +78,7 @@ export class Orchestrator {
     modeLoader: ModeLoader;
     permissions?: PermissionEngine;
     getSignal?: () => AbortSignal | undefined;
+    hooks?: HookRunner;
   };
   private askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | "posture">;
 
@@ -143,15 +149,28 @@ export class Orchestrator {
       // context, and a tool call can never see another run's store.
       const subStore = new TodoStore();
 
+      // Decision H (feature-plans.md §10): the sub-agent's permission and
+      // token rows land in the PARENT session's JSONL, tagged
+      // `source: "subagent"`, through a restricted audit-only view of the
+      // parent's store. Messages and todo snapshots can never pass through
+      // the view, so the parent transcript stays clean and todoStore
+      // isolation is unchanged. When the parent itself has no store wired
+      // (headless run), there is nothing to audit into and the sub-agent
+      // stays audit-silent, exactly like the parent.
+      const subAuditStore = ctx.sessionStore ? subagentAuditStore(ctx.sessionStore) : undefined;
+
       const subExecuteTool = (call: ToolCall): Promise<ToolOutput> => {
         if (call.name === "new_task") {
-          return this.createHandler(depth + 1)(call.arguments, { ...ctx, todoStore: subStore, sessionStore: undefined });
+          return this.createHandler(depth + 1)(call.arguments, { ...ctx, todoStore: subStore, sessionStore: subAuditStore });
         }
-        // sessionStore: undefined — sub-agent plans are ephemeral and must not
-        // pollute the parent's session JSONL.
-        return this.options.registry.execute(call, { ...ctx, todoStore: subStore, sessionStore: undefined });
+        // sessionStore: subAuditStore — only permission/token rows may pass
+        // through to the parent session; sub-agent plans stay ephemeral.
+        return this.options.registry.execute(call, { ...ctx, todoStore: subStore, sessionStore: subAuditStore });
       };
 
+      // SubagentStart/SubagentStop fire around the actual spawn (hooks-spec.md
+      // §2); depth/mode failures above never spawn anything, so no hooks fire.
+      await this.options.hooks?.dispatch("SubagentStart", { task: description });
       try {
         const result = await runAgent(description, {
           provider,
@@ -162,6 +181,12 @@ export class Orchestrator {
           askUser: this.askUser,
           maxTurns: this.options.maxSubTurns,
           mode: subMode,
+          hooks: this.options.hooks,
+          // Parent session identity behind the audit-only view: permission
+          // and token rows land in the parent's JSONL tagged "subagent";
+          // every other write is blocked by the view (subsystems.md §7).
+          sessionStore: subAuditStore,
+          sessionId: ctx.sessionId,
           signal: this.options.getSignal?.(),
           getTodos: () => subStore.getTodos(),
         });
@@ -173,6 +198,8 @@ export class Orchestrator {
           content: `Sub-task failed after error: ${(err as Error).message}`,
           error: `SUBTASK_ERROR: ${(err as Error).message}`,
         };
+      } finally {
+        await this.options.hooks?.dispatch("SubagentStop", { task: description });
       }
     };
   }

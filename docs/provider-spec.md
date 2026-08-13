@@ -34,8 +34,24 @@ interface Provider {
     options?: { temperature?: number; maxTokens?: number;
                 signal?: AbortSignal; effort?: string; thinkingEnabled?: boolean },
   ): AsyncGenerator<StreamEvent>;
+  /** Optional — see §2.1. Absent on providers without an implementation. */
+  getBalance?(): Promise<ProviderBalance | null>;
 }
 ```
+
+`ProviderBalance`:
+
+```typescript
+interface ProviderBalance {
+  currency: string;
+  total: number;
+  granted: number;
+}
+```
+
+`total` is the current prepaid balance and `granted` the portion of it granted
+free by the provider (0 when the provider has no grant concept); the caller
+derives `remaining` as `total - granted`.
 
 `StreamEvent`:
 
@@ -61,6 +77,25 @@ Rules:
 4. **Retries are the loop's job.** The provider layer does not retry
    internally; the agent loop handles transient errors
    (`src/agent.ts` `isTransientNetworkError`; subsystems.md §6).
+
+### 2.1 Optional balance query (`getBalance`)
+
+`getBalance()` returns the provider's prepaid balance for the `/usage` view
+(feature-plans.md §7). Special-casing lives in the **adapter**, never the CLI:
+`src/providers/aisdk.ts` branches on the **base-URL host** and returns `null`
+for anything it does not support. It is a *live* query on every call — the
+`/usage` view opens it fresh each time and nothing is cached (decision I).
+
+| Host | Endpoint | Parsing | `{currency, total, granted}` |
+|------|----------|---------|------------------------------|
+| `api.deepseek.com` | `GET {baseUrl}/user/balance`, Bearer auth | `balance_infos`, the `USD` entry (`total_balance` / `granted_balance` are **strings**, parsed with `parseFloat`); no USD entry → `null` | `currency: "USD"`, `total: total_balance`, `granted: granted_balance` (remaining = `total − granted` = the topped-up, unrestricted part) |
+| `openrouter.ai` | `GET https://openrouter.ai/api/v1/credits`, Bearer auth | `data.remaining_credits` (falls back to `data.total_credits − data.total_usage`); values are **numbers** | `currency: "USD"`, `total: remaining_credits`, `granted: 0` — OpenRouter has no grant concept, so the whole remaining balance counts as total |
+| any other host | — | — | `null` (unsupported) |
+
+Contract: **never throws.** A non-200 response, an unparseable body, a network
+error, an unconstructible URL, or an unsupported host all resolve to `null`,
+which the CLI renders as "not supported for \<provider\>". Providers without
+an implementation omit the method entirely (`provider.getBalance?.()`).
 
 ## 3. Key resolution
 
@@ -143,7 +178,8 @@ it is wired programmatically, not to a settings.json key.
 
 ## 6. Verified against
 
-`src/providers/types.ts` · `src/providers/presets.ts` (createProvider,
-BUILTIN_PRESETS) · `src/providers/aisdk.ts` · `src/providers/catalog.ts` ·
+`src/providers/types.ts` (Provider, ProviderBalance) · `src/providers/presets.ts`
+(createProvider, BUILTIN_PRESETS) · `src/providers/aisdk.ts` (streamChat,
+`fetchBalance` for `getBalance`) · `src/providers/catalog.ts` ·
 `src/providers/models.json` · `src/config/credentials.ts` · `src/cli.tsx`
 (selection precedence)
