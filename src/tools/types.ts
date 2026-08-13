@@ -25,7 +25,8 @@ export interface ToolContext {
   checkpoint?: CheckpointManager;
   fileMtimes?: Map<string, number>;
   /** Per-run todo store (update_todo_list). Defaults to the module singleton;
-   *  sub-agents swap in a fresh store via setTodoStore for the sub-run. */
+   *  sub-agents receive a fresh store threaded through the orchestrator's
+   *  per-call context. */
   todoStore?: TodoStore;
 }
 

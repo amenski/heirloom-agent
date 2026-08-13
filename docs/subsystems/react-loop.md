@@ -82,6 +82,19 @@ says to plan multi-step tasks and skip planning for trivial ones. Fallback if
 model discretion proves unreliable: a `planning: always | auto | off` mode
 field — deferred until observed need.
 
+### Todo List Mechanics (shipped)
+
+The current list reaches the model every sub-turn: the loop re-reads the
+store at the request-build site (agent.ts) and prepends a `# Current todo
+list` block to the volatile prefix; the tool result also returns the full
+list, so the model sees state after every update. The TUI renders the list as
+a live checklist panel above the input (TodoPanel.tsx), cleared at each turn
+start. Sub-agents spawned via `new_task` run with their own isolated store —
+the orchestrator threads a fresh `TodoStore` through each per-call tool
+context (no shared global pointer is mutated) and wires the sub-run's
+`getTodos` to it — so a sub-agent's plan updates never clobber the parent's
+panel, and the sub-agent's own context gets its own plan.
+
 ### Error Taxonomy for Structured Reflection
 
 Instead of feeding raw error messages to the LLM, categorize errors:

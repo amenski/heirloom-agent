@@ -3,7 +3,7 @@ import { Orchestrator } from "./index.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ModeLoader } from "../modes/loader.js";
 import { PermissionEngine } from "../permissions/index.js";
-import { executeTool as realExecuteTool, registry as realRegistry, setTodoStore } from "../tools/index.js";
+import { executeTool as realExecuteTool, registry as realRegistry } from "../tools/index.js";
 import { todoStore } from "../tools/todo.js";
 import type { Provider, StreamEvent } from "../providers/types.js";
 import type { Message, ToolDef } from "../types.js";
@@ -62,10 +62,8 @@ function makeRegistry(): { registry: ToolRegistry; runBash: ReturnType<typeof vi
 }
 
 describe("Orchestrator", () => {
-  // The module-level tool context pointer is swapped during sub-runs; restore
-  // it and the singleton so no state leaks between tests in this file.
+  // Reset the shared singleton so no todo state leaks between tests.
   afterEach(() => {
-    setTodoStore(todoStore);
     todoStore.reset();
   });
   it("registers new_task in the workflow group and spawns a sub-agent in the requested mode with that mode's tools", async () => {
@@ -77,7 +75,6 @@ describe("Orchestrator", () => {
     const orchestrator = new Orchestrator({
       provider: () => provider,
       registry,
-      executeTool: async (call) => registry.execute(call, ctx),
       modeLoader: new ModeLoader(),
     });
     orchestrator.register(registry);
@@ -116,7 +113,6 @@ describe("Orchestrator", () => {
     const orchestrator = new Orchestrator({
       provider: () => provider,
       registry,
-      executeTool: async (call) => registry.execute(call, ctx),
       modeLoader: new ModeLoader(),
       permissions,
       askUser: staleAsk,
@@ -148,7 +144,6 @@ describe("Orchestrator", () => {
     const orchestrator = new Orchestrator({
       provider: () => provider,
       registry,
-      executeTool: async (call) => registry.execute(call, ctx),
       modeLoader: new ModeLoader(),
       permissions,
     });
@@ -164,8 +159,9 @@ describe("Orchestrator", () => {
   });
 
   it("gives the sub-agent its own todo store: parent checklist untouched, sub context sees its own plan", async () => {
-    // Uses the REAL module-level registry/executeTool (what production wires),
-    // so the setTodoStore swap during the sub-run is exercised end-to-end.
+    // Uses the REAL module-level registry/executeTool (what production wires):
+    // the orchestrator threads the sub store through the per-call context, so
+    // the sub-run's update_todo_list must hit the sub store, not the singleton.
     const { provider: subProvider, received } = makeProvider([
       toolCallTurn("c1", "update_todo_list", JSON.stringify({
         todos: [
@@ -178,7 +174,6 @@ describe("Orchestrator", () => {
     const orchestrator = new Orchestrator({
       provider: () => subProvider,
       registry: realRegistry,
-      executeTool: realExecuteTool,
       modeLoader: new ModeLoader(),
     });
     orchestrator.register(realRegistry);
@@ -201,8 +196,8 @@ describe("Orchestrator", () => {
     expect(JSON.stringify(received[1].messages)).toContain("- [pending] Sub step A");
     expect(JSON.stringify(received[1].messages)).toContain("- [in_progress] Sub step B");
 
-    // The module context was restored: a parent-side update after the sub-run
-    // lands in the singleton again.
+    // The parent side is unaffected: a parent-side update lands in the
+    // singleton as usual.
     await realExecuteTool({
       id: "t2",
       name: "update_todo_list",
@@ -226,7 +221,6 @@ describe("Orchestrator", () => {
     const orchestrator = new Orchestrator({
       provider: providerFactory,
       registry,
-      executeTool: async (call) => registry.execute(call, ctx),
       modeLoader: new ModeLoader(),
     });
     orchestrator.register(registry);

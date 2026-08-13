@@ -146,7 +146,6 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     const orchestrator = new Orchestrator({
       provider: () => provider,
       registry,
-      executeTool,
       modeLoader: new ModeLoader(),
       permissions,
       askUser,

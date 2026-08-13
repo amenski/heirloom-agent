@@ -86,8 +86,8 @@ const todoHandler: ToolHandler = async (args, ctx) => {
     // Malformed call: leave the current plan untouched, surface the warning.
     return { content: warnings.join("\n") };
   }
-  // Per-run store when one is wired (sub-agents get their own via
-  // setTodoStore); fall back to the module singleton otherwise.
+  // Per-run store when one is wired (sub-agents get their own via the
+  // orchestrator's per-call context); fall back to the module singleton.
   const store = ctx.todoStore ?? todoStore;
   store.setTodos(items);
 

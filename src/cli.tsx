@@ -186,7 +186,6 @@ async function main() {
   const orchestrator = new Orchestrator({
     provider: () => getProvider(),
     registry,
-    executeTool,
     modeLoader,
     permissions,
     getSignal: () => shared.abort.signal,

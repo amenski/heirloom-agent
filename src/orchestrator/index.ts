@@ -6,8 +6,7 @@ import { runAgent } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
 import type { PermissionEngine } from "../permissions/index.js";
-import { setTodoStore } from "../tools/index.js";
-import { todoStore, TodoStore } from "../tools/todo.js";
+import { TodoStore } from "../tools/todo.js";
 
 const NEW_TASK_DEF: ToolDef = {
   name: "new_task",
@@ -48,7 +47,6 @@ export interface OrchestratorOptions {
    */
   provider: () => Provider;
   registry: ToolRegistry;
-  executeTool: (call: ToolCall) => Promise<ToolOutput>;
   modeLoader: ModeLoader;
   permissions?: PermissionEngine;
   /**
@@ -72,7 +70,6 @@ export class Orchestrator {
   private options: Required<Pick<OrchestratorOptions, "maxDepth" | "maxSubTurns">> & {
     provider: () => Provider;
     registry: ToolRegistry;
-    executeTool: (call: ToolCall) => Promise<ToolOutput>;
     modeLoader: ModeLoader;
     permissions?: PermissionEngine;
     getSignal?: () => AbortSignal | undefined;
@@ -138,21 +135,20 @@ export class Orchestrator {
       const provider = this.options.provider();
       const subCompactor = new Compactor(provider);
 
-      const subExecuteTool = (call: ToolCall): Promise<ToolOutput> => {
-        if (call.name === "new_task") {
-          return this.createHandler(depth + 1)(call.arguments, ctx);
-        }
-        return this.options.executeTool(call);
-      };
-
       // The sub-agent gets its own todo store: its update_todo_list calls must
       // not clobber the parent's checklist panel, and its own model context
-      // should see its own plan (getTodos below). Runs are strictly
-      // nested/sequential, so swapping the shared module-level context pointer
-      // for the duration of the sub-run and restoring it afterwards is safe.
-      const parentStore = ctx.todoStore ?? todoStore;
+      // should see its own plan (getTodos below). The store is threaded
+      // explicitly through each per-call tool context below — no shared
+      // global pointer is mutated — so nested sub-runs isolate purely by
+      // context, and a tool call can never see another run's store.
       const subStore = new TodoStore();
-      setTodoStore(subStore);
+
+      const subExecuteTool = (call: ToolCall): Promise<ToolOutput> => {
+        if (call.name === "new_task") {
+          return this.createHandler(depth + 1)(call.arguments, { ...ctx, todoStore: subStore });
+        }
+        return this.options.registry.execute(call, { ...ctx, todoStore: subStore });
+      };
 
       try {
         const result = await runAgent(description, {
@@ -175,8 +171,6 @@ export class Orchestrator {
           content: `Sub-task failed after error: ${(err as Error).message}`,
           error: `SUBTASK_ERROR: ${(err as Error).message}`,
         };
-      } finally {
-        setTodoStore(parentStore);
       }
     };
   }
