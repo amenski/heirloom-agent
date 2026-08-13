@@ -87,8 +87,12 @@ untrusted prompts or third-party fixtures, do it in a container/VM.
 ## 5. Running
 
 ```
+export DEEPSEEK_API_KEY=sk-...   # or OPENAI_API_KEY / OPENROUTER_API_KEY / GROQ_API_KEY
 npm run eval
 ```
 
-Requires a configured provider + API key (headless mode, `-p`); no TTY
-needed.
+Requires a provider API key exported as an **environment variable** — the
+eval child is deliberately isolated from the developer's real
+`~/.heirloom` (see §3), so a key stored via `heirloom auth` is **not
+visible to it**. Exactly the six provider-key env vars in the allowlist
+are forwarded; everything else is stripped. No TTY needed.
