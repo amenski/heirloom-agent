@@ -53,6 +53,9 @@ These bypass mode gates regardless of group:
 - `update_todo_list` — the task plan checklist (all groups; tool-spec.md)
 - `load_skill` — skill content injection (`always: true` + read;
   skill-spec.md)
+- `switch_mode` — persona-mode switch (all groups; auto-switch, no
+  confirmation — tool-spec.md)
+- `attempt_completion` — end-the-turn signal (all groups; tool-spec.md)
 
 `new_task` is **not** always-available: it is `workflow`-group only, so only
 the orchestrator mode can delegate.

@@ -188,6 +188,63 @@ describe("todo panel", () => {
   });
 });
 
+describe("todo resume restore", () => {
+  afterEach(() => todoStore.reset());
+
+  it("restores the last persisted plan on a resumed session's first turn", async () => {
+    todoStore.reset();
+    const ctx = makeCtx(async (_input: string, cb: any) => {
+      cb.onToolStart("update_todo_list", { todos: [] });
+      cb.onToolResult("update_todo_list", { content: "Todo list updated" });
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    // A resumed session's store holds the previous run's persisted snapshots.
+    (ctx.sessionStore as any).queryTodos = async () => [
+      { at: "2026-08-13T00:00:00Z", todos: [
+        { content: "Restored step A", status: "pending" },
+        { content: "Restored step B", status: "completed" },
+      ] },
+    ];
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    // Let the mount effect's queryTodos resolve before the first turn.
+    await flush();
+    await flush();
+    inst.stdin.write("continue the work");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).toContain("◻ Restored step A");
+    expect(frame).toContain("☑ Restored step B");
+  });
+
+  it("starts with an empty panel on a fresh (non-resume) session", async () => {
+    todoStore.reset();
+    const ctx = makeCtx(async (_input: string, cb: any) => {
+      cb.onToolStart("update_todo_list", { todos: [] });
+      cb.onToolResult("update_todo_list", { content: "Todo list updated" });
+      return { stopReason: "done", messages: [], newMessages: [] };
+    });
+    // No queryTodos: the guard no-ops, and the panel stays empty.
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    await flush();
+    inst.stdin.write("hi");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).not.toContain("◻");
+  });
+});
+
 describe("App streaming markdown", () => {
   it("merges a span split across streamed lines into bold", async () => {
     const { lastFrame } = await runTurn("hi", ["**bold\n", "continues**"]);
