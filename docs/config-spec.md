@@ -76,6 +76,11 @@ are fatal — `main()` exits 1 (`src/cli.tsx`).
     }
   },
 
+  // OS sandbox (permission-profile.md §8): mechanical Seatbelt layer for
+  // bash children. macOS-only — enabled on another platform warns once at
+  // startup and runs policy-only. Default false.
+  "sandbox": { "enabled": true },
+
   // MCP servers for external tool discovery
   "mcpServers": {
     "filesystem": {
@@ -190,6 +195,19 @@ terminal (`deny-by-profile` audit decision, permission-spec.md §11).
   project config: permissionProfile.fs entry "src/**": action "write" not allowed at level "strict-sandbox" (explicit rules narrow only)
   project config: permissionProfile.network.allow entry "*.example.com" is not a valid hostname — "*" matches any host, subdomain wildcards are not supported
   ```
+
+### `sandbox` (OS sandbox layer)
+
+`"sandbox": { "enabled": true }` (boolean, **default `false`**) launches
+the agent's bash child processes (`run_bash` and background jobs) under a
+macOS Seatbelt profile that mechanically enforces the `permissionProfile`
+level: `strict-sandbox` = read-only filesystem + no network;
+`workspace-write` = read anywhere, write only the spawn's workspace root,
+network on. The flag is inert without a profile level below
+`unrestricted`, and on non-macOS platforms (a startup warning says so) —
+the policy layer (`ProfileEvaluator`) still enforces the boundary
+everywhere. Full semantics and the two-layer network rationale:
+permission-profile.md §8.
 
 ## 4. `refresh` (repaint cadence)
 

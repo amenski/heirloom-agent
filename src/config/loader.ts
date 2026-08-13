@@ -65,6 +65,11 @@ export interface DeepCodeSettings {
   /** Coarse reachability boundary gated before the rule engine (layer 1). */
   permissionProfile?: PermissionProfileConfig;
 
+  // ── OS sandbox (permission-profile.md §8, phase (e)) ──
+  /** Mechanical Seatbelt layer for bash children. macOS-only; when enabled
+   *  on another platform the loader warns and runs policy-only. */
+  sandbox?: { enabled: boolean };
+
   // ── MCP Servers ──
   mcpServers?: Record<string, McpServerConfig>;
 
@@ -204,6 +209,17 @@ export function resolveHome(): string {
   return process.env.HEIRLOOM_HOME || join(homedir(), ".heirloom");
 }
 
+/**
+ * Whether the OS-sandbox (Seatbelt) layer can be applied on this platform.
+ * macOS-only (permission-profile.md §8); on any other platform
+ * `sandbox.enabled` is honored as policy-only — the loader emits a startup
+ * warning and bash children spawn unsandboxed (the policy layer still
+ * enforces the profile boundary).
+ */
+export function sandboxSupportedOnPlatform(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "darwin";
+}
+
 function loadJsonFile(path: string): Record<string, unknown> | null {
   try {
     const content = readFileSync(path, "utf-8");
@@ -231,6 +247,7 @@ const KNOWN_KEYS = new Set([
   "refresh",
   "permissions",
   "permissionProfile",
+  "sandbox",
   "mcpServers",
   "notify",
   "webSearchTool",
@@ -852,6 +869,26 @@ export function loadConfig(projectDir?: string): LoadResult {
     validatePermissionProfile(projectRaw?.permissionProfile, "project config", errors),
   );
   if (profile) config.permissionProfile = profile;
+
+  // ── sandbox (permission-profile.md §8, phase (e)) ──
+  // Mechanical Seatbelt layer for bash children; meaningful only with a
+  // profile level below unrestricted. macOS-only — on other platforms the
+  // flag is honored as policy-only with a startup notice.
+  if ("sandbox" in merged) {
+    if (isObject(merged.sandbox)) {
+      const s = merged.sandbox as Record<string, unknown>;
+      if (typeof s.enabled === "boolean") {
+        config.sandbox = { enabled: s.enabled };
+        if (s.enabled && !sandboxSupportedOnPlatform()) {
+          warnings.push("sandbox is macOS-only; running policy-only");
+        }
+      } else {
+        errors.push("config.sandbox.enabled: must be a boolean");
+      }
+    } else {
+      errors.push("config.sandbox: must be an object");
+    }
+  }
 
   // ── mcpServers ──
   if ("mcpServers" in merged) {

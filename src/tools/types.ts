@@ -2,6 +2,7 @@ import type { ToolDef, ToolCall, ToolOutput } from "../types.js";
 import type { CheckpointManager } from "../checkpoints/index.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { TodoStore } from "./todo.js";
+import type { SandboxLevel } from "../sandbox/seatbelt.js";
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutput>;
 
@@ -39,6 +40,13 @@ export interface ToolContext {
    *  run_bash hits its 120s cap, migrate the child to JobManager instead of
    *  killing it. Absent (undefined) means the default — ON. */
   timeoutToBackground?: boolean;
+  /** OS-sandbox level for bash children (permission-profile.md §8, phase
+   *  (e)): when set, run_bash and background-job spawns run under a
+   *  Seatbelt profile enforcing the level's fs/network defaults. Absent =
+   *  sandbox off (flag off, no profile, or unrestricted). macOS-only — on
+   *  other platforms the loader emits a startup notice and spawns stay
+   *  policy-only. */
+  sandboxLevel?: SandboxLevel;
 }
 
 export interface ToolRegistration {

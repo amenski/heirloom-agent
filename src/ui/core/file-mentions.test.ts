@@ -8,6 +8,7 @@ import {
   extractMentionedPaths,
   expandFileMentions,
 } from "./file-mentions.js";
+import { PermissionEngine, ProfileEvaluator, authorize } from "../../permissions/index.js";
 
 describe("scanFileMentionItems", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "heirloom-mentions-"));
@@ -99,24 +100,38 @@ describe("expandFileMentions permission gate", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "heirloom-gate-"));
   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  it("replaces a denied path with a not-injected note and injects allowed ones", async () => {
+  // The gate cli.tsx's runAgentTurnBridge wires up: each mention is routed
+  // through authorize() (profile layer 1, then the rule engine), so a profile
+  // fs denial blocks injection exactly like a read-rule deny.
+  const gateFor = (engine: PermissionEngine, profile?: ProfileEvaluator) =>
+    (raw: string) =>
+      authorize({ tool: "read_file", arguments: { path: raw } }, engine, profile).action === "deny" ? "deny" : "allow";
+
+  it("replaces a profile-denied path with a not-injected note and injects allowed ones", async () => {
     fs.writeFileSync(path.join(root, "ok.ts"), "export const ok = 1;");
     fs.writeFileSync(path.join(root, "secret.env"), "TOKEN=abc");
-
-    const blocks = await expandFileMentions(
-      "@ok.ts and @secret.env",
+    const engine = new PermissionEngine(undefined, root);
+    const profile = new ProfileEvaluator(
+      { level: "strict-sandbox", fs: [{ path: "secret.env", action: "deny" }] },
       root,
-      (raw) => (raw === "secret.env" ? "deny" : "allow"),
     );
+
+    const blocks = await expandFileMentions("@ok.ts and @secret.env", root, gateFor(engine, profile));
     expect(blocks).toEqual([
       '<file path="ok.ts">\nexport const ok = 1;\n</file>',
       '<file path="secret.env">\n[not injected: denied by permissions]\n</file>',
     ]);
   });
 
-  it("without a gate, behavior is unchanged", async () => {
+  it("without a profile, the gate falls through to the rule engine and allows pass", async () => {
     fs.writeFileSync(path.join(root, "plain.ts"), "export const p = 1;");
-    const blocks = await expandFileMentions("@plain.ts", root);
+    const blocks = await expandFileMentions("@plain.ts", root, gateFor(new PermissionEngine(undefined, root)));
     expect(blocks).toEqual(['<file path="plain.ts">\nexport const p = 1;\n</file>']);
+  });
+
+  it("without a gate, behavior is unchanged", async () => {
+    fs.writeFileSync(path.join(root, "ungated.ts"), "export const u = 1;");
+    const blocks = await expandFileMentions("@ungated.ts", root);
+    expect(blocks).toEqual(['<file path="ungated.ts">\nexport const u = 1;\n</file>']);
   });
 });

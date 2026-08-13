@@ -14,10 +14,10 @@ import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
 import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
-import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground } from "./tools/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground, setSandboxLevel } from "./tools/index.js";
 import { jobManager } from "./tools/jobs.js";
 import { todoStore } from "./tools/todo.js";
-import { PermissionEngine, ProfileEvaluator, type ProfileLevel } from "./permissions/index.js";
+import { PermissionEngine, ProfileEvaluator, authorize, type ProfileLevel } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor, keepBoundary } from "./compaction/compactor.js";
@@ -329,6 +329,17 @@ async function main() {
   // commands.timeoutToBackground (plan §3, decision D — default ON): run_bash
   // timeout → background migration for the model-facing tool set.
   setTimeoutToBackground(configResult.config.commands?.timeoutToBackground ?? true);
+
+  // sandbox (permission-profile.md §8, phase (e)): when the flag is on and
+  // the profile level demands it, bash children spawn under a Seatbelt
+  // profile. macOS-only — the loader warned at startup if this is a no-op.
+  setSandboxLevel(
+    configResult.config.sandbox?.enabled &&
+    configResult.config.permissionProfile &&
+    configResult.config.permissionProfile.level !== "unrestricted"
+      ? configResult.config.permissionProfile.level
+      : undefined,
+  );
 
   // Background-job completion → notify hook (plan §3): a job finishing is a
   // completion boundary like a turn ending, so the same notify script fires
@@ -1284,12 +1295,13 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   // the persisted session keep the raw text — the user's own words — while the
   // model additionally sees the file contents. Unresolvable mentions are left
   // in the prompt as plain text (emails, usernames, typos). Mentions are
-  // permission-gated like the read_file tool: a path a read rule denies is
-  // replaced with a "not injected" note instead of silently dropped.
+  // permission-gated like the read_file tool, through authorize() (profile
+  // layer 1, then the rule engine): a path the profile or a read rule denies
+  // is replaced with a "not injected" note instead of silently dropped.
   const mentionBlocks = await expandFileMentions(
     input,
     undefined,
-    (raw) => (permissions.resolve("read_file", { path: raw }).action === "deny" ? "deny" : "allow"),
+    (raw) => (authorize({ tool: "read_file", arguments: { path: raw } }, permissions, permissionProfile).action === "deny" ? "deny" : "allow"),
   );
   const processed = mentionBlocks.length > 0
     ? `${mentionBlocks.join("\n\n")}\n\n${input}`

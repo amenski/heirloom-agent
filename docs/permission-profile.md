@@ -1,8 +1,8 @@
 # Permission Profile — Parallel ACL Design
 
-**Status:** phased build · **approved 2026-08-13** · phases (b) schema +
-config validation, (c) evaluation layer, and (d) posture/prompt/UI
-integration shipped 2026-08-13 · phase (e) Seatbelt pending.
+**Status:** shipped — all phases (a)–(e) complete 2026-08-13. Phases (b)
+schema + config validation, (c) evaluation layer, and (d) posture/prompt/UI
+integration shipped 2026-08-13 · phase (e) Seatbelt shipped 2026-08-13.
 
 This is the design doc that feature-plans.md §9 requires as step 1 of the
 PermissionProfile workstream (decision **K**: full parallel ACL model, Codex
@@ -237,14 +237,67 @@ network to profile allowlist. Non-macOS platforms run policy-only with a
 startup notice. This mirrors Codex's backend choice and finally closes the
 "bash can touch anything" gap from §7.
 
+**Implementation notes (shipped with (e), 2026-08-13):**
+- `src/sandbox/seatbelt.ts` builds the SBPL profile per level; the
+  `run_bash` and `run_bash_background` spawns (`src/tools/bash.ts`,
+  `src/tools/jobs.ts`) get the prefix
+  `sandbox-exec -p <profile> /bin/sh -c <command>` whenever
+  `sandbox.enabled` is true and the merged profile level is below
+  `unrestricted` (wired at startup beside `timeoutToBackground`, cli.tsx /
+  exec-runner.ts). Sandboxing is a spawn-time property — a timeout-migrated
+  child is the same already-sandboxed process and keeps it naturally.
+- **Profile semantics.** strict-sandbox: `(version 1)` + `(deny default)` +
+  `(allow process*)` + `(allow file-read*)` + `(allow file-map-executable)` +
+  `(allow sysctl-read)` + `(allow file-write* (literal "/dev/null"))` —
+  reads anywhere, writes denied everywhere except the `/dev/null` discard
+  (ubiquitous `2>/dev/null` redirects need it; even the Xcode `git` shim
+  does one internally), network denied by default. workspace-write adds
+  `(allow file-write* (subpath "<trusted root>"))` for the session
+  workspace root fixed at startup — never the per-call `cwd` (SBPL subpath
+  matching is directory-boundary aware) — and `(allow network-outbound)`.
+  `unrestricted` gets no prefix at all. Verified empirically on macOS
+  2026-08-13: `ls`, `git status`, `node -e 'console.log(1)'` run under both
+  sandboxed levels; writes outside the write-set and network connects fail
+  with EPERM-equivalent denials (non-zero exit).
+- **Trusted-root invariant + cwd containment (item 8.6).** The Seatbelt
+  write-set root is the trusted workspace root fixed at startup (the tool
+  handler's `ctx.workingDir`, realpath-resolved via nearest-existing-
+  ancestor) — a model-passed `cwd: "/"` or `cwd: "~"` can never widen the
+  write-set. Before a sandboxed spawn, the requested cwd is realpath-
+  resolved and checked: unless it equals or is a descendant of the trusted
+  root — including a cwd symlinked out of it — the tool call is rejected
+  with a tool error (no spawn, no profile). Same rule for background jobs
+  (`run_bash_background`). Unchanged: cwd omitted → `ctx.workingDir`; a
+  subdirectory cwd inside the root runs there with the write-set root still
+  the trusted root; level absent/`unrestricted` or non-macOS hosts skip
+  both the profile and the check.
+- **Network: all-or-nothing, by design.** SBPL `(allow network-outbound
+  (remote ip "*:443"))` matches IPs only — hostnames resolve after the
+  sandbox filter runs, so the profile's `network.allow` hostname list
+  cannot be expressed in SBPL. The two layers split the job honestly: the
+  policy layer (`ProfileEvaluator`) enforces host-level allow/deny (it
+  sees the hostname), the Seatbelt layer gates network on/off per level
+  (strict-sandbox off, workspace-write on). The deny side is airtight at
+  both layers; the workspace-write *allow* side is deliberately coarser at
+  the OS layer (any outbound), with host filtering at the policy layer.
+- **Residuals, stated honestly.** (1) Hostname-level network rules are
+  policy-layer only. (2) The `.git` always-denied set is not expressed in
+  SBPL — SBPL has no gitignore globs — so a workspace-write bash child
+  could mechanically write `.git/…`; the policy layer denies it. (3) The
+  profile's fs `deny` rules (`**/*.env` …) are likewise policy-layer only;
+  SBPL expresses the level's defaults, not the rules. (4) macOS-only and
+  flag-gated: on other platforms `sandbox.enabled` warns once at startup
+  and runs policy-only.
+
 ## 9. Migration & back-compat
 
 - `permissionProfile` absent ⇒ level `unrestricted` + empty rules ⇒
   **byte-for-byte today's behavior** (layers 2–3 only). The feature is
   additive; nothing existing changes until the owner sets a level.
 - Setting a level below `unrestricted` is a deliberate, visible change:
-  the status line shows the level next to posture, and the first session
-  at a new level prints a one-line notice (like posture's).
+  the status line always shows the level next to posture (the
+  always-visible segment supersedes the earlier one-line-notice idea —
+  implemented 2026-08-13, phase (d)).
 
 ## 10. Phasing & verification
 
@@ -263,7 +316,10 @@ startup notice. This mirrors Codex's backend choice and finally closes the
   **Verify:** App/headless tests + manual posture-matrix pass.
 - **(e) Seatbelt** — flag-gated; profile fixtures per level.
   **Verify:** sandbox-escape fixture tests (write outside workspace,
-  network to non-allowlisted host) fail closed.
+  network to non-allowlisted host) fail closed. **Shipped 2026-08-13**:
+  `src/sandbox/seatbelt.test.ts` (write-outside fails, local-server
+  network tests fail closed under strict-sandbox, pass under
+  workspace-write).
 
 ## 11. Owner review — resolved 2026-08-13
 

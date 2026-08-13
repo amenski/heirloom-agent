@@ -2,7 +2,7 @@ import { APICallError, RetryError } from "ai";
 import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap } from "./prompt.js";
-import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground } from "./tools/index.js";
+import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground, setSandboxLevel } from "./tools/index.js";
 import { todoStore } from "./tools/todo.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine, ProfileEvaluator } from "./permissions/index.js";
@@ -77,6 +77,16 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // commands.timeoutToBackground (plan §3, default ON) — same default
     // resolution the TUI uses; run_bash migration works identically headless.
     setTimeoutToBackground(configResult.config.commands?.timeoutToBackground ?? true);
+
+    // sandbox (permission-profile.md §8, phase (e)) — same resolution the
+    // TUI uses; Seatbelt enforcement is identical headless.
+    setSandboxLevel(
+      configResult.config.sandbox?.enabled &&
+      configResult.config.permissionProfile &&
+      configResult.config.permissionProfile.level !== "unrestricted"
+        ? configResult.config.permissionProfile.level
+        : undefined,
+    );
 
     const resolvedApiKey = configEnv?.API_KEY || undefined;
     const resolvedBaseUrl = configEnv?.BASE_URL || undefined;

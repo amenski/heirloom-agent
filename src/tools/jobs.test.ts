@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
 import { ToolRegistry } from "./registry.js";
 import { registerJobs, jobManager } from "./jobs.js";
 import type { JobStatusReport } from "./jobs.js";
 import type { ToolContext } from "./types.js";
+
+const onDarwin = process.platform === "darwin";
+const itOnDarwin = it.skipIf(!onDarwin);
 
 const mockCtx: ToolContext = {
   workingDir: process.cwd(),
@@ -42,6 +46,15 @@ describe("registerJobs", () => {
     expect(Object.keys(bg.parameters.properties)).toEqual(["command", "cwd", "timeout"]);
     const check = registry.getAllDefs().find((d) => d.name === "check_job")!;
     expect(check.parameters.required).toEqual(["job_id"]);
+  });
+
+  itOnDarwin("handler threads ctx.workingDir as the trusted root (escaping cwd rejected)", async () => {
+    const out = await registry.execute(
+      { id: "1", name: "run_bash_background", arguments: { command: "echo hi", cwd: "/tmp" } },
+      { ...mockCtx, sandboxLevel: "workspace-write" },
+    );
+    expect(out.content).toBe("");
+    expect(out.error).toContain("Working directory escapes the sandbox workspace root");
   });
 });
 
@@ -112,6 +125,23 @@ describe("JobManager", () => {
     const result = jobManager.start("echo hi", "/nonexistent/heirloom-jobs-test", 5000);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("Working directory");
+  });
+
+  itOnDarwin("rejects a sandboxed job whose cwd escapes the trusted root", () => {
+    const result = jobManager.start("echo hi", "/tmp", 5000, {
+      stream: true,
+      sandboxLevel: "workspace-write",
+      trustedRoot: process.cwd(),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Working directory escapes the sandbox workspace root");
+  });
+
+  it("unsandboxed background jobs may run outside the workspace (unchanged)", async () => {
+    const result = jobManager.start("echo hello-outside-ws", tmpdir(), 5000);
+    expect(result.ok).toBe(true);
+    const report = await checkDone(result.ok ? result.id : "");
+    expect(report.stdout).toContain("hello-outside-ws");
   });
 
   it("rejects a 11th concurrent job beyond the cap of 10", async () => {

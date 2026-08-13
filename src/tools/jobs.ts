@@ -4,6 +4,12 @@ import * as fs from "node:fs";
 import type { ToolDef, ToolOutput } from "../types.js";
 import type { ToolHandler } from "./types.js";
 import { ToolRegistry } from "./registry.js";
+import {
+  isSandboxedLevel,
+  sandboxPrefix,
+  validateCwdWithinTrustedRoot,
+  type SandboxLevel,
+} from "../sandbox/seatbelt.js";
 
 // Background jobs can produce unbounded output (dev servers, tail -f); holding
 // it all in memory would leak. Each stream keeps the most recent 1MB and flags
@@ -146,7 +152,7 @@ export class JobManager {
     command: string,
     cwd: string,
     timeoutMs: number,
-    opts?: { stream?: boolean },
+    opts?: { stream?: boolean; sandboxLevel?: SandboxLevel; trustedRoot?: string },
   ): { ok: true; id: string } | { ok: false; error: string } {
     // Make room first: drop completed jobs past the TTL, then enforce the cap.
     this.cleanup();
@@ -158,15 +164,37 @@ export class JobManager {
       return { ok: false, error: `Working directory does not exist: ${cwd}` };
     }
 
+    // trustedRoot (item 8.6): the Seatbelt write-set root for sandboxed jobs
+    // — the session workspace root fixed at startup, passed by the tool
+    // handler from ctx.workingDir (defaults to process.cwd() for direct
+    // callers). A sandboxed job whose cwd realpath-resolves outside it is
+    // rejected before spawning, same rule as run_bash.
+    const trustedRoot = opts?.trustedRoot ?? process.cwd();
+    if (isSandboxedLevel(opts?.sandboxLevel)) {
+      const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot);
+      if (!checked.ok) return { ok: false, error: checked.error };
+    }
+
     const id = randomUUID();
     let proc: ChildProcess;
     try {
-      proc = spawn(command, {
-        cwd,
-        shell: true,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      // sandboxLevel (permission-profile.md §8, phase (e)): background jobs
+      // spawn under the same Seatbelt profile as run_bash children.
+      const sandbox = sandboxPrefix(command, cwd, trustedRoot, opts?.sandboxLevel);
+      if (sandbox) {
+        proc = spawn(sandbox.file, sandbox.args, {
+          cwd,
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } else {
+        proc = spawn(command, {
+          cwd,
+          shell: true,
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      }
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
@@ -366,14 +394,18 @@ const runBackgroundHandler: ToolHandler = async (args, ctx) => {
   if (typeof command !== "string" || command.trim() === "") {
     return { content: "", error: "Missing required argument: command" };
   }
-  const cwd = (args.cwd as string) || ctx.workingDir || process.cwd();
+  // The trusted root is the workspace fixed at startup (item 8.6): the
+  // Seatbelt write-set root for sandboxed jobs is ctx.workingDir, never a
+  // model-passed cwd.
+  const root = ctx.workingDir || process.cwd();
+  const cwd = (args.cwd as string) || root;
   const timeoutMs = typeof args.timeout === "number" && args.timeout > 0
     ? Math.floor(args.timeout)
     : DEFAULT_TIMEOUT_MS;
 
   // stream: true — only tool-started jobs emit live-output events (plan §3
   // decision E); timeout-migrated jobs are tracked but never stream.
-  const result = jobManager.start(command, cwd, timeoutMs, { stream: true });
+  const result = jobManager.start(command, cwd, timeoutMs, { stream: true, sandboxLevel: ctx.sandboxLevel, trustedRoot: root });
   if (!result.ok) return { content: "", error: result.error };
   return {
     content: [

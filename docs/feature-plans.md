@@ -9,10 +9,9 @@ state-of-the-art CLIs do (Claude Code, OpenAI Codex, Gemini CLI, aider, opencode
 the proposed design, and any decision the owner needs to make. Once an item is
 built, its behavior moves into the owning `*-spec.md` and this entry is struck.
 
-**Priority order** (recommended, post-decision): §1 (bundles §6) → §2 → §3 →
-§5 → §4 (full event set, landed incrementally by event tier) → §7 → §10. §9
-is its own workstream: design doc first (can be drafted in parallel with the
-above), code phases follow the doc. §8 is closed (accepted limitation).
+**Priority order** — all items shipped 2026-08-13 (§1-§11 complete); this
+doc is now the design record for the wave. Unshipped remaining work lives
+in dev-todo.md.
 
 ---
 
@@ -422,13 +421,14 @@ existing scrollback keeps old colors.
 
 ---
 
-## 9. PermissionProfile — full parallel ACL model (design-first, L)
+## ~~9. PermissionProfile — full parallel ACL model (design-first, L)~~
 
-**🚧 phases (a)-(d) shipped 2026-08-13** — design approved, schema +
-validation, `authorize()` evaluation layer, and full loop/UI/headless
-wiring landed (status-line level segment, M.1 overlay condition,
-`deny-by-profile` audit). Only **(e) Seatbelt** (flag-gated macOS) and two
-small follow-ups (mentions-through-`authorize`, doc-line cleanup) remain.
+**✅ fully shipped 2026-08-13** — all phases (a)-(e): approved design,
+schema + validation, `authorize()` evaluation, loop/UI/headless wiring,
+and the flag-gated macOS Seatbelt sandbox (`src/sandbox/seatbelt.ts`,
+T16). Follow-ups closed: mentions gate through `authorize()`. Behavior
+now lives in permission-profile.md, permission-spec.md, config-spec.md,
+security-spec.md.
 
 ### SOTA
 

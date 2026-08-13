@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfig, migrateLegacyPermissions, resolveHome } from "./loader.js";
+import { loadConfig, migrateLegacyPermissions, resolveHome, sandboxSupportedOnPlatform } from "./loader.js";
 import { homedir } from "node:os";
 
 describe("validatePermissions (rule shape)", () => {
@@ -663,5 +663,52 @@ describe("loadConfig permissionProfile", () => {
       const { errors } = loadConfig(projectDir);
       expect(errors.some((e) => e.startsWith("global config") && e.includes("permissionProfile.level"))).toBe(true);
     });
+  });
+});
+
+describe("loadConfig sandbox (permission-profile.md §8, phase (e))", () => {
+  it("defaults off — key absent leaves sandbox undefined with no unknown-field warning", () => {
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.sandbox).toBeUndefined();
+    expect(warnings.some((w) => w.includes('unknown field "sandbox"'))).toBe(false);
+  });
+
+  it("parses sandbox.enabled: true", () => {
+    writeProjectSettings({ sandbox: { enabled: true } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.sandbox).toEqual({ enabled: true });
+    // On macOS the flag is honored silently; on other platforms the loader
+    // warns (policy-only). The parse itself is platform-independent.
+    if (process.platform !== "darwin") {
+      expect(warnings).toContain("sandbox is macOS-only; running policy-only");
+    }
+  });
+
+  it("parses sandbox.enabled: false", () => {
+    writeProjectSettings({ sandbox: { enabled: false } });
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.sandbox).toEqual({ enabled: false });
+  });
+
+  it("rejects a non-boolean enabled", () => {
+    writeProjectSettings({ sandbox: { enabled: "yes" } });
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.sandbox.enabled: must be a boolean");
+    expect(config.sandbox).toBeUndefined();
+  });
+
+  it("rejects a non-object sandbox", () => {
+    writeProjectSettings({ sandbox: true });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toContain("config.sandbox: must be an object");
+  });
+
+  it("sandboxSupportedOnPlatform: macOS only", () => {
+    expect(sandboxSupportedOnPlatform("darwin")).toBe(true);
+    expect(sandboxSupportedOnPlatform("linux")).toBe(false);
+    expect(sandboxSupportedOnPlatform("win32")).toBe(false);
   });
 });

@@ -3,6 +3,12 @@ import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler } from "./types.js";
 import { ToolRegistry } from "./registry.js";
 import { jobManager, killTree, appendCapped, DEFAULT_TIMEOUT_MS } from "./jobs.js";
+import {
+  isSandboxedLevel,
+  sandboxPrefix,
+  validateCwdWithinTrustedRoot,
+  type SandboxLevel,
+} from "../sandbox/seatbelt.js";
 
 const RUN_BASH_TIMEOUT_MS = 120_000;
 // run_bash keeps the most recent 512KB of output (the old exec maxBuffer
@@ -50,21 +56,48 @@ export function resolveTimeoutToBackground(v: boolean | undefined): boolean {
  * interactive, the child is handed to JobManager instead of killed, and the
  * result tells the model to poll check_job. Exported for tests — the
  * registered handler passes the config-derived flag and the fixed 120s cap.
+ *
+ * `sandboxLevel` (permission-profile.md §8, phase (e)): when set, the child
+ * spawns under a Seatbelt profile (`sandbox-exec -p <profile> /bin/sh -c …`)
+ * enforcing the level's fs/network defaults mechanically. Sandboxing is a
+ * spawn-time property — a timeout-migrated child keeps it because it is the
+ * same process, already sandboxed.
+ *
+ * `trustedRoot` is the Seatbelt write-set root for sandboxed spawns — the
+ * session workspace root fixed at startup (the handler's `ctx.workingDir`),
+ * never the per-call cwd. A sandboxed spawn whose cwd realpath-resolves
+ * outside it (item 8.6) is rejected before spawning: tool error, no spawn,
+ * no profile.
  */
 export function runBashTimed(
   command: string,
   cwd: string,
+  trustedRoot: string,
   timeoutMs: number,
   timeoutToBackground: boolean,
+  sandboxLevel?: SandboxLevel,
 ): Promise<ToolOutput> {
+  if (isSandboxedLevel(sandboxLevel)) {
+    const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot);
+    if (!checked.ok) return Promise.resolve({ content: "", error: checked.error });
+  }
   let proc: ChildProcess;
   try {
-    proc = spawn(command, {
-      cwd,
-      shell: true,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const sandbox = sandboxPrefix(command, cwd, trustedRoot, sandboxLevel);
+    if (sandbox) {
+      proc = spawn(sandbox.file, sandbox.args, {
+        cwd,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } else {
+      proc = spawn(command, {
+        cwd,
+        shell: true,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
   } catch (err) {
     return Promise.resolve({ content: `Exit code: -1\nFailed to start: ${(err as Error).message}` });
   }
@@ -133,8 +166,11 @@ export function runBashTimed(
 
 const runBashHandler: ToolHandler = async (args, ctx) => {
   const command = args.command as string;
-  const cwd = (args.cwd as string) || ctx.workingDir || process.cwd();
-  return runBashTimed(command, cwd, RUN_BASH_TIMEOUT_MS, resolveTimeoutToBackground(ctx.timeoutToBackground));
+  // The trusted root is the workspace fixed at startup (item 8.6): the
+  // Seatbelt write-set root is ctx.workingDir, never a model-passed cwd.
+  const root = ctx.workingDir || process.cwd();
+  const cwd = (args.cwd as string) || root;
+  return runBashTimed(command, cwd, root, RUN_BASH_TIMEOUT_MS, resolveTimeoutToBackground(ctx.timeoutToBackground), ctx.sandboxLevel);
 };
 
 const runBashDef: ToolDef = {

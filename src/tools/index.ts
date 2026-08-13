@@ -1,6 +1,7 @@
 import { ToolRegistry } from "./registry.js";
 import type { ToolCall, ToolOutput } from "../types.js";
 import type { ToolContext } from "./types.js";
+import type { SandboxLevel } from "../sandbox/seatbelt.js";
 import type { CheckpointManager } from "../checkpoints/index.js";
 import type { SessionStore } from "../sessions/store.js";
 import { registerFiles } from "./files.js";
@@ -70,6 +71,17 @@ export function setSetMode(fn: (slug: string) => Promise<string | null>): void {
 
 export function setTimeoutToBackground(v: boolean): void {
   ctx.timeoutToBackground = v;
+}
+
+/**
+ * Set the OS-sandbox level for bash children (permission-profile.md §8,
+ * phase (e)): `strict-sandbox` / `workspace-write` from the merged config
+ * when `sandbox.enabled` and the profile level demands it; undefined
+ * (default) = sandbox off. macOS-only — the Seatbelt layer no-ops on other
+ * platforms (startup notice from the loader).
+ */
+export function setSandboxLevel(v: SandboxLevel | undefined): void {
+  ctx.sandboxLevel = v;
 }
 
 export async function executeTool(call: ToolCall): Promise<ToolOutput> {
