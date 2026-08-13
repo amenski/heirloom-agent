@@ -16,7 +16,7 @@ must modify or diagnose:
 
 | Fixture | Task | Pass criterion |
 |---------|------|----------------|
-| `calc` | Fix the failing test in `src/calc.test.js` | `node --test` reports 3 passing, no failures |
+| `calc` | Fix the failing test in `src/calc.test.js` (planted bug: `mul(2,3)` expects 5, actual 6) | `node --test --test-reporter=tap` reports `# pass 3` and `# fail 0` |
 | `cli` | Add a `--greeting` flag to `src/index.js` | `node src/index.js --greeting Hi --name World` prints `Hi, World!` |
 | `leaky` | Identify the memory leak in `src/server.js` | Agent completes a diagnosis (no automated assertion) |
 

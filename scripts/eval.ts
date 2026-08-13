@@ -110,14 +110,19 @@ const EVAL_CASES: EvalCase[] = [
     prompt: "fix the failing test in src/calc.test.js so all tests pass",
     assert: (workdir) => {
       try {
-        const result = execSync("node --test src/calc.test.js", {
+        // --test-reporter=tap pins the output shape across Node versions:
+        // Node >=22 defaults to the spec reporter, which never emits the
+        // "# pass N" lines this assertion relies on (observed on Node 26).
+        const result = execSync("node --test --test-reporter=tap src/calc.test.js", {
           cwd: workdir,
           encoding: "utf-8",
           timeout: 10000,
         });
+        // TAP emits "# pass 3" AND "# fail 0" — checking both is
+        // reporter-agnostic (a bare "fail" substring would match "# fail 0").
         return {
-          pass: result.includes("# pass 3") && !result.includes("fail"),
-          message: result.trim().split("\n").slice(-3).join("; "),
+          pass: result.includes("# pass 3") && result.includes("# fail 0"),
+          message: result.trim().split("\n").filter((l) => l.startsWith("#")).slice(-3).join("; "),
         };
       } catch (e: any) {
         return { pass: false, message: e.stderr?.toString().slice(0, 200) || e.message };
