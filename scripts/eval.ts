@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, cpSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, cpSync, writeFileSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const FIXTURES_DIR = resolve(import.meta.dirname!, "..", "fixtures");
@@ -93,7 +94,36 @@ function evalChildEnv(evalHome: string): Record<string, string> {
   for (const key of ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "TOGETHER_API_KEY"]) {
     if (process.env[key]) env[key] = process.env[key]!;
   }
+  // Fallback: when NO provider env var is set, the isolated child resolves
+  // the default provider (deepseek) and would otherwise fail with no key —
+  // the developer's `heirloom auth` credentials are invisible to the eval
+  // home by design. Forward exactly that ONE key from the real credentials
+  // file (flat `provider: key` YAML), never the file itself, so `npm run
+  // eval` just works with an auth-based setup without leaking every
+  // stored credential.
+  if (!Object.keys(env).some((k) => k.endsWith("_API_KEY"))) {
+    const deepseekKey = readCredentialKey("deepseek");
+    if (deepseekKey) env.DEEPSEEK_API_KEY = deepseekKey;
+  }
   return env;
+}
+
+/** Read one provider's key from ~/.heirloom/credentials.yaml (flat `key: value` lines). */
+function readCredentialKey(provider: string): string | undefined {
+  try {
+    const raw = readFileSync(join(homedir(), ".heirloom", "credentials.yaml"), "utf-8");
+    for (const line of raw.split("\n")) {
+      const idx = line.indexOf(":");
+      if (idx === -1) continue;
+      const key = line.slice(0, idx).trim();
+      if (key !== provider) continue;
+      const value = line.slice(idx + 1).trim();
+      // Strip optional quotes and inline comments (the shape `heirloom auth` writes).
+      return value.replace(/^["']|["']$/g, "").replace(/\s+#.*$/, "") || undefined;
+    }
+  } catch {
+    return undefined;
+  }
 }
 
 interface EvalCase {
