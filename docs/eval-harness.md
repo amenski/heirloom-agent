@@ -61,8 +61,10 @@ scope. The controls, layered:
   agent cannot write anywhere on the host except inside `.eval-tmp/`.
 - **`run_bash` allows only narrow command prefixes** (`node --test:*`,
   `node src/index.js:*`), and the dangerous node arg shapes (`-e`,
-  `--eval`, `-p`, `--print`, `-r`, `--require`) are explicitly denied —
-  the deny tier always beats the allows.
+  `--eval`, `-p`, `--print`, `-r`, `--require`, `--import`, `--loader`,
+  `--experimental-loader`) are explicitly denied **in every position they
+  can appear after the allowed first tokens** — a prefix allow would
+  otherwise extend past them, and the deny tier always beats allows.
 - **The standard engine protections still apply**: compound commands are
   split into segments (each resolved independently, most-restrictive
   wins), command substitution/backticks resolve to a fail-closed
@@ -72,13 +74,15 @@ scope. The controls, layered:
   credentials leak into the eval process, and `HOME` points at the eval
   home.
 
-**Residual, stated honestly**: `node` itself executes JavaScript, and
-shell redirects ride their segment, so the `run_bash` prefixes are
-model-error mitigation, not adversary containment — the same stance the
-permission system takes for the product as a whole
+**Residual, stated honestly**: the deny rules enumerate flag *positions*
+(`node <flag>` and `node --test <flag>` / `node src/index.js <flag>`), so a
+novel flag/position combination is not covered — position-denylists are
+whack-a-mole, not a boundary. `node` itself executes JavaScript, and shell
+redirects ride their segment. The structural fixes would be argv-scanning
+in the permission engine (deny code-exec flags anywhere) or OS isolation —
+the latter is the product's documented v1 non-goal
 (security-destructive-matching.md §6). If you ever run evals against
-untrusted prompts or third-party fixtures, do it in a container/VM — OS
-isolation is the only real boundary.
+untrusted prompts or third-party fixtures, do it in a container/VM.
 
 ## 5. Running
 

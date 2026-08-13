@@ -41,13 +41,35 @@ const EVAL_SETTINGS = JSON.stringify({
       // G3: node src/index.js [...]
       { tool: "run_bash", pattern: "node src/index.js:*", action: "allow" },
       // Deny the node arg shapes that turn a test/script run into arbitrary
-      // code execution. Deny tier wins over the allows above.
+      // code execution — in EVERY position they can appear after the
+      // allowed first tokens, because a prefix allow would otherwise extend
+      // past them (deny tier always beats allow).
+      // Position 1: node <flag> ...
       { tool: "run_bash", pattern: "node -e:*", action: "deny" },
       { tool: "run_bash", pattern: "node --eval:*", action: "deny" },
       { tool: "run_bash", pattern: "node -p:*", action: "deny" },
       { tool: "run_bash", pattern: "node --print:*", action: "deny" },
       { tool: "run_bash", pattern: "node -r:*", action: "deny" },
       { tool: "run_bash", pattern: "node --require:*", action: "deny" },
+      // Position 2: node --test <flag> ... / node src/index.js <flag> ...
+      { tool: "run_bash", pattern: "node --test -e:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test --eval:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test -p:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test --print:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test -r:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test --require:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test --import:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test --loader:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --test --experimental-loader:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js -e:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js --eval:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js -p:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js --print:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js -r:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js --require:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js --import:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js --loader:*", action: "deny" },
+      { tool: "run_bash", pattern: "node src/index.js --experimental-loader:*", action: "deny" },
     ],
   },
 });
