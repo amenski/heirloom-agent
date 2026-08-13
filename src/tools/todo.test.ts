@@ -3,6 +3,7 @@ import { ToolRegistry } from "./registry.js";
 import type { ToolContext } from "./types.js";
 import {
   todoStore,
+  TodoStore,
   formatTodoBlock,
   registerTodo,
   MAX_TODO_ITEMS,
@@ -135,6 +136,19 @@ describe("update_todo_list handler", () => {
     const registry = makeRegistry();
     await execUpdate(registry, ["string", 42, null, todo("kept", "pending")]);
     expect(todoStore.getTodos()).toEqual([todo("kept", "pending")]);
+  });
+
+  it("writes to ctx.todoStore when provided (per-run isolation)", async () => {
+    const registry = makeRegistry();
+    const isolated = new TodoStore();
+    const out = await registry.execute(
+      { id: "t1", name: "update_todo_list", arguments: { todos: [todo("sub step", "in_progress")] } },
+      { ...makeCtx(), todoStore: isolated },
+    );
+    expect(out.error).toBeUndefined();
+    expect(isolated.getTodos()).toEqual([todo("sub step", "in_progress")]);
+    // The module singleton (the parent panel's store) was never touched.
+    expect(todoStore.getTodos()).toEqual([]);
   });
 });
 

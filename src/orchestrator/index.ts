@@ -6,6 +6,8 @@ import { runAgent } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
 import type { PermissionEngine } from "../permissions/index.js";
+import { setTodoStore } from "../tools/index.js";
+import { todoStore, TodoStore } from "../tools/todo.js";
 
 const NEW_TASK_DEF: ToolDef = {
   name: "new_task",
@@ -143,6 +145,15 @@ export class Orchestrator {
         return this.options.executeTool(call);
       };
 
+      // The sub-agent gets its own todo store: its update_todo_list calls must
+      // not clobber the parent's checklist panel, and its own model context
+      // should see its own plan (getTodos below). Runs are strictly
+      // nested/sequential, so swapping the shared module-level context pointer
+      // for the duration of the sub-run and restoring it afterwards is safe.
+      const parentStore = ctx.todoStore ?? todoStore;
+      const subStore = new TodoStore();
+      setTodoStore(subStore);
+
       try {
         const result = await runAgent(description, {
           provider,
@@ -154,6 +165,7 @@ export class Orchestrator {
           maxTurns: this.options.maxSubTurns,
           mode: subMode,
           signal: this.options.getSignal?.(),
+          getTodos: () => subStore.getTodos(),
         });
 
         const summary = summarizeMessages(result.messages, description);
@@ -163,6 +175,8 @@ export class Orchestrator {
           content: `Sub-task failed after error: ${(err as Error).message}`,
           error: `SUBTASK_ERROR: ${(err as Error).message}`,
         };
+      } finally {
+        setTodoStore(parentStore);
       }
     };
   }

@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { Orchestrator } from "./index.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ModeLoader } from "../modes/loader.js";
 import { PermissionEngine } from "../permissions/index.js";
+import { executeTool as realExecuteTool, registry as realRegistry, setTodoStore } from "../tools/index.js";
+import { todoStore } from "../tools/todo.js";
 import type { Provider, StreamEvent } from "../providers/types.js";
 import type { Message, ToolDef } from "../types.js";
 import type { ToolContext } from "../tools/types.js";
@@ -60,6 +62,12 @@ function makeRegistry(): { registry: ToolRegistry; runBash: ReturnType<typeof vi
 }
 
 describe("Orchestrator", () => {
+  // The module-level tool context pointer is swapped during sub-runs; restore
+  // it and the singleton so no state leaks between tests in this file.
+  afterEach(() => {
+    setTodoStore(todoStore);
+    todoStore.reset();
+  });
   it("registers new_task in the workflow group and spawns a sub-agent in the requested mode with that mode's tools", async () => {
     const { registry } = makeRegistry();
     const { provider, received } = makeProvider([
@@ -153,6 +161,54 @@ describe("Orchestrator", () => {
 
     expect(out.error).toBeUndefined();
     expect(runBash).not.toHaveBeenCalled();
+  });
+
+  it("gives the sub-agent its own todo store: parent checklist untouched, sub context sees its own plan", async () => {
+    // Uses the REAL module-level registry/executeTool (what production wires),
+    // so the setTodoStore swap during the sub-run is exercised end-to-end.
+    const { provider: subProvider, received } = makeProvider([
+      toolCallTurn("c1", "update_todo_list", JSON.stringify({
+        todos: [
+          { content: "Sub step A", status: "pending" },
+          { content: "Sub step B", status: "in_progress" },
+        ],
+      })),
+      textTurn("sub done"),
+    ]);
+    const orchestrator = new Orchestrator({
+      provider: () => subProvider,
+      registry: realRegistry,
+      executeTool: realExecuteTool,
+      modeLoader: new ModeLoader(),
+    });
+    orchestrator.register(realRegistry);
+
+    const out = await realRegistry.execute(
+      { id: "t1", name: "new_task", arguments: { description: "sub plan", mode: "code" } },
+      { workingDir: "/workspace", sessionId: "test", signal: new AbortController().signal },
+    );
+
+    expect(out.error).toBeUndefined();
+    expect(out.content).toContain("**Result**: sub done");
+
+    // The sub-agent's update_todo_list wrote to ITS store — the singleton the
+    // parent panel subscribes to was never touched.
+    expect(todoStore.getTodos()).toEqual([]);
+
+    // The sub-agent's own context got its plan injected on the follow-up turn.
+    expect(JSON.stringify(received[0].messages)).not.toContain("# Current todo list");
+    expect(JSON.stringify(received[1].messages)).toContain("# Current todo list");
+    expect(JSON.stringify(received[1].messages)).toContain("- [pending] Sub step A");
+    expect(JSON.stringify(received[1].messages)).toContain("- [in_progress] Sub step B");
+
+    // The module context was restored: a parent-side update after the sub-run
+    // lands in the singleton again.
+    await realExecuteTool({
+      id: "t2",
+      name: "update_todo_list",
+      arguments: { todos: [{ content: "parent step", status: "pending" }] },
+    });
+    expect(todoStore.getTodos()).toEqual([{ content: "parent step", status: "pending" }]);
   });
 
   it("caps nesting at maxDepth and never spawns beyond it", async () => {

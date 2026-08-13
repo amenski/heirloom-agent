@@ -1,5 +1,6 @@
 import type { ToolDef, ToolCall, ToolOutput } from "../types.js";
 import type { CheckpointManager } from "../checkpoints/index.js";
+import type { TodoStore } from "./todo.js";
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutput>;
 
@@ -23,6 +24,9 @@ export interface ToolContext {
   signal: AbortSignal;
   checkpoint?: CheckpointManager;
   fileMtimes?: Map<string, number>;
+  /** Per-run todo store (update_todo_list). Defaults to the module singleton;
+   *  sub-agents swap in a fresh store via setTodoStore for the sub-run. */
+  todoStore?: TodoStore;
 }
 
 export interface ToolRegistration {

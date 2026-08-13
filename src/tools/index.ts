@@ -10,7 +10,8 @@ import { registerAskUserQuestion } from "./ask_user_question.js";
 import { registerWebSearch } from "./web-search.js";
 import { registerWebFetch } from "./web-fetch.js";
 import { registerJobs } from "./jobs.js";
-import { registerTodo } from "./todo.js";
+import { registerTodo, todoStore } from "./todo.js";
+import type { TodoStore } from "./todo.js";
 
 const registry = new ToolRegistry();
 registerFiles(registry);
@@ -33,7 +34,16 @@ const ctx: ToolContext = {
   askQuestion: undefined,
   signal: new AbortController().signal,
   fileMtimes: new Map(),
+  // Defaults to the module singleton — the parent run's store, which the TUI
+  // panel subscribes to. The orchestrator swaps this pointer for a fresh
+  // store while a sub-agent runs (nested runs are strictly sequential, so a
+  // single pointer with save/restore is safe), then restores it.
+  todoStore,
 };
+
+export function setTodoStore(store: TodoStore): void {
+  ctx.todoStore = store;
+}
 
 export function setSessionId(id: string): void {
   ctx.sessionId = id;

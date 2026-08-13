@@ -80,13 +80,16 @@ function normalizeTodos(raw: unknown): { items: TodoItem[]; warnings: string[]; 
   return { items: items.slice(0, MAX_TODO_ITEMS), warnings, shapeValid: true };
 }
 
-const todoHandler: ToolHandler = async (args) => {
+const todoHandler: ToolHandler = async (args, ctx) => {
   const { items, warnings, shapeValid } = normalizeTodos(args.todos);
   if (!shapeValid) {
     // Malformed call: leave the current plan untouched, surface the warning.
     return { content: warnings.join("\n") };
   }
-  todoStore.setTodos(items);
+  // Per-run store when one is wired (sub-agents get their own via
+  // setTodoStore); fall back to the module singleton otherwise.
+  const store = ctx.todoStore ?? todoStore;
+  store.setTodos(items);
 
   // Spec: exactly one in_progress at a time; warn in output when violated,
   // do not reject (tool-spec.md).
