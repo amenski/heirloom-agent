@@ -50,7 +50,37 @@ G1/G4/G6 from conventions.md are not wired into the harness yet.
   case passed.
 - `package.json` script: `npm run eval` (runs `tsx scripts/eval.ts`).
 
-## 4. Running
+## 4. Security model (containment)
+
+The eval agent is **less trusted than the developer** — it runs model-chosen
+actions against throwaway fixture copies, and a prompt injection is in
+scope. The controls, layered:
+
+- **Edit tools are glob-scoped to `./**`** — paths outside the fixture
+  copy resolve absolute and match no rule, so headless denies them. The
+  agent cannot write anywhere on the host except inside `.eval-tmp/`.
+- **`run_bash` allows only narrow command prefixes** (`node --test:*`,
+  `node src/index.js:*`), and the dangerous node arg shapes (`-e`,
+  `--eval`, `-p`, `--print`, `-r`, `--require`) are explicitly denied —
+  the deny tier always beats the allows.
+- **The standard engine protections still apply**: compound commands are
+  split into segments (each resolved independently, most-restrictive
+  wins), command substitution/backticks resolve to a fail-closed
+  unresolved-ask (denied headless), and the destructive tier
+  (`rm -rf /`, `git reset --hard`, …) stays absolute.
+- **The child env is an explicit allowlist** (see §3) — no developer
+  credentials leak into the eval process, and `HOME` points at the eval
+  home.
+
+**Residual, stated honestly**: `node` itself executes JavaScript, and
+shell redirects ride their segment, so the `run_bash` prefixes are
+model-error mitigation, not adversary containment — the same stance the
+permission system takes for the product as a whole
+(security-destructive-matching.md §6). If you ever run evals against
+untrusted prompts or third-party fixtures, do it in a container/VM — OS
+isolation is the only real boundary.
+
+## 5. Running
 
 ```
 npm run eval

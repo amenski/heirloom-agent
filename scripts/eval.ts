@@ -12,25 +12,42 @@ const TSX_BIN = resolve(import.meta.dirname!, "..", "node_modules", ".bin", "tsx
 // settings.json. Headless runs fail closed (permission-spec.md §Headless
 // Interaction), so a fixture without explicit allow rules would deny every
 // edit and run_bash call and the golden task could never modify anything.
-// Fixtures are throwaway copies in .eval-tmp/, so allowing the edit tools
-// inside them is safe by construction — but run_bash is NOT blanket-allowed:
-// a prompt-injected model must not gain arbitrary command execution on the
-// developer's machine. Only the narrow command prefixes the fixtures
-// actually need are allowed; anything else stays denied.
+//
+// Containment model (see eval-harness.md §Security):
+// - Edit tools are glob-scoped to ./** — paths outside the fixture copy
+//   resolve absolute and match NO rule, so headless denies them. The agent
+//   cannot write anywhere on the host except inside the throwaway fixture.
+// - run_bash allows only the narrow command prefixes the fixtures need.
+//   Compound commands are split into segments (bash-normalize) and the
+//   destructive tier denies the catastrophic set outright. Known-dangerous
+//   node arg shapes (script evaluation / module loading) are explicitly
+//   denied below — the deny tier always beats these allow rules.
+// - Residual (documented in eval-harness.md): node itself executes JS, and
+//   redirects ride their segment, so prefix rules are model-error
+//   mitigation, not adversary containment. Run untrusted evals in a
+//   container/VM — the real boundary is OS isolation (security-spec §6).
 const EVAL_SETTINGS = JSON.stringify({
   permissions: {
     defaultMode: "askAll",
     rules: [
-      { tool: "edit", pattern: "", action: "allow" },
-      { tool: "edit_file", pattern: "", action: "allow" },
-      { tool: "search_replace", pattern: "", action: "allow" },
-      { tool: "apply_diff", pattern: "", action: "allow" },
-      { tool: "apply_patch", pattern: "", action: "allow" },
-      { tool: "write_to_file", pattern: "", action: "allow" },
+      { tool: "edit", pattern: "./**", action: "allow" },
+      { tool: "edit_file", pattern: "./**", action: "allow" },
+      { tool: "search_replace", pattern: "./**", action: "allow" },
+      { tool: "apply_diff", pattern: "./**", action: "allow" },
+      { tool: "apply_patch", pattern: "./**", action: "allow" },
+      { tool: "write_to_file", pattern: "./**", action: "allow" },
       // G2: node --test [src/calc.test.js]
       { tool: "run_bash", pattern: "node --test:*", action: "allow" },
       // G3: node src/index.js [...]
       { tool: "run_bash", pattern: "node src/index.js:*", action: "allow" },
+      // Deny the node arg shapes that turn a test/script run into arbitrary
+      // code execution. Deny tier wins over the allows above.
+      { tool: "run_bash", pattern: "node -e:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --eval:*", action: "deny" },
+      { tool: "run_bash", pattern: "node -p:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --print:*", action: "deny" },
+      { tool: "run_bash", pattern: "node -r:*", action: "deny" },
+      { tool: "run_bash", pattern: "node --require:*", action: "deny" },
     ],
   },
 });
