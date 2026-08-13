@@ -12,8 +12,11 @@ const TSX_BIN = resolve(import.meta.dirname!, "..", "node_modules", ".bin", "tsx
 // settings.json. Headless runs fail closed (permission-spec.md §Headless
 // Interaction), so a fixture without explicit allow rules would deny every
 // edit and run_bash call and the golden task could never modify anything.
-// Fixtures are throwaway copies in .eval-tmp/, so allowing these tools
-// inside them is safe by construction.
+// Fixtures are throwaway copies in .eval-tmp/, so allowing the edit tools
+// inside them is safe by construction — but run_bash is NOT blanket-allowed:
+// a prompt-injected model must not gain arbitrary command execution on the
+// developer's machine. Only the narrow command prefixes the fixtures
+// actually need are allowed; anything else stays denied.
 const EVAL_SETTINGS = JSON.stringify({
   permissions: {
     defaultMode: "askAll",
@@ -24,10 +27,35 @@ const EVAL_SETTINGS = JSON.stringify({
       { tool: "apply_diff", pattern: "", action: "allow" },
       { tool: "apply_patch", pattern: "", action: "allow" },
       { tool: "write_to_file", pattern: "", action: "allow" },
-      { tool: "run_bash", pattern: "", action: "allow" },
+      // G2: node --test [src/calc.test.js]
+      { tool: "run_bash", pattern: "node --test:*", action: "allow" },
+      // G3: node src/index.js [...]
+      { tool: "run_bash", pattern: "node src/index.js:*", action: "allow" },
     ],
   },
 });
+
+// Child environment: an explicit allowlist, NOT ...process.env — the eval
+// agent is less trusted than the developer and must not inherit arbitrary
+// credentials (GITHUB_TOKEN, AWS_*, etc.). The provider key env vars are
+// included deliberately: real evals need exactly one of them to
+// authenticate. HOME is pointed at the eval home so no subsystem writes to
+// the developer's real ~ (update-check.ts uses homedir() directly).
+function evalChildEnv(evalHome: string): Record<string, string> {
+  const env: Record<string, string> = {
+    PATH: process.env.PATH || "",
+    HOME: evalHome,
+    SHELL: process.env.SHELL || "/bin/sh",
+    NO_COLOR: "1",
+    TERM: "dumb",
+    TMPDIR: evalHome,
+    HEIRLOOM_HOME: evalHome,
+  };
+  for (const key of ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "TOGETHER_API_KEY"]) {
+    if (process.env[key]) env[key] = process.env[key]!;
+  }
+  return env;
+}
 
 interface EvalCase {
   name: string;
@@ -134,14 +162,7 @@ async function main() {
           // reads piped stdin to EOF (exec-input.ts), and an open pipe
           // would hang the spawn for the full timeout.
           input: "",
-          env: {
-            ...process.env,
-            // Isolate the eval from the developer's global config: an
-            // empty HEIRLOOM_HOME means no global settings, no MCP servers
-            // to spawn at startup (which would block the key check), and
-            // no interference from personal credentials.
-            HEIRLOOM_HOME: evalHome,
-          },
+          env: evalChildEnv(evalHome),
         },
       );
 

@@ -27,14 +27,21 @@ G1/G4/G6 from conventions.md are not wired into the harness yet.
 - The runner copies each fixture into `.eval-tmp/` (cleaned before and
   after) and spawns `tsx src/cli.tsx -p "<prompt>"` with a 120 s timeout
   per case, then runs the case's `assert(workdir)`.
-- **Isolation**: the spawn gets an empty `HEIRLOOM_HOME` under
-  `.eval-tmp/.home` (no global settings, no MCP servers to spawn at
-  startup, no personal credentials) and `input: ""` (closes stdin — an
-  open pipe would hang headless's stdin read).
+- **Isolation**: the spawn gets a child environment built from an
+  **explicit allowlist** (PATH, HOME, SHELL, NO_COLOR, TERM, TMPDIR,
+  HEIRLOOM_HOME — plus only the provider-key env vars) — never
+  `...process.env`, so the eval agent cannot inherit arbitrary developer
+  credentials. `HOME`/`HEIRLOOM_HOME` point at `.eval-tmp/.home` (no
+  global settings, no MCP servers to spawn at startup, nothing written to
+  the real `~`), and `input: ""` closes stdin (an open pipe would hang
+  headless's stdin read).
 - **Eval permissions**: the runner injects a `.heirloom/settings.json`
   into each copied fixture with explicit `allow` rules for the edit tools
-  and `run_bash` — headless fails closed, so without these the agent
-  could never modify a fixture.
+  and **narrow `run_bash` prefixes** (`node --test:*`,
+  `node src/index.js:*`) — headless fails closed, so without these the
+  agent could never modify a fixture, and `run_bash` is deliberately NOT
+  blanket-allowed: a prompt-injected model must not gain arbitrary
+  command execution on the developer's machine.
 - **Failure attribution**: a non-zero heirloom exit (e.g. no provider key)
   reports `heirloom exited N: <stderr>` — distinct from a fixture-level
   task failure, so a missing key can't masquerade as "the agent failed
