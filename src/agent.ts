@@ -583,6 +583,13 @@ export async function runAgent(
         });
       }
 
+      if (result.stop) {
+        // attempt_completion: the tool signaled the task is done — end the
+        // turn cleanly. stopReason stays "done" (it completed, not aborted).
+        turnEnded = true;
+        break;
+      }
+
       if (result.error && callCount >= 3 && !warnedRepeat) {
         messages.push({
           role: "system",

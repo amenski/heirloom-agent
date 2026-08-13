@@ -177,10 +177,12 @@ Available regardless of mode unless noted (mode-spec.md).
 
 | Tool | Signature | Behavior |
 |------|-----------|----------|
-| `update_todo_list` | `todos: [{content, status}]` | Replaces the whole plan; statuses `pending \| in_progress \| completed`; CLI renders as a checklist panel |
+| `update_todo_list` | `todos: [{content, status}]` | Replaces the whole plan; statuses `pending \| in_progress \| completed`; CLI renders as a checklist panel; each call persists a session snapshot (restored on resume) |
 | `ask_user_question` | `questions: [{question, multiSelect?, options}]` | Blocks on structured user input via `ToolContext.askQuestion`; returns the answers as tool output |
 | `new_task` | `description, mode?` | Spawns a sub-agent with isolated context (workflow group only); only its summary returns |
 | `load_skill` | `name` | Returns the skill's SKILL.md body as tool output; unknown name lists available skills |
+| `switch_mode` | `slug, reason?` | Switches the active persona mode; the new tool set applies from the next turn; unknown slug → `UNKNOWN_MODE` |
+| `attempt_completion` | `summary` | Signals the task is done and **ends the turn** (ToolOutput `stop: true`); the summary is the final output |
 
 `update_todo_list` replaces the whole list each call (idempotent, no
 add/remove/reorder API surface). Exactly one item should be `in_progress` at
@@ -197,6 +199,19 @@ ask-tier prompts surfaced in the parent UI, summary-only return.
 `load_skill` (`src/skills/index.ts:219`): respects `enabledSkills` gating
 and the skill-trust file (untrusted skills are skipped in headless mode);
 see skill-spec.md.
+
+`switch_mode` (`src/tools/switch-mode.ts`): routes through
+`ToolContext.setMode`, wired in cli.tsx to the same path `/mode` uses
+(load → set active mode → persist a `state` record). The switch is
+**automatic — no confirmation prompt** — and takes effect on the next
+turn (the current turn's tool set is fixed at call time). The stable
+preamble cache invalidates because the wiring assigns a fresh mode object
+per switch.
+
+`attempt_completion` (`src/tools/attempt-completion.ts`): returns
+`ToolOutput { content: summary, stop: true }`; the agent loop ends the
+turn after the tool result (`stopReason` stays `"done"`). No further
+provider call happens — the summary is the final word the user sees.
 
 ## 7. Error prefixes
 

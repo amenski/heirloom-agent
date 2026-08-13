@@ -12,6 +12,8 @@ import { registerWebSearch } from "./web-search.js";
 import { registerWebFetch } from "./web-fetch.js";
 import { registerJobs } from "./jobs.js";
 import { registerTodo, todoStore } from "./todo.js";
+import { registerAttemptCompletion } from "./attempt-completion.js";
+import { registerSwitchMode } from "./switch-mode.js";
 
 const registry = new ToolRegistry();
 registerFiles(registry);
@@ -23,6 +25,8 @@ registerWebSearch(registry);
 registerWebFetch(registry);
 registerJobs(registry);
 registerTodo(registry);
+registerAttemptCompletion(registry);
+registerSwitchMode(registry);
 
 export { registry };
 export const TOOL_DEFS = registry.getAllDefs();

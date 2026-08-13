@@ -47,4 +47,6 @@ export interface ToolCall {
 export interface ToolOutput {
   content: string;
   error?: string;
+  /** True ends the agent's turn after this tool result (attempt_completion). */
+  stop?: boolean;
 }

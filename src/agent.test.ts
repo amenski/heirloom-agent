@@ -656,6 +656,55 @@ describe("runAgent", () => {
     });
   });
 
+  describe("attempt_completion — tool-initiated turn end", () => {
+    it("ends the turn after the tool result without another provider call", async () => {
+      const { provider, receivedMessages } = makeProvider([
+        [
+          { type: "tool_call_start", id: "c1", name: "attempt_completion" },
+          { type: "tool_call_delta", id: "c1", arguments: '{"summary":"done: 3 files"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        // A second turn would be scripted here if the loop continued — its
+        // absence is the assertion: receivedMessages stays at length 1.
+      ]);
+      const executeTool = vi.fn(async () => ({ content: "done: 3 files", stop: true }));
+
+      const result = await runAgent("finish the task", {
+        provider,
+        tools: [],
+        executeTool,
+      });
+
+      expect(receivedMessages).toHaveLength(1);
+      expect(result.stopReason).toBe("done");
+      // The tool result made it into the transcript.
+      expect(result.messages.some(
+        (m) => m.role === "tool" && m.content === "done: 3 files",
+      )).toBe(true);
+      expect(executeTool).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not end the turn when a tool returns stop: false/undefined", async () => {
+      const { provider, receivedMessages } = makeProvider([
+        [
+          { type: "tool_call_start", id: "c1", name: "read" },
+          { type: "tool_call_delta", id: "c1", arguments: '{"path":"a.txt"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+        textTurn("all done"),
+      ]);
+
+      await runAgent("read a.txt", {
+        provider,
+        tools: [],
+        executeTool: async () => ({ content: "file contents" }),
+      });
+
+      // The loop continued to a second turn (final text reply).
+      expect(receivedMessages).toHaveLength(2);
+    });
+  });
+
   describe("pre-request compaction", () => {
     it("compacts before the provider call, so the provider sees the compacted set", async () => {
       const { provider, receivedMessages } = makeProvider([textTurn("done")]);
