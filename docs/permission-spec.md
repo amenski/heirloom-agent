@@ -1,6 +1,6 @@
 # Permission Specification
 
-**Status:** current · verified 2026-08-13 · covers `src/permissions/{engine,rules,bash-normalize,destructive,guarded,builtin-allow}.ts`, `src/exec-runner.ts`, `src/ui/App.tsx`
+**Status:** current · verified 2026-08-13 · covers `src/permissions/{engine,rules,bash-normalize,destructive,guarded,builtin-allow,profile}.ts`, `src/exec-runner.ts`, `src/ui/App.tsx`
 
 ## 1. Overview
 
@@ -298,6 +298,12 @@ this run without asking me" and "what did I approve earlier this session".
 `/permissions` opens a TUI view listing this session's decisions in order,
 most recent selected by default; arrow keys browse, Esc closes.
 
+Every resolution — sequential gate or parallel-batch pre-resolution — runs
+through the composed `authorize()` (permission-profile.md §4): the profile
+gate (layer 1) first — a deny is terminal, recorded as `deny-by-profile` —
+then the unchanged rule engine. Absent `permissionProfile` config, layer 1
+does not exist and the engine result is written exactly as before.
+
 ### Decision vocabulary — one value per resolution path
 
 Each agent-side path emits a distinct `decision`, plus a human-readable
@@ -305,6 +311,7 @@ Each agent-side path emits a distinct `decision`, plus a human-readable
 
 | `decision` | Path in `agent.ts` | `reason` (example) |
 |---|---|---|
+| `deny-by-profile` | profile gate (layer 1) denied before rule resolution — every `agent.ts` resolution goes through `authorize()` (permission-profile.md §4); no profile configured → layer 1 skipped | `deny by profile (layer 1)` |
 | `deny-by-rule` | `resolve()` returned `deny` | `deny rule matched (builtin-destructive)` |
 | `allow-by-rule` | `resolve()` returned `allow` (no prompt) | `allow rule matched (config)` |
 | `ask-approved` | `resolve()` returned `ask`, `askUser` → true | `approved by user at prompt` |

@@ -1,6 +1,7 @@
 import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall, ToolDef, ToolOutput } from "./types.js";
 import type { PermissionEngine, ResolveResult } from "./permissions/index.js";
+import { authorize, type ProfileEvaluator } from "./permissions/index.js";
 import type { ModeConfig } from "./modes/loader.js";
 import type { Compactor } from "./compaction/compactor.js";
 import type { DiagnosticRunner } from "./diagnostics/index.js";
@@ -74,6 +75,12 @@ export interface AgentOptions {
   tools: ToolDef[];
   executeTool: ToolExecutor;
   permissions?: PermissionEngine;
+  /**
+   * The capability-boundary gate (permission-profile.md §4, decision L):
+   * profile first, then the rule engine. Absent (feature off) → the engine
+   * alone decides, today's behavior byte-for-byte.
+   */
+  permissionProfile?: ProfileEvaluator;
   mode?: ModeConfig;
   compactor?: Compactor;
   diagnostics?: DiagnosticRunner;
@@ -163,7 +170,7 @@ export async function runAgent(
   userMessage: string,
   options: AgentOptions,
 ): Promise<AgentResult> {
-  const { provider, tools, executeTool, permissions, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 100, effort, thinkingEnabled } = options;
+  const { provider, tools, executeTool, permissions, permissionProfile, compactor, diagnostics, errorReflector, errorRecovery, maxTurns = 100, effort, thinkingEnabled } = options;
 
   const promptCtx: PromptContext = {
     mode: options.mode,
@@ -438,11 +445,13 @@ export async function runAgent(
     // single snapshot (resolve is pure — no side effects). The partition
     // only decides which reads may run concurrently; each call is resolved
     // again at execution time, so a mid-batch session-rule approval (from a
-    // prompt in this same batch) still applies to the calls after it.
+    // prompt in this same batch) still applies to the calls after it. The
+    // composed authorize() runs the profile gate (layer 1) first, so a
+    // profile-denied read is never partitioned into the parallel set.
     const resolved = new Map<string, ResolveResult>();
     if (permissions) {
       for (const tc of toolCalls) {
-        resolved.set(tc.id, permissions.resolve(tc.name, tc.arguments));
+        resolved.set(tc.id, authorize({ tool: tc.name, arguments: tc.arguments }, permissions, permissionProfile));
       }
     }
 
@@ -461,33 +470,41 @@ export async function runAgent(
     });
     const canRunParallel = toolCalls.length > 1 && parallelReads.length > 0;
 
-    // Shared per-call body for both execution paths — exactly the
-    // sequential loop's behavior, including permission audit rows, askUser,
-    // failedStreak escalation, repeat-call detection, and the reflection
-    // retry. `preResult` supplies an already-executed result (a parallel
-    // read) so the call is not executed twice. Returns true when the turn
-    // must end (tool stop, loop detected, or the 5-consecutive-failure
-    // escalation).
-    const processCall = async (
-      tc: ToolCall,
-      preResult: ToolOutput | undefined,
-    ): Promise<boolean> => {
-      // Lifecycle hooks (hooks-spec.md §5): hooks only ever see calls that
-      // survived rule resolution, and they can only narrow what survives —
-      // a hook `allow` can never upgrade a rule-derived ask.
-      const hookBlocks = async (event: "PreToolUse" | "PermissionRequest"): Promise<boolean> => {
-        if (!options.hooks) return false;
-        const r = await options.hooks.dispatch(event, { tool_name: tc.name, tool_input: tc.arguments });
-        return r.blocked;
-      };
-      const hookDenied = (event: "PreToolUse" | "PermissionRequest"): void => {
-        const msg = `PERMISSION_DENIED: denied by ${event} hook`;
-        options.onDiagnostic?.("denied");
-        messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-      };
+    // Lifecycle hooks (hooks-spec.md §5): hooks only ever see calls that
+    // survived rule resolution, and they can only narrow what survives —
+    // a hook `allow` can never upgrade a rule-derived ask.
+    const hookBlocks = async (tc: ToolCall, event: "PreToolUse" | "PermissionRequest"): Promise<boolean> => {
+      if (!options.hooks) return false;
+      const r = await options.hooks.dispatch(event, { tool_name: tc.name, tool_input: tc.arguments });
+      return r.blocked;
+    };
+    const hookDenied = (tc: ToolCall, event: "PreToolUse" | "PermissionRequest"): void => {
+      const msg = `PERMISSION_DENIED: denied by ${event} hook`;
+      options.onDiagnostic?.("denied");
+      messages.push({ role: "tool", toolCallId: tc.id, content: msg });
+    };
 
+    /**
+     * Pre-execution gate for one call: permission resolution + the
+     * PreToolUse/PermissionRequest hooks. Returns true when the call is
+     * denied — the audit row and the PERMISSION_DENIED tool message are
+     * recorded here, so the deny is real (nothing executes afterwards) and
+     * the audit row tells the truth. Returns false when the call may
+     * execute. Runs exactly once per call: the parallel path gates its
+     * reads BEFORE executing them (fix 3), the sequential path gates
+     * immediately before execution.
+     */
+    const gateCall = async (tc: ToolCall): Promise<boolean> => {
       if (permissions) {
-        const { action, winningRule, wasUnresolved } = permissions.resolve(tc.name, tc.arguments);
+        // The one composed permission surface (permission-profile.md §4,
+        // decision L): the profile gate (layer 1) denies terminally before
+        // rule resolution — no profile (feature off) passes straight through
+        // to the unchanged engine, so today's behavior is byte-for-byte.
+        const { action, winningRule, wasUnresolved, reason } = authorize(
+          { tool: tc.name, arguments: tc.arguments },
+          permissions,
+          permissionProfile,
+        );
         const subject = permissionSubjectText(tc.name, tc.arguments);
         const audit = async (
           decision: PermissionDecision,
@@ -502,17 +519,24 @@ export async function runAgent(
         if (action === "deny") {
           const msg = `Permission denied for ${tc.name}`;
           options.onDiagnostic?.("denied");
-          await audit("deny-by-rule", `deny rule matched (${winningRule?.origin ?? "rule"})`);
+          // Layer 1 (profile) and layer 2 (rule) denies share the same tool
+          // message; the audit row names the winning layer so the trail stays
+          // one-directional (permission-spec.md §11).
+          if (reason === "deny-by-profile") {
+            await audit("deny-by-profile", "deny by profile (layer 1)");
+          } else {
+            await audit("deny-by-rule", `deny rule matched (${winningRule?.origin ?? "rule"})`);
+          }
           messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-          return false;
+          return true;
         }
         if (action === "ask") {
           // PermissionRequest hooks fire before the user prompt; a deny is
           // recorded as ask-denied, as if the user answered no.
-          if (await hookBlocks("PermissionRequest")) {
+          if (await hookBlocks(tc, "PermissionRequest")) {
             await audit("ask-denied", "denied by PermissionRequest hook");
-            hookDenied("PermissionRequest");
-            return false;
+            hookDenied(tc, "PermissionRequest");
+            return true;
           }
           if (options.askUser) {
             const allowed = await options.askUser(tc.name, tc.arguments);
@@ -526,7 +550,7 @@ export async function runAgent(
               options.onDiagnostic?.("denied");
               await audit("ask-denied", "denied by user at prompt");
               messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-              return false;
+              return true;
             } else {
               // Approved via askUser. The TUI (App.tsx) writes a finer-grained
               // once/session/always row when it actually shows a prompt, but it
@@ -545,33 +569,50 @@ export async function runAgent(
             // User-approved (or posture-upgraded) asks still pass through
             // PreToolUse — a deny here routes through the permission engine
             // as deny-by-rule, indistinguishable from policy in the audit trail.
-            if (await hookBlocks("PreToolUse")) {
+            if (await hookBlocks(tc, "PreToolUse")) {
               await audit("deny-by-rule", "deny rule matched (PreToolUse hook)");
-              hookDenied("PreToolUse");
-              return false;
+              hookDenied(tc, "PreToolUse");
+              return true;
             }
           } else {
             const msg = "PERMISSION_DENIED: headless — rule resolved to ask";
             options.onDiagnostic?.("denied");
             await audit("headless-deny", "resolved to ask with no interactive prompter (headless)");
             messages.push({ role: "tool", toolCallId: tc.id, content: msg });
-            return false;
+            return true;
           }
         } else if (action === "allow") {
           // Rule-derived allow with no prompt at all — still worth an audit
           // row so "why did this run without asking me" is answerable.
           await audit("allow-by-rule", `allow rule matched (${winningRule?.origin ?? "rule"})`);
-          if (await hookBlocks("PreToolUse")) {
+          if (await hookBlocks(tc, "PreToolUse")) {
             await audit("deny-by-rule", "deny rule matched (PreToolUse hook)");
-            hookDenied("PreToolUse");
-            return false;
+            hookDenied(tc, "PreToolUse");
+            return true;
           }
         }
-      } else if (await hookBlocks("PreToolUse")) {
+      } else if (await hookBlocks(tc, "PreToolUse")) {
         // No permission engine — the hook is the only gate.
-        hookDenied("PreToolUse");
-        return false;
+        hookDenied(tc, "PreToolUse");
+        return true;
       }
+      return false;
+    };
+
+    // Shared per-call body for both execution paths — exactly the
+    // sequential loop's behavior, including permission audit rows, askUser,
+    // failedStreak escalation, repeat-call detection, and the reflection
+    // retry. `preResult` supplies an already-executed result (a parallel
+    // read) so the call is not executed twice; `gateDone` marks a call the
+    // parallel path already gated before execution, so the gate never runs
+    // twice. Returns true when the turn must end (tool stop, loop detected,
+    // or the 5-consecutive-failure escalation).
+    const processCall = async (
+      tc: ToolCall,
+      preResult: ToolOutput | undefined,
+      gateDone = false,
+    ): Promise<boolean> => {
+      if (!gateDone && (await gateCall(tc))) return false;
 
       const result = preResult ?? await executeTool(tc);
       executedAny = true;
@@ -673,16 +714,27 @@ export async function runAgent(
         options.onToolStart?.(tc.name, tc.arguments);
       }
 
+      // Gate the parallel reads BEFORE executing them (fix 3): a PreToolUse
+      // deny must prevent the read from running — not discard an
+      // already-executed result — and the deny-by-rule audit row must record
+      // a denial that actually happened. Denied reads get their
+      // PERMISSION_DENIED message + audit row right here and never execute.
+      const preDenied = new Map<string, boolean>();
+      for (const tc of parallelReads) {
+        if (await gateCall(tc)) preDenied.set(tc.id, true);
+      }
+
       // Execute the allowed reads concurrently; results are collected and
       // replayed at their original positions below.
       const preResults = new Map<string, ToolOutput>();
+      const toExecute = parallelReads.filter((tc) => !preDenied.get(tc.id));
       const settled = await Promise.allSettled(
-        parallelReads.map(tc => executeTool(tc)),
+        toExecute.map(tc => executeTool(tc)),
       );
-      for (let i = 0; i < parallelReads.length; i++) {
+      for (let i = 0; i < toExecute.length; i++) {
         const r = settled[i];
         preResults.set(
-          parallelReads[i].id,
+          toExecute[i].id,
           r.status === "fulfilled"
             ? r.value
             : { content: "", error: (r.reason as Error)?.message ?? "Unknown error" },
@@ -693,9 +745,11 @@ export async function runAgent(
       // outcome at its position — precomputed results for the parallel
       // reads, sequential execution for the rest. Writes stay strictly
       // ordered; an ask in the batch is prompted exactly once and never
-      // executed in parallel.
+      // executed in parallel. Reads carry gateDone — their gate already ran
+      // before execution.
       for (const tc of toolCalls) {
-        const ended = await processCall(tc, preResults.get(tc.id));
+        if (preDenied.get(tc.id)) continue;
+        const ended = await processCall(tc, preResults.get(tc.id), preResults.has(tc.id));
         if (ended) break;
       }
     }

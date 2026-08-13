@@ -4,6 +4,7 @@ import type { ThemeContextValue, ThemeDefinition } from "./theme.js";
 import type { KeybindingMap, KeybindingConfig, KeybindingAction } from "./keybindings.js";
 import type { StatusLineManager } from "./statusline/index.js";
 import type { HookRunner } from "../hooks/index.js";
+import type { ProfileEvaluator } from "../permissions/index.js";
 
 export interface ModelEntry {
   provider: string;
@@ -116,6 +117,9 @@ export interface AppContext {
   hooks?: HookRunner;
   activeMode: any;
   permissions: any;
+  /** The capability-boundary gate (permission-profile.md). Undefined when no
+   *  `permissionProfile` config — layer 1 absent, today's behavior unchanged. */
+  permissionProfile?: ProfileEvaluator;
   toolRegistry: any;
   compactor: any;
   diagnostics: any;

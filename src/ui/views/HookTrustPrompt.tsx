@@ -46,6 +46,12 @@ export default function HookTrustPrompt({ entry, resolve }: Props) {
         <Text>Event: </Text>
         <Text bold>{entry.event}</Text>
       </Box>
+      {entry.matcher ? (
+        <Box>
+          <Text>Matcher: </Text>
+          <Text bold>{entry.matcher}</Text>
+        </Box>
+      ) : null}
       <Box>
         <Text wrap="wrap">Command: <Text bold>{entry.command}</Text></Text>
       </Box>

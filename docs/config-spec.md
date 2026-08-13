@@ -61,6 +61,21 @@ are fatal — `main()` exits 1 (`src/cli.tsx`).
     ]
   },
 
+  // Capability profile (permission-profile.md §3): a coarse, absolute
+  // reachability boundary gated *before* the permission rules. Absent ⇒
+  // the gate is off entirely (today's behavior). See §3.1.
+  "permissionProfile": {
+    "level": "workspace-write",           // "strict-sandbox" | "workspace-write" | "unrestricted"
+    "fs": [
+      { "path": "**/*.env",   "action": "deny" },   // deny | read | write
+      { "path": "~/notes/**", "action": "read" }
+    ],
+    "network": {
+      "allow": ["api.deepseek.com"],
+      "deny": ["*"]                         // allowlist mode
+    }
+  },
+
   // MCP servers for external tool discovery
   "mcpServers": {
     "filesystem": {
@@ -137,6 +152,44 @@ That warning fires on **every launch** until the file is rewritten to the
 `rules` shape. New configs should use `rules` directly. (The scope `network`
 has no rule equivalent and is dropped with its own warning; unrecognized
 scopes are dropped with a warning.) Migration never writes to disk.
+
+### `permissionProfile` (capability profile)
+
+A coarse capability boundary (permission-profile.md): the agent may not
+touch resources outside the level's default, plus explicit fs/network rules
+that narrow it. Evaluated **before** the rule engine — a profile deny is
+terminal (`deny-by-profile` audit decision, permission-spec.md §11).
+
+| Level | Default fs | Default network |
+|---|---|---|
+| `strict-sandbox` | read-only (any path) | denied |
+| `workspace-write` | read anywhere; write inside workspace roots | default-deny + allowlist |
+| `unrestricted` | read + write anywhere | default-allow |
+
+- `fs` entries are gitignore-style globs (`*`, `?`, `**`; `~`-home-relative
+  and absolute allowed) with `action` `deny` | `read` | `write`. Rules
+  narrow only: a `write` rule under `strict-sandbox`, or not
+  workspace-relative under `workspace-write`, is a config error.
+  `.git/**` and the profile file itself (`.heirloom/settings.json`) are
+  always denied — no rule can rescue them.
+- `network` entries are exact hostnames (case-insensitive) or `"*"` (any
+  host — the only wildcard). The most specific matching entry wins; a tie
+  (same host in both lists) goes to deny. `allow` is honored where the
+  level permits grants (`workspace-write` allowlist, `unrestricted`); it is
+  inert under `strict-sandbox`. `web_search` is evaluated against the
+  pinned search host (`www.bing.com`).
+- Project > global merge: `level` — project wins; `fs` — project entries
+  append, a rule with the same `path` replaces the global one; `network` —
+  `allow`/`deny` union, stricter entry wins on conflict.
+- Validation errors are fatal (`main()` exits 1), naming the file and
+  field, e.g.:
+
+  ```
+  global config: permissionProfile.level must be one of "strict-sandbox" | "workspace-write" | "unrestricted"
+  project config: permissionProfile.fs entry "foo[bar" has invalid glob: character classes are not supported (use *, ?, **)
+  project config: permissionProfile.fs entry "src/**": action "write" not allowed at level "strict-sandbox" (explicit rules narrow only)
+  project config: permissionProfile.network.allow entry "*.example.com" is not a valid hostname — "*" matches any host, subdomain wildcards are not supported
+  ```
 
 ## 4. `refresh` (repaint cadence)
 

@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PermissionConfig, PermissionRule, PatternKind, PermissionAction } from "../permissions/index.js";
+import type { PermissionConfig, PermissionRule, PatternKind, PermissionAction, PermissionProfileConfig, PermissionProfileFsRule, PermissionProfileNetwork, ProfileLevel, FsAction } from "../permissions/index.js";
+import { compileGlob } from "../permissions/index.js";
 import type { HooksConfig } from "../hooks/types.js";
 import { parseHooksConfig } from "../hooks/config.js";
 
@@ -59,6 +60,10 @@ export interface DeepCodeSettings {
 
   // ── Permissions ──
   permissions?: PermissionConfig;
+
+  // ── Capability profile (permission-profile.md §3) ──
+  /** Coarse reachability boundary gated before the rule engine (layer 1). */
+  permissionProfile?: PermissionProfileConfig;
 
   // ── MCP Servers ──
   mcpServers?: Record<string, McpServerConfig>;
@@ -225,6 +230,7 @@ const KNOWN_KEYS = new Set([
   "reasoningEffort",
   "refresh",
   "permissions",
+  "permissionProfile",
   "mcpServers",
   "notify",
   "webSearchTool",
@@ -248,6 +254,8 @@ const KNOWN_KEYS = new Set([
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
+const VALID_PROFILE_LEVELS = new Set(["strict-sandbox", "workspace-write", "unrestricted"]);
+const VALID_FS_ACTIONS = new Set(["deny", "read", "write"]);
 
 function parsePatternKindAndPattern(rawPattern: string): { kind: PatternKind; pattern: string } {
   if (rawPattern.endsWith(":*")) {
@@ -320,6 +328,167 @@ function validatePermissions(
   }
 
   return result;
+}
+
+/**
+ * True when a write rule's pattern cannot leave the workspace: not absolute,
+ * not "~"-home-relative, first segment not "..". Used by the narrowing-only
+ * check — an explicit rule can never grant beyond the level's default
+ * write-set (permission-profile.md §3).
+ */
+function isWorkspaceRelativePattern(pattern: string): boolean {
+  if (pattern.startsWith("/") || pattern.startsWith("~")) return false;
+  return pattern.split("/")[0] !== "..";
+}
+
+function validatePermissionProfile(
+  raw: unknown,
+  source: string,
+  errors: string[],
+): PermissionProfileConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isObject(raw)) {
+    errors.push(`${source}: permissionProfile must be an object`);
+    return undefined;
+  }
+  const p = raw as Record<string, unknown>;
+
+  // level — required when the key is present, one of the three presets (§3).
+  let level: ProfileLevel | undefined;
+  if (typeof p.level === "string" && VALID_PROFILE_LEVELS.has(p.level)) {
+    level = p.level as ProfileLevel;
+  } else {
+    errors.push(
+      `${source}: permissionProfile.level must be one of "strict-sandbox" | "workspace-write" | "unrestricted"`,
+    );
+  }
+  // Errors are fatal (loadConfig errors exit 1), so the fallback never runs;
+  // kept for a well-typed partial result while further errors accumulate.
+  const result: PermissionProfileConfig = { level: level ?? "unrestricted" };
+
+  if ("fs" in p) {
+    if (!Array.isArray(p.fs)) {
+      errors.push(`${source}: permissionProfile.fs must be an array`);
+    } else {
+      const fs: PermissionProfileFsRule[] = [];
+      for (const item of p.fs as unknown[]) {
+        if (!isObject(item)) {
+          errors.push(`${source}: permissionProfile.fs contains a non-object entry`);
+          continue;
+        }
+        const r = item as Record<string, unknown>;
+        const path = typeof r.path === "string" ? r.path : "";
+        if (!path) {
+          errors.push(`${source}: permissionProfile.fs entry missing string "path"`);
+          continue;
+        }
+        if (typeof r.action !== "string" || !VALID_FS_ACTIONS.has(r.action)) {
+          errors.push(
+            `${source}: permissionProfile.fs entry "${path}" has invalid action "${String(r.action)}" (must be "deny" | "read" | "write")`,
+          );
+          continue;
+        }
+        try {
+          compileGlob(path);
+        } catch (err) {
+          errors.push(
+            `${source}: permissionProfile.fs entry "${path}" has invalid glob: ${(err as Error).message}`,
+          );
+          continue;
+        }
+        const action = r.action as FsAction;
+        // Narrowing-only (§3): explicit rules can never grant beyond the
+        // level's default. strict-sandbox permits no writes at all;
+        // workspace-write permits writes only inside workspace roots.
+        if (level === "strict-sandbox" && action === "write") {
+          errors.push(
+            `${source}: permissionProfile.fs entry "${path}": action "write" not allowed at level "strict-sandbox" (explicit rules narrow only)`,
+          );
+          continue;
+        }
+        if (level === "workspace-write" && action === "write" && !isWorkspaceRelativePattern(path)) {
+          errors.push(
+            `${source}: permissionProfile.fs entry "${path}": action "write" must be a workspace-relative path at level "workspace-write" (explicit rules narrow only)`,
+          );
+          continue;
+        }
+        fs.push({ path, action });
+      }
+      if (fs.length > 0) result.fs = fs;
+    }
+  }
+
+  if ("network" in p) {
+    if (!isObject(p.network)) {
+      errors.push(`${source}: permissionProfile.network must be an object`);
+    } else {
+      const n = p.network as Record<string, unknown>;
+      const network: PermissionProfileNetwork = {};
+      for (const key of ["allow", "deny"] as const) {
+        if (!(key in n)) continue;
+        const entries = n[key];
+        if (!Array.isArray(entries)) {
+          errors.push(`${source}: permissionProfile.network.${key} must be an array of strings`);
+          continue;
+        }
+        const strings = entries.filter((e): e is string => typeof e === "string" && e !== "");
+        if (strings.length !== entries.length) {
+          errors.push(`${source}: permissionProfile.network.${key} must be an array of strings`);
+        }
+        // "*" is the only wildcard — a pattern like "*.example.com" would
+        // never match (matching is exact-or-"*") and would silently fail to
+        // deny, which is worse than a config error.
+        const bad = strings.find((e) => e.includes("*") && e !== "*");
+        if (bad !== undefined) {
+          errors.push(
+            `${source}: permissionProfile.network.${key} entry "${bad}" is not a valid hostname — "*" matches any host, subdomain wildcards are not supported`,
+          );
+        }
+        if (strings.length > 0) network[key] = strings;
+      }
+      if (network.allow !== undefined || network.deny !== undefined) {
+        result.network = network;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Project > global merge for permissionProfile (permission-profile.md §3).
+ * Parsed per-source (not from the merged object) because deepMerge would
+ * replace the fs/network arrays wholesale. Chosen rule, simplest defensible:
+ *  - level: project wins.
+ *  - fs: project entries append after global; a project rule with the same
+ *    `path` string replaces the global rule (one rule per path; the later
+ *    entry wins, replaced rules keep their original position).
+ *  - network: allow/deny arrays union (deduped); a domain in both lists is
+ *    denied — deny is absolute, so the stricter membership wins.
+ */
+function mergePermissionProfiles(
+  global: PermissionProfileConfig | undefined,
+  project: PermissionProfileConfig | undefined,
+): PermissionProfileConfig | undefined {
+  if (!global && !project) return undefined;
+  const byPath = new Map<string, PermissionProfileFsRule>();
+  for (const r of global?.fs ?? []) byPath.set(r.path, r);
+  for (const r of project?.fs ?? []) byPath.set(r.path, r);
+  const fs = [...byPath.values()];
+  const allow = [...new Set([...(global?.network?.allow ?? []), ...(project?.network?.allow ?? [])])];
+  const deny = [...new Set([...(global?.network?.deny ?? []), ...(project?.network?.deny ?? [])])];
+  const network =
+    allow.length > 0 || deny.length > 0
+      ? {
+          ...(allow.length > 0 ? { allow } : {}),
+          ...(deny.length > 0 ? { deny } : {}),
+        }
+      : undefined;
+  return {
+    level: project?.level ?? global?.level ?? "unrestricted",
+    ...(fs.length > 0 ? { fs } : {}),
+    ...(network ? { network } : {}),
+  };
 }
 
 // ── Legacy scope migration ──
@@ -672,6 +841,17 @@ export function loadConfig(projectDir?: string): LoadResult {
     const perms = validatePermissions(permsForValidation, "config", errors);
     if (perms) config.permissions = perms;
   }
+
+  // ── permissionProfile ──
+  // Parsed from the per-source raws (not the merged object) so the fs/network
+  // merge rule can append/override by path/domain instead of the wholesale
+  // array replacement deepMerge would do. Errors name the file they came
+  // from ("global config" / "project config"). (permission-profile.md §3)
+  const profile = mergePermissionProfiles(
+    validatePermissionProfile(globalRaw?.permissionProfile, "global config", errors),
+    validatePermissionProfile(projectRaw?.permissionProfile, "project config", errors),
+  );
+  if (profile) config.permissionProfile = profile;
 
   // ── mcpServers ──
   if ("mcpServers" in merged) {

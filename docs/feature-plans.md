@@ -424,6 +424,12 @@ existing scrollback keeps old colors.
 
 ## 9. PermissionProfile — full parallel ACL model (design-first, L)
 
+**🚧 phases (a)-(d) shipped 2026-08-13** — design approved, schema +
+validation, `authorize()` evaluation layer, and full loop/UI/headless
+wiring landed (status-line level segment, M.1 overlay condition,
+`deny-by-profile` audit). Only **(e) Seatbelt** (flag-gated macOS) and two
+small follow-ups (mentions-through-`authorize`, doc-line cleanup) remain.
+
 ### SOTA
 
 - **Codex CLI** is the reference: `sandbox_mode` levels (read-only /

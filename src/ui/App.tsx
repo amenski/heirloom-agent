@@ -953,6 +953,21 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           // but handle defensively rather than assume the caller's invariant.
           if (action === "deny") return false;
 
+          // Consolidation M.1 (permission-profile.md §5): the overlay's
+          // edit-in-workspace condition is profile-derived — with a profile
+          // configured, an edit-group call whose target is inside the
+          // profile's effective write-set auto-allows without a prompt.
+          // workspace-write's default write-set is the workspace roots (the
+          // old isEditToolInWorkspace containment, generalized); strict-sandbox
+          // has no write-set, so no edit is overlay-auto-allowed there.
+          // Resolves "posture" so the agent records allow-by-posture, the same
+          // "allowed without showing a prompt" row the auto-approve bypass
+          // uses. Layer 1 already denied any out-of-write-set edit, so an
+          // edit that reaches this point is always inside the write-set.
+          if (ctx.permissionProfile?.editTargetInWriteSet(toolName, args)) {
+            return "posture";
+          }
+
           // Auto-approve posture bypasses an ordinary rule-derived ask, but
           // never a result the bash normalizer couldn't safely classify, and
           // never a secret-adjacent path guard — both must always surface the

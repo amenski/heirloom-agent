@@ -1,9 +1,17 @@
 import { spawn } from "node:child_process";
 import type { NotifyInput } from "../notify.js";
 import { redactSecrets } from "../sessions/redact.js";
-import { hookPairHash, isHookTrusted, loadHookTrust, saveHookTrust } from "./trust.js";
+import { wrapUntrusted } from "../tools/untrusted-content.js";
+import {
+  hookContentHash,
+  hookTrustKey,
+  isHookTrusted,
+  loadHookTrust,
+  saveHookTrust,
+  type ContentHashCache,
+} from "./trust.js";
 import type { HookEntry, HookEvent, HooksConfig } from "./types.js";
-import { BLOCKABLE_EVENTS } from "./types.js";
+import { BLOCKABLE_EVENTS, CONTEXT_STDOUT_EVENTS } from "./types.js";
 
 /**
  * Hook dispatcher (docs/hooks-spec.md). Sequential per event, config order;
@@ -15,6 +23,7 @@ import { BLOCKABLE_EVENTS } from "./types.js";
 
 const HOOK_TIMEOUT_MS = 30_000; // spec §4: 30 s default, SIGKILL on timeout
 const STDOUT_CAP = 64 * 1024; // spec §3: stdout capture cap, truncation note beyond
+const NOTIFY_BODY_MAX = 4096; // fix 8: cap the Notification payload body
 
 export interface DispatchResult {
   /** True when a blockable event was blocked (exit 2 or exit-0 `{decision:"deny"}`). */
@@ -22,7 +31,10 @@ export interface DispatchResult {
   /**
    * Aggregated stdout (config order), with any parsed decision JSON removed.
    * Meaningful only for events with "appended to …" stdout semantics
-   * (UserPromptSubmit, PostToolUse, PostToolUseFailure, PreCompact).
+   * (UserPromptSubmit, PostToolUse, PostToolUseFailure, PreCompact) — for
+   * those, the aggregated context is wrapped in the untrusted-content
+   * delimiters before it is returned, so no hook stdout can enter model
+   * context unwrapped (security-spec.md T12, fix 2).
    */
   stdout: string;
 }
@@ -54,8 +66,10 @@ export class HookRunner {
   private sessionId: () => string | undefined;
   private getPermissionMode: () => string;
   private timeoutMs: number;
-  /** Per-session trust decisions, keyed by pair hash — an "n" asks only once per session. */
+  /** Per-session trust decisions, keyed by trust key — an "n" asks only once per session. */
   private sessionTrust = new Map<string, boolean>();
+  /** mtime-gated content-hash cache for file commands (trust.ts, fix 1). */
+  private contentHashes: ContentHashCache = new Map();
 
   /**
    * Interactive ask-tier confirmation for unseen project hooks (TOFU, spec
@@ -82,18 +96,19 @@ export class HookRunner {
   }
 
   /**
-   * Startup trust check (spec §6): compare each project-origin `event|command`
-   * pair against hooks-trust.json. Headless: unseen pairs are skipped with a
-   * stderr warning right here. Interactive: the pair is marked pending and the
-   * ask fires at first dispatch (via confirmTrust), so the confirmation uses
-   * the same ask-tier surface as permission prompts.
+   * Startup trust check (spec §6): compare each project-origin hook against
+   * hooks-trust.json using its content-hashed, project-scoped trust key.
+   * Headless: unseen pairs are skipped with a stderr warning right here.
+   * Interactive: the pair is marked pending and the ask fires at first
+   * dispatch (via confirmTrust), so the confirmation uses the same ask-tier
+   * surface as permission prompts.
    */
   verifyTrust(): void {
     if (!this.enabled) return;
     const store = loadHookTrust();
     for (const entry of Object.values(this.byEvent).flat()) {
       if (entry.origin !== "project") continue;
-      const key = hookPairHash(entry.event, entry.command);
+      const key = this.trustKeyFor(entry);
       if (isHookTrusted(store, key)) {
         this.sessionTrust.set(key, true);
       } else if (this.headless) {
@@ -154,13 +169,18 @@ export class HookRunner {
         process.stderr.write(`${where}: exited with code ${result.exitCode} (non-blocking error)\n`);
       }
     }
+    // Context-semantics stdout must never reach the model unwrapped (fix 2) —
+    // the untrusted-content delimiters pair with the base-rules standing rule.
+    if (context !== "" && CONTEXT_STDOUT_EVENTS.includes(event)) {
+      context = wrapUntrusted(context.trimEnd());
+    }
     return { blocked: false, stdout: context };
   }
 
   /** Trust gate for one entry: global = always; project = trust file, else ask (or skip headless). */
   private async ensureTrusted(entry: HookEntry): Promise<boolean> {
     if (entry.origin !== "project") return true;
-    const key = hookPairHash(entry.event, entry.command);
+    const key = this.trustKeyFor(entry);
     const decided = this.sessionTrust.get(key);
     if (decided !== undefined) return decided;
     const store = loadHookTrust();
@@ -179,13 +199,19 @@ export class HookRunner {
     }
     const trusted = this.confirmTrust ? await this.confirmTrust(entry) : false;
     if (trusted) {
-      store.hooks[key] = { event: entry.event, command: entry.command, hash: key, firstSeen: Date.now(), trusted: true };
+      store.hooks[key] = { firstSeen: Date.now(), trusted: true };
       saveHookTrust(store);
       this.sessionTrust.set(key, true);
       return true;
     }
     this.sessionTrust.set(key, false);
     return false;
+  }
+
+  /** Content-hashed, project-scoped trust key for an entry (fix 1). */
+  private trustKeyFor(entry: HookEntry): string {
+    const contentHash = hookContentHash(entry.command, this.cwd, this.contentHashes);
+    return hookTrustKey(entry.event, entry.matcher, entry.command, contentHash, this.cwd);
   }
 
   private runHook(
@@ -205,6 +231,10 @@ export class HookRunner {
           cwd: this.cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
+          // Own process group (fix 7): the timeout kills the whole group so
+          // grandchildren die too — a hook must not outlive its deadline, and
+          // a backgrounded child of a timed-out hook must not keep running.
+          detached: true,
         });
       } catch (err) {
         resolve({ exitCode: null, timedOut: false, stdout: "", stderr: "", error: (err as Error).message });
@@ -221,10 +251,15 @@ export class HookRunner {
           resolve(r);
         }
       };
-      const timer = setTimeout(() => {
+      const killGroup = (): void => {
         try {
-          child.kill("SIGKILL");
-        } catch {}
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {
+          // group already gone (ESRCH) or the kill was refused — nothing to reap
+        }
+      };
+      const timer = setTimeout(() => {
+        killGroup();
         settle({ exitCode: null, timedOut: true, stdout, stderr });
       }, this.timeoutMs);
 
@@ -241,10 +276,25 @@ export class HookRunner {
         }
       });
       child.stderr?.on("data", (d: Buffer) => {
-        stderr += d.toString();
+        const s = d.toString();
+        if (stderr.length >= STDOUT_CAP) {
+          if (this.debug) process.stderr.write(`hooks.${entry.event} "${entry.command}": stderr truncated at ${STDOUT_CAP} bytes\n`);
+          return;
+        }
+        const room = STDOUT_CAP - stderr.length;
+        stderr += room >= s.length ? s : s.slice(0, room);
+        if (room < s.length && this.debug) {
+          process.stderr.write(`hooks.${entry.event} "${entry.command}": stderr truncated at ${STDOUT_CAP} bytes\n`);
+        }
       });
       child.on("error", (err) => settle({ exitCode: null, timedOut: false, stdout, stderr, error: err.message }));
-      child.on("close", (code) => settle({ exitCode: code, timedOut: false, stdout, stderr }));
+      child.on("close", (code) => {
+        // Reap the detached handle (fix 7): the shell exited but its process
+        // group may still hold backgrounded grandchildren — kill them so no
+        // hook work outlives the hook.
+        killGroup();
+        settle({ exitCode: code, timedOut: false, stdout, stderr });
+      });
 
       child.stdin.write(payloadLine + "\n");
       child.stdin.end();
@@ -286,13 +336,14 @@ function stripDecisionJson(stdout: string): string {
   return lines.join("\n");
 }
 
-/** Recursively redact every string in the payload before it reaches stdin (spec §3). */
+/** Recursively redact every string in the payload — values and keys — before
+ *  it reaches stdin (spec §3; fix 4 verifies keys too). */
 function redactDeep(v: unknown): unknown {
   if (typeof v === "string") return redactSecrets(v);
   if (Array.isArray(v)) return v.map(redactDeep);
   if (v && typeof v === "object") {
     const out: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v)) out[k] = redactDeep(val);
+    for (const [k, val] of Object.entries(v)) out[redactSecrets(k)] = redactDeep(val);
     return out;
   }
   return v;
@@ -301,12 +352,14 @@ function redactDeep(v: unknown): unknown {
 /**
  * Notification hook payload (spec §7): same fields as the notify env contract
  * (notify-spec.md §3) in JSON form, plus `hook_event_name` added by dispatch.
+ * The body is capped (fix 8) — a multi-MB job output must not ride the hook
+ * payload to a notification script.
  */
 export function buildNotificationPayload(input: NotifyInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     status: input.status,
     duration: Math.max(0, Math.round(input.durationMs / 1000)),
-    body: input.body ?? "",
+    body: (input.body ?? "").slice(0, NOTIFY_BODY_MAX),
     title: (input.title ?? "").slice(0, 120),
   };
   if (input.status === "failed" && input.failReason) {

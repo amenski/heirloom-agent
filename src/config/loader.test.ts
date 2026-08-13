@@ -511,3 +511,157 @@ describe("resolveHome", () => {
     }
   });
 });
+
+describe("loadConfig permissionProfile", () => {
+  function writeGlobalSettings(obj: unknown): void {
+    writeFileSync(join(homeDir, "settings.json"), JSON.stringify(obj), "utf-8");
+  }
+
+  it("parses a valid profile with level, fs, and network", () => {
+    writeProjectSettings({
+      permissionProfile: {
+        level: "workspace-write",
+        fs: [
+          { path: "**/*.env", action: "deny" },
+          { path: "~/notes/**", action: "read" },
+        ],
+        network: { allow: ["api.deepseek.com"], deny: ["*"] },
+      },
+    });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(warnings.some((w) => w.includes('unknown field "permissionProfile"'))).toBe(false);
+    expect(config.permissionProfile).toEqual({
+      level: "workspace-write",
+      fs: [
+        { path: "**/*.env", action: "deny" },
+        { path: "~/notes/**", action: "read" },
+      ],
+      network: { allow: ["api.deepseek.com"], deny: ["*"] },
+    });
+  });
+
+  it("rejects an unknown level, naming the file and field", () => {
+    writeProjectSettings({ permissionProfile: { level: "sandbox" } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.startsWith("project config") && e.includes("permissionProfile.level must be one of"))).toBe(true);
+  });
+
+  it("requires a level when the key is present", () => {
+    writeProjectSettings({ permissionProfile: { fs: [{ path: ".env", action: "deny" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("permissionProfile.level must be one of"))).toBe(true);
+  });
+
+  it("rejects a write rule under strict-sandbox (narrowing-only violation)", () => {
+    writeProjectSettings({
+      permissionProfile: { level: "strict-sandbox", fs: [{ path: "src/**", action: "write" }] },
+    });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('action "write" not allowed at level "strict-sandbox"'))).toBe(true);
+  });
+
+  it("rejects a write rule outside workspace roots under workspace-write", () => {
+    writeProjectSettings({
+      permissionProfile: { level: "workspace-write", fs: [{ path: "~/notes/**", action: "write" }] },
+    });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('must be a workspace-relative path at level "workspace-write"'))).toBe(true);
+  });
+
+  it("accepts a write rule inside workspace roots under workspace-write", () => {
+    writeProjectSettings({
+      permissionProfile: { level: "workspace-write", fs: [{ path: "src/**", action: "write" }] },
+    });
+    const { errors } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+  });
+
+  it("rejects an invalid glob naming the fs entry", () => {
+    writeProjectSettings({
+      permissionProfile: { level: "workspace-write", fs: [{ path: "foo[bar", action: "deny" }] },
+    });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('permissionProfile.fs entry "foo[bar" has invalid glob'))).toBe(true);
+  });
+
+  it("rejects an fs entry with an empty or missing path", () => {
+    writeProjectSettings({ permissionProfile: { level: "workspace-write", fs: [{ path: "", action: "deny" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('permissionProfile.fs entry missing string "path"'))).toBe(true);
+  });
+
+  it("rejects an fs entry with an invalid action", () => {
+    writeProjectSettings({ permissionProfile: { level: "workspace-write", fs: [{ path: "a", action: "chmod" }] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('has invalid action "chmod"'))).toBe(true);
+  });
+
+  it("rejects network entries that aren't strings", () => {
+    writeProjectSettings({ permissionProfile: { level: "workspace-write", network: { allow: ["ok", 5] } } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("permissionProfile.network.allow must be an array of strings"))).toBe(true);
+  });
+
+  it("rejects a network entry with a wildcard other than \"*\"", () => {
+    writeProjectSettings({ permissionProfile: { level: "workspace-write", network: { deny: ["*.example.com"] } } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes('entry "*.example.com" is not a valid hostname'))).toBe(true);
+  });
+
+  it("rejects a non-object permissionProfile", () => {
+    writeProjectSettings({ permissionProfile: "on" });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("permissionProfile must be an object"))).toBe(true);
+  });
+
+  it("leaves the key undefined when absent from both files", () => {
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.permissionProfile).toBeUndefined();
+    expect(warnings.some((w) => w.includes("permissionProfile"))).toBe(false);
+  });
+
+  describe("project > global merge (append / override by path and domain)", () => {
+    it("merges fs by exact path and unions network lists; project level wins", () => {
+      writeGlobalSettings({
+        permissionProfile: {
+          level: "workspace-write",
+          fs: [
+            { path: "**/*.env", action: "deny" },
+            { path: "src/secret.ts", action: "deny" },
+          ],
+          network: { allow: ["api.deepseek.com", "registry.npmjs.org"], deny: ["example.com"] },
+        },
+      });
+      writeProjectSettings({
+        permissionProfile: {
+          level: "strict-sandbox",
+          fs: [
+            { path: "src/secret.ts", action: "read" }, // replaces the global rule by path
+            { path: "docs/**", action: "deny" }, // appended
+          ],
+          network: { allow: ["registry.npmjs.org"], deny: ["evil.com"] }, // unions, deduped
+        },
+      });
+      const { config, errors } = loadConfig(projectDir);
+      expect(errors).toEqual([]);
+      expect(config.permissionProfile?.level).toBe("strict-sandbox");
+      expect(config.permissionProfile?.fs).toEqual([
+        { path: "**/*.env", action: "deny" },
+        { path: "src/secret.ts", action: "read" }, // replaced in place, order preserved
+        { path: "docs/**", action: "deny" },
+      ]);
+      expect(config.permissionProfile?.network).toEqual({
+        allow: ["api.deepseek.com", "registry.npmjs.org"],
+        deny: ["example.com", "evil.com"],
+      });
+    });
+
+    it("names the file a bad global profile came from", () => {
+      writeGlobalSettings({ permissionProfile: { level: "bogus" } });
+      const { errors } = loadConfig(projectDir);
+      expect(errors.some((e) => e.startsWith("global config") && e.includes("permissionProfile.level"))).toBe(true);
+    });
+  });
+});

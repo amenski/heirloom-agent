@@ -32,6 +32,16 @@ export const TOOL_EVENTS: readonly HookEvent[] = [
   "PostToolUseFailure",
 ];
 
+/** Events whose stdout is appended to model context (hooks-spec.md §2) — it is
+ *  wrapped in the untrusted-content delimiters (security-spec.md T12) before
+ *  it can reach the model (fix 2). All other events' stdout is debug-log only. */
+export const CONTEXT_STDOUT_EVENTS: readonly HookEvent[] = [
+  "UserPromptSubmit",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PreCompact",
+];
+
 /** Events where exit 2 (and an exit-0 `{decision: "deny"}`) blocks. */
 export const BLOCKABLE_EVENTS: readonly HookEvent[] = [
   "UserPromptSubmit",

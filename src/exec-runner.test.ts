@@ -182,6 +182,38 @@ describe("runExecMode headless permission enforcement (T11)", () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]).toBe("permission denied (headless): run_bash npm install left-pad");
   });
+
+  it("(f) a permissionProfile deny blocks execution silently — the headless ask path is never reached", async () => {
+    writeSettings({
+      permissions: { defaultMode: "askAll", rules: [] },
+      permissionProfile: { level: "workspace-write", fs: [{ path: "**/*.env", action: "deny" }] },
+    });
+    scriptedCall = { name: "read_file", args: { path: join(PROJECT_DIR, "secret.env") } };
+
+    const { code, stderr } = await run();
+
+    // Fail-closed exactly like a rule deny: no execution, no prompts, no
+    // headless-ask notice (a layer-1 deny never resolves to ask), no noise.
+    expect(code).toBe(0);
+    expect(executeToolSpy).not.toHaveBeenCalled();
+    expect(stderr).not.toContain("permission denied (headless)");
+    expect(stderr).toBe("");
+  });
+
+  it("(g) a profile that passes keeps the headless ask-deny path untouched", async () => {
+    writeSettings({
+      permissions: { defaultMode: "askAll", rules: [] },
+      permissionProfile: { level: "workspace-write" },
+    });
+    scriptedCall = { name: "run_bash", args: { command: "echo hi" } };
+
+    const { stderr } = await run();
+
+    // run_bash is not profile-gated, so layer 1 passes; the rule engine still
+    // asks, and headless denies with the usual single-line notice.
+    expect(executeToolSpy).not.toHaveBeenCalled();
+    expect(stderr).toContain("permission denied (headless): run_bash echo hi");
+  });
 });
 
 // B1 — a brand-new user's first command must never surface a raw Node stack
@@ -576,6 +608,37 @@ describe("runExecMode wires self-reflection + error-recovery (engagement)", () =
     // The malformed call is never executed; recovery re-prompts for valid JSON.
     expect(executeToolSpy).not.toHaveBeenCalled();
     expect(providerTurns).toBe(2);
+  });
+});
+
+// Config errors must fail fast in headless mode with the same message shape
+// as the TUI — an invalid matcher regex is fatal, never a silent match-ALL
+// hook (fix 5).
+describe("runExecMode config errors fail fast (fix 5)", () => {
+  beforeEach(() => {
+    mkdirSync(PROJECT_DIR, { recursive: true });
+    mkdirSync(HOME_DIR, { recursive: true });
+    process.env.HEIRLOOM_HOME = HOME_DIR;
+    createProviderSpy.mockClear();
+    providerFactory = () => scriptedProvider();
+    scriptedCall = null;
+  });
+
+  afterEach(() => {
+    delete process.env.HEIRLOOM_HOME;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("an invalid matcher regex exits 1 with the config error, before the provider is even built", async () => {
+    writeSettings({ hooks: { PreToolUse: [{ matcher: "(bad", command: "guard.sh" }] } });
+    scriptedCall = { name: "run_bash", args: { command: "git status" } };
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(1);
+    expect(stderr).toContain('Error: config: hooks entry "guard.sh" has invalid matcher regex "(bad"');
+    expect(executeToolSpy).not.toHaveBeenCalled();
+    expect(createProviderSpy).not.toHaveBeenCalled();
   });
 });
 

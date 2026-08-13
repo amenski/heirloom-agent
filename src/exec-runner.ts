@@ -5,7 +5,7 @@ import { buildRepoMap } from "./prompt.js";
 import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground } from "./tools/index.js";
 import { todoStore } from "./tools/todo.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
-import { PermissionEngine } from "./permissions/index.js";
+import { PermissionEngine, ProfileEvaluator } from "./permissions/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { fireNotify } from "./notify.js";
@@ -65,6 +65,13 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
   try {
     const { loadConfig } = await import("./config/loader.js");
     const configResult = loadConfig(options.projectRoot);
+    // Fail fast on config errors, same message shape as the TUI (cli.tsx) —
+    // e.g. an invalid matcher regex is fatal in headless mode too; it must
+    // never degrade to a silently match-ALL hook (fix 5).
+    if (configResult.errors.length > 0) {
+      for (const e of configResult.errors) writeErr(`Error: ${e}`);
+      return 1;
+    }
     const configEnv = configResult.config.env;
     const notifyScript = configResult.config.notify;
     // commands.timeoutToBackground (plan §3, default ON) — same default
@@ -133,6 +140,13 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       options.projectRoot,
       Object.keys(configResult.config.mcpServers ?? {}).length > 0,
     );
+    // Same construction the TUI uses (cli.tsx): a configured permissionProfile
+    // adds the layer-1 capability gate — a profile deny fails closed exactly
+    // like a rule deny (no prompt; the headless askUser below is never
+    // reached). Absent → layer 1 does not exist (permission-profile.md §9).
+    const permissionProfile = configResult.config.permissionProfile
+      ? new ProfileEvaluator(configResult.config.permissionProfile, options.projectRoot)
+      : undefined;
 
     // Lifecycle hooks (hooks-spec.md): headless mode skips untrusted project
     // hooks with a stderr warning at startup (fail closed, like skills).
@@ -165,6 +179,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       registry,
       modeLoader: new ModeLoader(),
       permissions,
+      profile: permissionProfile,
       askUser,
       getSignal: () => abortController.signal,
       hooks,
@@ -206,6 +221,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         tools: registry.getAllDefs(),
         executeTool,
         permissions,
+        permissionProfile,
         askUser,
         repomap: repomapInjection,
         signal: abortController.signal,

@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { HookRunner, hookPairHash } from "./index.js";
+import { HookRunner, hookContentHash, hookTrustKey } from "./index.js";
 import { parseHooksConfig } from "./config.js";
 import type { HooksConfig } from "./types.js";
 
 // TOFU trust model (hooks-spec.md §6): global (~/.heirloom) hooks are trusted
 // implicitly; project hooks must clear hooks-trust.json, prompting exactly
-// once per unseen pair (y = trust forever, n = skip this session). Headless
-// runs skip untrusted hooks with a stderr warning.
+// once per unseen trust key (y = trust forever, n = skip this session).
+// Keys are content-hashed and project-scoped (fix 1): a script edit or a
+// second project changes the key and re-prompts. Headless runs skip untrusted
+// hooks with a stderr warning.
 
 const TEST_DIR = join(tmpdir(), `heirloom-hooks-trust-${process.pid}`);
 const HOME_DIR = join(TEST_DIR, "home");
@@ -42,6 +44,11 @@ function makeRunner(
 }
 
 const markerFile = join(TEST_DIR, "ran");
+const scriptFile = () => {
+  const dir = join(TEST_DIR, "hook-scripts");
+  mkdirSync(dir, { recursive: true });
+  return join(dir, "guard.sh");
+};
 
 beforeEach(() => {
   mkdirSync(TEST_DIR, { recursive: true });
@@ -97,7 +104,7 @@ describe("TOFU trust", () => {
 
     expect(existsSync(TRUST_FILE)).toBe(true);
 
-    // A brand-new runner (next session, same HOME) must not prompt again.
+    // A brand-new runner (next session, same HOME + cwd) must not prompt again.
     const confirmTrust = vi.fn(async () => true);
     const second = makeRunner(projectConfig({
       PreToolUse: [{ command: `touch '${markerFile}'` }],
@@ -185,10 +192,168 @@ describe("TOFU trust", () => {
       stderr.mockRestore();
     }
   });
+});
 
-  it("hashes event|command pairs deterministically", () => {
-    expect(hookPairHash("PreToolUse", "guard.sh")).toBe(hookPairHash("PreToolUse", "guard.sh"));
-    expect(hookPairHash("PreToolUse", "guard.sh")).not.toBe(hookPairHash("PostToolUse", "guard.sh"));
-    expect(hookPairHash("PreToolUse", "guard.sh")).not.toBe(hookPairHash("PreToolUse", "other.sh"));
+describe("content-hashed, project-scoped trust keys (fix 1)", () => {
+  it("hashes the script CONTENT for file commands, not just the command string", async () => {
+    const script = scriptFile();
+    writeFileSync(script, "touch one");
+
+    const before = hookContentHash("hook-scripts/guard.sh", TEST_DIR);
+    writeFileSync(script, "touch two");
+    const after = hookContentHash("hook-scripts/guard.sh", TEST_DIR);
+
+    expect(before).not.toBe(after);
+    // The command string never changed — only the file content did.
+    expect(before).not.toBe(hookContentHash("echo hi", TEST_DIR));
+  });
+
+  it("hashes the command string itself for inline shell commands", async () => {
+    expect(hookContentHash("npm run x", TEST_DIR)).toBe(hookContentHash("npm run x", TEST_DIR));
+    expect(hookContentHash("npm run x", TEST_DIR)).not.toBe(hookContentHash("npm run y", TEST_DIR));
+  });
+
+  it("a missing script file hashes to a never-auto-trusted sentinel", async () => {
+    expect(hookContentHash("hook-scripts/ghost.sh", TEST_DIR)).toBe("missing");
+    // And a missing file never matches a stored key: trusting the script while
+    // it exists does not cover the same command once the file is gone.
+    const script = scriptFile();
+    writeFileSync(script, "touch one");
+    expect(hookContentHash("hook-scripts/guard.sh", TEST_DIR)).not.toBe("missing");
+  });
+
+  it("produces full 256-bit keys scoped to event, matcher, command, content, and project", () => {
+    const c1 = hookContentHash("hook-scripts/guard.sh", TEST_DIR);
+    const key = hookTrustKey("PreToolUse", "run_bash", "hook-scripts/guard.sh", c1, TEST_DIR);
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+
+    // Every input participates: event, matcher, command, content hash, project dir.
+    expect(key).not.toBe(hookTrustKey("PostToolUse", "run_bash", "hook-scripts/guard.sh", c1, TEST_DIR));
+    expect(key).not.toBe(hookTrustKey("PreToolUse", undefined, "hook-scripts/guard.sh", c1, TEST_DIR));
+    expect(key).not.toBe(hookTrustKey("PreToolUse", "run_bash", "other.sh", c1, TEST_DIR));
+    expect(key).not.toBe(hookTrustKey("PreToolUse", "run_bash", "hook-scripts/guard.sh", "different-hash", TEST_DIR));
+    expect(key).not.toBe(hookTrustKey("PreToolUse", "run_bash", "hook-scripts/guard.sh", c1, "/elsewhere"));
+    // Deterministic for identical inputs.
+    expect(key).toBe(hookTrustKey("PreToolUse", "run_bash", "hook-scripts/guard.sh", c1, TEST_DIR));
+  });
+
+  it("a script content change is treated as unseen — re-confirms before running", async () => {
+    const script = scriptFile();
+    writeFileSync(script, "touch one");
+    const runner = makeRunner(projectConfig({
+      PreToolUse: [{ command: "hook-scripts/guard.sh" }],
+    }));
+    const confirmTrust = vi.fn(async () => true);
+    runner.confirmTrust = confirmTrust;
+
+    await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+    expect(confirmTrust).toHaveBeenCalledTimes(1);
+
+    // Give the filesystem a beat so the mtime is observably different, then
+    // swap the script content — the key must change and the ask must fire
+    // again even though the command string is identical.
+    await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(script, "touch two");
+    await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+
+    expect(confirmTrust).toHaveBeenCalledTimes(2);
+  });
+
+  it("the same hook in a second project prompts again (trust never leaks across projects)", async () => {
+    const projectA = join(TEST_DIR, "project-a");
+    const projectB = join(TEST_DIR, "project-b");
+    for (const dir of [projectA, projectB]) {
+      mkdirSync(join(dir, "hook-scripts"), { recursive: true });
+      writeFileSync(join(dir, "hook-scripts", "guard.sh"), "echo hi");
+    }
+    const cfgA = parseHooksConfig(undefined, { PreToolUse: [{ command: "hook-scripts/guard.sh" }] }, "test", [])!;
+    const cfgB = parseHooksConfig(undefined, { PreToolUse: [{ command: "hook-scripts/guard.sh" }] }, "test", [])!;
+
+    const runnerA = new HookRunner({
+      config: cfgA, cwd: projectA, sessionId: () => "s1", getPermissionMode: () => "normal", timeoutMs: 2000,
+    });
+    const confirmA = vi.fn(async () => true);
+    runnerA.confirmTrust = confirmA;
+    await runnerA.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+    expect(confirmA).toHaveBeenCalledTimes(1);
+
+    // Identical command + identical script content, different project — the
+    // project-scoped key does not match, so the ask fires again.
+    const runnerB = new HookRunner({
+      config: cfgB, cwd: projectB, sessionId: () => "s1", getPermissionMode: () => "normal", timeoutMs: 2000,
+    });
+    const confirmB = vi.fn(async () => true);
+    runnerB.confirmTrust = confirmB;
+    await runnerB.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+    expect(confirmB).toHaveBeenCalledTimes(1);
+  });
+
+  it("deleting a trusted script's file makes it untrusted again (missing = untrusted)", async () => {
+    const script = scriptFile();
+    writeFileSync(script, "touch one");
+    const runner = makeRunner(projectConfig({
+      PreToolUse: [{ command: "hook-scripts/guard.sh" }],
+    }));
+    runner.confirmTrust = async () => true;
+    await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+    expect(existsSync(TRUST_FILE)).toBe(true);
+
+    rmSync(script, { force: true });
+    const confirmTrust = vi.fn(async () => true);
+    runner.confirmTrust = confirmTrust;
+    await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+
+    expect(confirmTrust).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("trust file hygiene (fix 6)", () => {
+  it("writes mode 0600 with full-hash keys, atomic rename, and no plaintext command/event", async () => {
+    const runner = makeRunner(projectConfig({
+      PreToolUse: [{ matcher: "run_bash", command: "hook-scripts/guard.sh" }],
+    }));
+    writeFileSync(scriptFile(), "echo hi");
+    runner.confirmTrust = async () => true;
+    await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+
+    const raw = readFileSync(TRUST_FILE, "utf-8");
+    // The file's comment promise: no plaintext command or event text.
+    expect(raw).not.toContain("hook-scripts/guard.sh");
+    expect(raw).not.toContain("PreToolUse");
+    expect(raw).not.toContain("run_bash");
+
+    const parsed = JSON.parse(raw);
+    const keys = Object.keys(parsed.hooks);
+    expect(keys).toHaveLength(1);
+    // Full 256-bit hash — not a truncated fingerprint.
+    expect(keys[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(parsed.hooks[keys[0]]).toEqual({ firstSeen: expect.any(Number), trusted: true });
+
+    const mode = statSync(TRUST_FILE).mode & 0o777;
+    expect(mode).toBe(0o600);
+
+    // Atomic write: no leftover temp files next to the store.
+    expect(readdirSync(HOME_DIR).sort()).toEqual(["hooks-trust.json"]);
+  });
+
+  it("a save failure is swallowed with a stderr note — never an unhandled rejection", async () => {
+    // Point HEIRLOOM_HOME at a path that cannot be created (a file in the way).
+    writeFileSync(join(TEST_DIR, "blocker"), "x");
+    process.env.HEIRLOOM_HOME = join(TEST_DIR, "blocker", "home");
+
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const runner = makeRunner(projectConfig({
+      PreToolUse: [{ command: `touch '${markerFile}'` }],
+    }));
+    runner.confirmTrust = async () => true;
+    try {
+      await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+
+      // The hook still ran this session despite the failed persist.
+      expect(existsSync(markerFile)).toBe(true);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("failed to write hooks-trust.json"));
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

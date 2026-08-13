@@ -8,6 +8,7 @@ import { stripAnsi } from "./test-helpers.js";
 import { todoStore } from "../tools/todo.js";
 import { jobManager } from "../tools/jobs.js";
 import { ModeLoader } from "../modes/loader.js";
+import { ProfileEvaluator } from "../permissions/index.js";
 
 // ── Test doubles ──
 //
@@ -453,6 +454,99 @@ describe("mid-turn steering (queue mailbox)", () => {
 
     // The queue survived the interrupt and drained into a fresh turn.
     expect(inputs).toEqual(["first", "kept message"]);
+  });
+});
+
+describe("permission profile overlay — consolidation M.1 (§5)", () => {
+  // The overlay's edit-in-workspace condition is profile-derived: with a
+  // profile configured, an edit inside the effective write-set auto-allows
+  // without a prompt; strict-sandbox has no write-set, so the prompt shows.
+  function makeAskCtx(
+    runAgentTurnCore: AppContext["runAgentTurnCore"],
+    level: "workspace-write" | "strict-sandbox",
+  ): AppContext {
+    const ctx = makeCtx(runAgentTurnCore);
+    ctx.permissions = {
+      resolve: () => ({ action: "ask", winningRule: null, wasUnresolved: false, isGuarded: false }),
+      buildDefaultRule: () => null,
+      folderScopeRule: () => null,
+      approveForSession: () => {},
+      approveAlways: () => {},
+    } as any;
+    ctx.permissionProfile = new ProfileEvaluator({ level }, "/workspace");
+    return ctx;
+  }
+
+  it("with workspace-write, an edit inside the workspace auto-allows without a prompt", async () => {
+    let askResult: unknown = "unresolved";
+    const ctx = makeAskCtx(async (_input: string, cb: any) => {
+      askResult = await cb.askUser("edit", { path: "/workspace/src/a.ts", oldString: "x", newString: "y" });
+      return { stopReason: "done", messages: [], newMessages: [] };
+    }, "workspace-write");
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("edit it");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    expect(askResult).toBe("posture");
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).not.toContain("Permission required");
+  });
+
+  it("with strict-sandbox, no edit is overlay-auto-allowed — the prompt still shows", async () => {
+    let askPromise: Promise<boolean> | null = null;
+    const ctx = makeAskCtx(async (_input: string, cb: any) => {
+      askPromise = cb.askUser("edit", { path: "/workspace/src/a.ts", oldString: "x", newString: "y" });
+      return { stopReason: "done", messages: [], newMessages: [] };
+    }, "strict-sandbox");
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("edit it");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    // The overlay is showing the permission prompt, not auto-allowing.
+    const frame = stripAnsi(inst.lastFrame() ?? "");
+    expect(frame).toContain("Permission required");
+    expect(askPromise).toBeInstanceOf(Promise);
+    // Resolve it ("1" = yes, just once) so nothing dangles.
+    inst.stdin.write("1");
+    await flush();
+    await flush();
+    expect(await askPromise).toBe(true);
+  });
+
+  it("an edit outside the write-set is never overlay-auto-allowed even at workspace-write (layer 1 already denied it)", async () => {
+    let askResult: unknown = "unresolved";
+    const ctx = makeAskCtx(async (_input: string, cb: any) => {
+      // The engine result here simulates the layer-1 deny that a real run
+      // would have produced for an out-of-write-set edit — the overlay must
+      // fail closed on it (deny), never auto-allow.
+      askResult = await cb.askUser("edit", { path: "/etc/hosts", oldString: "x", newString: "y" });
+      return { stopReason: "done", messages: [], newMessages: [] };
+    }, "workspace-write");
+    ctx.permissions = {
+      resolve: () => ({ action: "deny", winningRule: null, wasUnresolved: false, isGuarded: false }),
+      buildDefaultRule: () => null,
+      folderScopeRule: () => null,
+    } as any;
+    const inst = render(<App ctx={ctx} />);
+    mounted.push(inst);
+    inst.stdin.write("edit it");
+    await flush();
+    inst.stdin.write("\r");
+    await flush();
+    await flush();
+    await flush();
+
+    expect(askResult).toBe(false);
   });
 });
 

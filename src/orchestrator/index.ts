@@ -5,7 +5,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { runAgent } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
-import type { PermissionEngine } from "../permissions/index.js";
+import type { PermissionEngine, ProfileEvaluator } from "../permissions/index.js";
 import type { HookRunner } from "../hooks/index.js";
 import { subagentAuditStore } from "../sessions/store.js";
 import { TodoStore } from "../tools/todo.js";
@@ -52,6 +52,13 @@ export interface OrchestratorOptions {
   modeLoader: ModeLoader;
   permissions?: PermissionEngine;
   /**
+   * The parent session's capability-boundary gate (permission-profile.md §6):
+   * sub-agents inherit the profile together with the rule engine — same
+   * object threading as today's permission inheritance, so a sub-agent can
+   * never reach beyond what the parent may reach.
+   */
+  profile?: ProfileEvaluator;
+  /**
    * Surfaces a sub-agent's ask-tier permission calls to the same prompt flow
    * the top-level agent uses, instead of auto-denying them. Without this,
    * a sub-agent spawned while the parent UI is mid-session gets
@@ -77,6 +84,7 @@ export class Orchestrator {
     registry: ToolRegistry;
     modeLoader: ModeLoader;
     permissions?: PermissionEngine;
+    profile?: ProfileEvaluator;
     getSignal?: () => AbortSignal | undefined;
     hooks?: HookRunner;
   };
@@ -178,6 +186,7 @@ export class Orchestrator {
           executeTool: subExecuteTool,
           compactor: subCompactor,
           permissions: this.options.permissions,
+          permissionProfile: this.options.profile,
           askUser: this.askUser,
           maxTurns: this.options.maxSubTurns,
           mode: subMode,

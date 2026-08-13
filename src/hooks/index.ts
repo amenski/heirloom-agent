@@ -6,15 +6,18 @@ export type {
 export {
   ALL_HOOK_EVENTS,
   BLOCKABLE_EVENTS,
+  CONTEXT_STDOUT_EVENTS,
   TOOL_EVENTS,
 } from "./types.js";
 export { parseHooksConfig } from "./config.js";
 export {
-  hookPairHash,
+  hookContentHash,
+  hookTrustKey,
   isHookTrusted,
   loadHookTrust,
   saveHookTrust,
 } from "./trust.js";
+export type { ContentHashCache } from "./trust.js";
 export {
   buildNotificationPayload,
   fireNotificationHooks,

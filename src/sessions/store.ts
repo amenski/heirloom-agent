@@ -36,6 +36,8 @@ export interface CompactionSummary {
  *   ask-approved     — an interactive prompt was answered yes
  *   ask-denied       — an interactive prompt was answered no
  *   deny-by-rule     — a deny rule matched (destructive/guarded/config)
+ *   deny-by-profile  — the profile gate (layer 1) denied the call before rule
+ *                      resolution; terminal, never promptable (permission-profile.md §4)
  *   headless-deny    — resolved to ask but no interactive prompter was available
  *   unresolved-ask   — a bash segment couldn't be safely classified (fail-closed ask)
  *
@@ -50,6 +52,7 @@ export type PermissionDecision =
   | "ask-approved"
   | "ask-denied"
   | "deny-by-rule"
+  | "deny-by-profile"
   | "headless-deny"
   | "unresolved-ask"
   // legacy / UI-side fine-grained values, still valid on read + write:

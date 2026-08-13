@@ -69,4 +69,37 @@ describe("redactSecrets", () => {
     expect(result).toContain("[redacted-api-key]");
     expect(result).toContain("[redacted-github-token]");
   });
+
+  it("redacts key-name-aware secrets in JSON form (fix 4)", () => {
+    const input = '{"api_key": "d41d8cd98f00b204e9800998ecf8427e", "password": "hunter2"}';
+    const result = redactSecrets(input);
+    expect(result).not.toContain("d41d8cd98f00b204e9800998ecf8427e");
+    expect(result).not.toContain("hunter2");
+    expect(result).toContain("[redacted-api-key]");
+    expect(result).toContain("[redacted-password]");
+  });
+
+  it("redacts key=value and JSON-escaped forms case-insensitively (fix 4)", () => {
+    const input = 'API_KEY=d41d8cd98f00b204e9800998ecf8427e and "Secret":"s3cr3tvalue1234567890"';
+    const result = redactSecrets(input);
+    expect(result).not.toContain("d41d8cd98f00b204e9800998ecf8427e");
+    expect(result).not.toContain("s3cr3tvalue1234567890");
+    expect(result).toContain("[redacted-api-key]");
+    expect(result).toContain("[redacted-secret]");
+  });
+
+  it("redacts X-API-Key and Authorization: Bearer header forms (fix 4)", () => {
+    const input =
+      "X-API-Key: d41d8cd98f00b204e9800998ecf8427e\nAuthorization: Bearer e2c42c9f9d8b7a6f5e4d3c2b1a098765";
+    const result = redactSecrets(input);
+    expect(result).not.toContain("d41d8cd98f00b204e9800998ecf8427e");
+    expect(result).not.toContain("e2c42c9f9d8b7a6f5e4d3c2b1a098765");
+    expect(result).toContain("[redacted-api-key]");
+    expect(result).toContain("[redacted-authorization]");
+  });
+
+  it("leaves benign prose containing key names unchanged (fix 4)", () => {
+    const input = "The password for the vault is stored elsewhere; token: something_short";
+    expect(redactSecrets(input)).toBe(input);
+  });
 });

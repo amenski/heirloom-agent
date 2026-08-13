@@ -17,7 +17,7 @@ import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground } from "./tools/index.js";
 import { jobManager } from "./tools/jobs.js";
 import { todoStore } from "./tools/todo.js";
-import { PermissionEngine } from "./permissions/index.js";
+import { PermissionEngine, ProfileEvaluator, type ProfileLevel } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor, keepBoundary } from "./compaction/compactor.js";
@@ -80,6 +80,21 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   void main();
+}
+
+/**
+ * The status-line level segment (permission-profile.md §9): a dim
+ * "profile: <level>" marker beside the posture segment — setting a level
+ * below unrestricted is a deliberate, visible change. Absent (feature off) →
+ * no segment, the bar is byte-identical to today. Exported for the same
+ * reason handleSlashCore/completer are: unit-testing the segment decision
+ * without running the real CLI startup. The "·" separator between segments
+ * is added by StatusBar itself.
+ */
+export function profileLevelSegment(
+  level: ProfileLevel | undefined,
+): import("./ui/types.js").StatusSegment[] {
+  return level ? [{ id: "profile", text: `profile: ${level}`, dimColor: true }] : [];
 }
 
 async function main() {
@@ -179,6 +194,12 @@ async function main() {
     process.cwd(),
     Object.keys(configResult.config.mcpServers ?? {}).length > 0,
   );
+  // The capability-boundary gate (permission-profile.md §3): constructed only
+  // when `permissionProfile` is configured — absent entirely disables layer 1
+  // and authorize() runs the engine alone (today's behavior byte-for-byte).
+  const permissionProfile = configResult.config.permissionProfile
+    ? new ProfileEvaluator(configResult.config.permissionProfile, process.cwd())
+    : undefined;
 
   // Orchestrator mode (9.3) is registered once at startup, but its runtime
   // dependencies only exist inside main(): the provider factory resolves per
@@ -206,6 +227,9 @@ async function main() {
     registry,
     modeLoader,
     permissions,
+    // Sub-agents inherit the parent's profile together with the rule engine
+    // (permission-profile.md §6) — same object threading as today.
+    profile: permissionProfile,
     getSignal: () => shared.abort.signal,
     hooks,
   });
@@ -442,6 +466,12 @@ async function main() {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}normal`, { raw: true }));
     }
 
+    // Permission profile level (permission-profile.md §9): a dim marker beside
+    // the posture segment — "setting a level below unrestricted is a
+    // deliberate, visible change". Absent (feature off) → no segment, the bar
+    // is byte-identical to today.
+    segments.push(...profileLevelSegment(permissionProfile?.level));
+
     // The model is NOT here — it rides as a chip on the input box's right edge
     // (see buildModelPill), because it is a property of the message you are
     // about to send rather than ambient session state.
@@ -587,6 +617,7 @@ async function main() {
       getProvider,
       sessionId,
       permissions,
+      permissionProfile,
       hooks,
       toolRegistry: registry,
       compactor: getCompactor(),
@@ -646,7 +677,7 @@ async function main() {
         // the orchestrator before delegating — otherwise sub-agents holding
         // the stale closure would auto-deny every ask-tier action.
         orchestrator.setAskUser(cb.askUser);
-        return runAgentTurnBridge(input, cb, shared, permissions, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow, hooks);
+        return runAgentTurnBridge(input, cb, shared, permissions, permissionProfile, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow, hooks);
       },
       resumeSession: async (id: string) => {
         try {
@@ -1242,7 +1273,7 @@ export async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number, hooks?: HookRunner): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, permissionProfile: ProfileEvaluator | undefined, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number, hooks?: HookRunner): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -1284,7 +1315,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   try {
     result = await runAgent(processed, {
     provider: getProvider(),
-    tools, executeTool, permissions, mode: shared.activeMode, compactor, diagnostics, skills,
+    tools, executeTool, permissions, permissionProfile, mode: shared.activeMode, compactor, diagnostics, skills,
     errorReflector, errorRecovery,
     repomap: repomapInjection,
     research: researchInjection,

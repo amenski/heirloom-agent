@@ -1,8 +1,8 @@
 # Permission Profile — Parallel ACL Design
 
-**Status:** forward-looking design · **approved 2026-08-13** · not yet built —
-code follows this contract from phase (b); the status line changes again
-when the first phase ships.
+**Status:** phased build · **approved 2026-08-13** · phases (b) schema +
+config validation, (c) evaluation layer, and (d) posture/prompt/UI
+integration shipped 2026-08-13 · phase (e) Seatbelt pending.
 
 This is the design doc that feature-plans.md §9 requires as step 1 of the
 PermissionProfile workstream (decision **K**: full parallel ACL model, Codex
@@ -75,6 +75,62 @@ permissionProfile:
     allow: ["api.deepseek.com", "registry.npmjs.org"]
     deny: ["*"]                 # allowlist mode; omit deny for default-allow
 ```
+
+**Project > global merge** (settings.json, like `permissions`; chosen rule,
+simplest defensible — code in `loader.ts mergePermissionProfiles`):
+`level` — project wins. `fs` — project entries append after global; a
+project rule with the same `path` string replaces the global rule (one rule
+per path; the later entry wins, replaced rules keep their original
+position). `network` — `allow`/`deny` arrays union (deduped); when a host
+is in both lists the more specific entry wins, ties go to deny.
+
+**Implementation notes (shipped with (b)+(c), 2026-08-13):**
+- `level` is **required** when the key is present; `permissionProfile`
+  absent entirely disables the gate — layer 1 does not exist, today's
+  behavior byte-for-byte (§9). The always-denied set (`.git/`, the profile
+  file) applies at every level *once the gate is on*, including
+  `unrestricted`.
+- Because every level already permits reads anywhere, a `read` rule never
+  changes an outcome, and a `write` rule is only valid within the level's
+  write-set (enforced by validation) — so the fs rules that *act* are `deny`
+  rules plus the level defaults. Read/write rules are accepted for
+  explicitness and future levels.
+- `network.allow` entries are honored where the level permits grants:
+  `workspace-write` (the allowlist) and `unrestricted` (vacuous — the
+  default already allows). Under `strict-sandbox` they are **inert**, not a
+  config error — the level's network deny wins. A `*` deny is the least
+  specific entry, so a specific allow carves the allowlist out of it
+  (`deny: ["*"]` allowlist mode, above).
+- `web_search` takes no host argument; the evaluator applies the network
+  rules to the pinned search host (`www.bing.com`, web-search-spec.md §2),
+  overridable in the `ProfileEvaluator` constructor for tests.
+
+**Implementation notes (shipped with (d), 2026-08-13):**
+- `authorize()` is the one composed resolution surface in the live loop:
+  `agent.ts`'s sequential `gateCall` and the parallel-batch pre-resolution
+  both call `authorize(call, engine, profile)` — profile absent runs the
+  engine alone, byte-for-byte today (§9). A layer-1 deny emits the same
+  `Permission denied for <tool>` tool message as a rule deny, with the audit
+  row `deny-by-profile` / `deny by profile (layer 1)` (permission-spec.md
+  §11). The decision value already lived in the session record union.
+- Threading: the evaluator rides the same object channel as the
+  `PermissionEngine` — constructed once in `cli.tsx` / `exec-runner.ts` from
+  the merged `config.permissionProfile`, threaded through
+  `runAgentTurnBridge` into `runAgent` options as `permissionProfile`,
+  through the AppContext as `permissionProfile` (the overlay's M.1
+  condition), and through the `Orchestrator`'s `profile` option so
+  sub-agents inherit the boundary together with the rule engine (§6). No
+  parallel context channel.
+- The status line shows a dim `profile: <level>` segment beside the posture
+  segment when a level is configured (`cli.tsx` `profileLevelSegment`);
+  unconfigured → no segment, bar unchanged (§9).
+- M.1 (in this phase): the approval overlay's edit-in-workspace condition is
+  profile-derived — `ProfileEvaluator.editTargetInWriteSet`
+  (workspace-write → workspace roots; strict-sandbox → no write-set, no
+  edit overlay-auto-allowed; unrestricted → any path). An edit inside the
+  write-set auto-allows without a prompt, resolved as `"posture"` so the
+  agent records `allow-by-posture` (the established "allowed without showing
+  a prompt" row).
 
 **Level presets** set the implicit default the explicit rules carve into:
 
