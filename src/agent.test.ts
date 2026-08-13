@@ -708,6 +708,29 @@ describe("runAgent", () => {
       expect(receivedMessages).toHaveLength(1);
     });
 
+    it("does not prompt on switch_mode either (builtin allow, auto-switch design)", async () => {
+      const { provider } = makeProvider([
+        [
+          { type: "tool_call_start", id: "c1", name: "switch_mode" },
+          { type: "tool_call_delta", id: "c1", arguments: '{"slug":"architect"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+      ]);
+      const askUser = vi.fn(async () => true);
+
+      await runAgent("switch modes", {
+        provider,
+        tools: [],
+        executeTool, // real registry — real handler
+        permissions: new PermissionEngine(undefined, "/workspace"),
+        askUser,
+      });
+
+      // The builtin allow rule means the switch never hits the permission
+      // prompt — consistent with the auto-switch, no-confirmation design.
+      expect(askUser).not.toHaveBeenCalled();
+    });
+
     it("does not end the turn when a tool returns stop: false/undefined", async () => {
       const { provider, receivedMessages } = makeProvider([
         [

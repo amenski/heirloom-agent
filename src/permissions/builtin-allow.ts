@@ -30,4 +30,8 @@ export const BUILTIN_ALLOW_RULES: PermissionRule[] = [
   // Meta tool: side-effect-free — ends the turn with a summary. A prompt on
   // the final call of a task would be pure noise.
   { tool: "attempt_completion", kind: "any", pattern: "", action: "allow", origin: "config" },
+  // Meta tool: persona-mode switch. Auto-switch without confirmation was the
+  // approved design (mode-spec §4), so a permission prompt on every switch
+  // would contradict it.
+  { tool: "switch_mode", kind: "any", pattern: "", action: "allow", origin: "config" },
 ];
