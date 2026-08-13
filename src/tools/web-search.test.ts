@@ -3,6 +3,19 @@ import { ToolRegistry } from "./registry.js";
 import type { ToolContext } from "./types.js";
 import { registerWebSearch, parseBingRss, looksLikeRssFeed, clearWebSearchCache } from "./web-search.js";
 
+// web-search.ts reads webSearch.searxngUrl via loadConfig() on every call —
+// mocked so tests are isolated from whatever the developer's real
+// ~/.heirloom/settings.json happens to contain, and so the SearXNG-backend
+// tests can control the config precisely.
+let mockSearxngUrl: string | undefined;
+vi.mock("../config/loader.js", () => ({
+  loadConfig: () => ({
+    config: { webSearch: mockSearxngUrl ? { searxngUrl: mockSearxngUrl } : {} },
+    warnings: [],
+    errors: [],
+  }),
+}));
+
 function rssResponse(xml: string, status = 200): Response {
   return new Response(xml, {
     status,
@@ -12,6 +25,25 @@ function rssResponse(xml: string, status = 200): Response {
 
 function sampleRss(): string {
   return `<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Bing: test</title><item><title>Claude Code</title><link>https://docs.claude.com/</link><description>Official docs for <b>Claude Code</b> &amp; hooks.</description></item><item><title></title><link>https://example.com/untitled</link><description>No title, skip me</description></item><item><title>No link</title><link></link><description>Skip me too</description></item><item><title>Guide &amp; Tutorial</title><link>https://example.com/guide</link><description>Learn how to use hooks in Claude Code.</description></item></channel></rss>`;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** Sample SearXNG JSON API response fixture (per docs/handoff-web-search-searxng.md). */
+function sampleSearxngJson(): { results: unknown[] } {
+  return {
+    results: [
+      { title: "SearXNG Docs", url: "https://docs.searxng.org/", content: "Official SearXNG documentation." },
+      { title: "", url: "https://example.com/untitled", content: "No title, skip me" },
+      { title: "No url", url: "", content: "Skip me too" },
+      { title: "Self-hosted search", url: "https://example.com/searxng", content: "Run your own metasearch engine." },
+    ],
+  };
 }
 
 function makeCtx(): ToolContext {
@@ -79,6 +111,7 @@ describe("web_search", () => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     clearWebSearchCache();
+    mockSearxngUrl = undefined;
   });
 
   afterEach(() => {
@@ -458,5 +491,132 @@ describe("web_search", () => {
       expect(second.content).toContain("example.com/guide");
       expect(second.content).not.toContain("docs.claude.com");
     });
+  });
+});
+
+describe("web_search — SearXNG backend", () => {
+  let registry: ToolRegistry;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    registry = new ToolRegistry();
+    registerWebSearch(registry);
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    clearWebSearchCache();
+    mockSearxngUrl = "http://localhost:8888";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    mockSearxngUrl = undefined;
+  });
+
+  it("queries the configured instance and parses results into WebResult[]", async () => {
+    const hostsHit: string[] = [];
+    fetchMock.mockImplementation((url: string) => {
+      hostsHit.push(new URL(url).host);
+      return Promise.resolve(jsonResponse(sampleSearxngJson()));
+    });
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "searxng" } },
+      makeCtx(),
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("[web] SearXNG Docs");
+    expect(result.content).toContain("https://docs.searxng.org/");
+    expect(result.content).toContain("Official SearXNG documentation.");
+    // Drops items missing title/url, same as parseBingRss.
+    expect(result.content).not.toContain("example.com/untitled");
+    expect(result.content).toContain("Self-hosted search");
+    expect(hostsHit).toEqual(["localhost:8888"]);
+    // GET {url}/search?q=...&format=json per the handoff spec.
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toBe("http://localhost:8888/search?q=searxng&format=json");
+  });
+
+  it("returns a tool failure (not an empty result) for malformed/unrecognized JSON", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(new Response("not json", { status: 200 })));
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(result.content).not.toContain("No results found.");
+  });
+
+  it("falls back to Bing on SearXNG network error, with the status line present", async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (new URL(url).host === "localhost:8888") return Promise.reject(new Error("ECONNREFUSED"));
+      return Promise.resolve(rssResponse(sampleRss()));
+    });
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: `fallback-${Math.random()}` } },
+      makeCtx(),
+    );
+    expect(result.content).toContain("web_search: SearXNG unreachable, fell back to Bing.");
+    expect(result.content).toContain("[web] Claude Code");
+  });
+
+  it("treats 403 as a permanent config problem: actionable message, no Bing fallback", async () => {
+    let bingCalled = false;
+    fetchMock.mockImplementation((url: string) => {
+      if (new URL(url).host === "localhost:8888") return Promise.resolve(new Response("Forbidden", { status: 403 }));
+      bingCalled = true;
+      return Promise.resolve(rssResponse(sampleRss()));
+    });
+
+    const result = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query: "x" } },
+      makeCtx(),
+    );
+    expect(result.content).toContain("search.formats");
+    expect(result.content).not.toContain("fell back to Bing");
+    expect(bingCalled).toBe(false);
+  });
+
+  it("cache key includes the backend — a SearXNG-served query and a Bing-served query for the same text don't collide", async () => {
+    let searxngCalls = 0;
+    let bingCalls = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (new URL(url).host === "localhost:8888") {
+        searxngCalls++;
+        return Promise.resolve(jsonResponse(sampleSearxngJson()));
+      }
+      bingCalls++;
+      return Promise.resolve(rssResponse(sampleRss()));
+    });
+
+    const query = `same-query-${Math.random()}`;
+    const withSearxng = await registry.execute(
+      { id: "1", name: "web_search", arguments: { query } },
+      makeCtx(),
+    );
+    expect(withSearxng.content).toContain("SearXNG Docs");
+
+    mockSearxngUrl = undefined;
+    const withBing = await registry.execute({ id: "2", name: "web_search", arguments: { query } }, makeCtx());
+    expect(withBing.content).toContain("[web] Claude Code");
+    expect(withBing.content).not.toContain("SearXNG Docs");
+
+    expect(searxngCalls).toBe(1);
+    expect(bingCalls).toBe(1);
+  });
+
+  it("domain filters still apply to SearXNG results", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(sampleSearxngJson())));
+
+    const result = await registry.execute(
+      {
+        id: "1",
+        name: "web_search",
+        arguments: { query: "x", allowed_domains: ["docs.searxng.org"] },
+      },
+      makeCtx(),
+    );
+    expect(result.content).toContain("docs.searxng.org");
+    expect(result.content).not.toContain("example.com/searxng");
   });
 });

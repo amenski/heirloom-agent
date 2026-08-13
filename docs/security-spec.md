@@ -127,6 +127,27 @@ was absent. Regression coverage in `src/exec-runner.test.ts`.
 
 ## 6. Non-goals (v1, stated honestly)
 
+## Guarded Patterns (always ask, never silently auto-allow)
+
+See [permission-spec.md § Builtin Tiers](./permission-spec.md#builtin-tiers)
+for the authoritative, current list and matching details. Summary:
+
+- **Network egress**: `curl`, `wget`, `nc`, `ssh`, `scp`, `rsync`
+- **Search egress**: `web_search` (guarded, always ask; query
+  string leaves the machine — web-search-spec.md). Host: `www.bing.com`
+  (keyless RSS default) plus, when the user sets `webSearch.searxngUrl` in
+  `settings.json` (added 2026-08-11), that user-configured SearXNG instance —
+  a carve-out of anti-drift rule 2 for user-authored config only, same trust
+  boundary as `mcpServers`; see web-search-spec.md's SearXNG backend section.
+- **Secret-adjacent reads/writes**: `.env*`, `~/.ssh/*`, `~/.aws/*`,
+  `id_rsa*`, `*.pem`, `credentials*` (`read_file`/`write_to_file`/`edit`)
+
+Rationale: auto-approve posture exists for flow, and flow never legitimately
+requires silent exfiltration or silent key reads. A user who disagrees
+writes an explicit `allow` rule — deliberate config beats a posture toggle.
+In headless mode (T11, fixed 2026-07-31), guarded rules resolve to deny,
+since there is no one to ask.
+
 - **Sandboxing (default).** No container/seccomp by default; an allowed
   command runs with the user's full privileges. The permission prompt is
   the control, not isolation. Opt-in exception: `sandbox.enabled`

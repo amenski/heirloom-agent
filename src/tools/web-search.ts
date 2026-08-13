@@ -2,6 +2,8 @@ import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler, ToolContext } from "./types.js";
 import { ToolRegistry } from "./registry.js";
 import { pkg } from "../version.js";
+import { loadConfig } from "../config/loader.js";
+import { searchSearxng, SearxngConfigError } from "./web-search-searxng.js";
 
 const USER_AGENT = `heirloom-agent/${pkg.version} (+cli)`;
 const TIMEOUT_MS = 10_000;
@@ -18,6 +20,8 @@ interface WebResult {
   snippet?: string;
 }
 
+type Backend = "bing" | "searxng";
+
 interface CacheEntry {
   results: WebResult[];
   expiresAt: number;
@@ -25,8 +29,8 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-function cacheKey(query: string, allowedDomains: string[], blockedDomains: string[]): string {
-  return JSON.stringify([query, allowedDomains, blockedDomains]);
+function cacheKey(query: string, allowedDomains: string[], blockedDomains: string[], backend: Backend): string {
+  return JSON.stringify([query, allowedDomains, blockedDomains, backend]);
 }
 
 function getCached(key: string): WebResult[] | undefined {
@@ -235,13 +239,12 @@ function wrapUntrusted(text: string): string {
 
 /**
  * Renders results with the untrusted-content wrapper around **web content
- * only**. Tool-generated status text (rate limits, empty results) stays
- * outside the delimiters — the banner marks what Bing returned, not what
- * Heirloom says about it (web-search-spec.md, Tier 3 output format).
+ * only**. Tool-generated status text (rate limits, empty results, backend
+ * fallback notices) stays outside the delimiters — the banner marks what the
+ * backend returned, not what Heirloom says about it (web-search-spec.md,
+ * Tier 3 output format).
  */
-function formatResults(results: WebResult[], rateLimited: boolean): string {
-  const status = rateLimited ? "web_search: Bing rate-limited the request, try again shortly." : "";
-
+function formatResults(results: WebResult[], status: string): string {
   const lines: string[] = [];
   for (const r of results) {
     lines.push(`- [web] ${r.title} — ${r.url}`);
@@ -256,6 +259,27 @@ function formatResults(results: WebResult[], rateLimited: boolean): string {
   return status ? `${wrapUntrusted(out)}\n${status}` : wrapUntrusted(out);
 }
 
+/** Reads webSearch.searxngUrl from config, if set. Loaded fresh per call — cheap sync file read, same pattern as cli.tsx/exec-runner.ts. */
+function resolveSearxngUrl(): string | undefined {
+  return loadConfig().config.webSearch?.searxngUrl;
+}
+
+/**
+ * Runs the Bing RSS path and returns raw (unfiltered, unlimited) results.
+ * Throws RateLimitedError, AbortError, or a plain Error on unrecognized
+ * response format / other failures — same contract as before this backend
+ * was made selectable.
+ */
+async function searchBing(query: string, ctx: ToolContext): Promise<WebResult[]> {
+  const xml = await fetchRssWithRetry(query, ctx);
+  if (!looksLikeRssFeed(xml)) {
+    throw new Error(
+      "web_search: Bing returned an unrecognized response format — the search feed may have changed. This is a tool failure, not an empty result.",
+    );
+  }
+  return parseBingRss(xml);
+}
+
 const webSearchHandler: ToolHandler = async (args, ctx) => {
   const query = typeof args.query === "string" ? args.query.trim() : "";
   if (!query) {
@@ -268,30 +292,81 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
     return { content: "", error: "PARSE_ERROR: provide allowed_domains or blocked_domains, not both" };
   }
 
-  const key = cacheKey(query, allowedDomains, blockedDomains);
-  try {
-    let filtered = getCached(key);
-    if (filtered === undefined) {
-      const xml = await fetchRssWithRetry(query, ctx);
-      if (!looksLikeRssFeed(xml)) {
-        return {
-          content:
-            "web_search: Bing returned an unrecognized response format — the search feed may have changed. This is a tool failure, not an empty result.",
-        };
+  const searxngUrl = resolveSearxngUrl();
+
+  // ── No SearXNG configured: exactly today's Bing-only behavior. ──
+  if (!searxngUrl) {
+    const key = cacheKey(query, allowedDomains, blockedDomains, "bing");
+    try {
+      let filtered = getCached(key);
+      if (filtered === undefined) {
+        const results = await searchBing(query, ctx);
+        filtered = filterByDomain(results, allowedDomains, blockedDomains);
+        setCached(key, filtered);
       }
-      filtered = filterByDomain(parseBingRss(xml), allowedDomains, blockedDomains);
-      setCached(key, filtered);
+      return { content: formatResults(filtered.slice(0, limit), "") };
+    } catch (err) {
+      if (err instanceof RateLimitedError) {
+        return { content: formatResults([], "web_search: Bing rate-limited the request, try again shortly.") };
+      }
+      if ((err as { name?: string })?.name === "AbortError" || ctx.signal.aborted) {
+        return { content: "web_search: request timed out or was aborted." };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return { content: message.startsWith("web_search:") ? message : `web_search: request failed — ${message}` };
     }
-    return { content: formatResults(filtered.slice(0, limit), false) };
+  }
+
+  // ── SearXNG configured: primary, with Bing fallback on transient failure. ──
+  const searxngKey = cacheKey(query, allowedDomains, blockedDomains, "searxng");
+  try {
+    let filtered = getCached(searxngKey);
+    if (filtered === undefined) {
+      const results = await searchSearxng(searxngUrl, query, ctx);
+      filtered = filterByDomain(results, allowedDomains, blockedDomains);
+      setCached(searxngKey, filtered);
+    }
+    return { content: formatResults(filtered.slice(0, limit), "") };
   } catch (err) {
-    if (err instanceof RateLimitedError) {
-      return { content: formatResults([], true) };
+    if (err instanceof SearxngConfigError) {
+      // Permanent instance-config problem — no retry (already exhausted by
+      // searchSearxng), no Bing fallback (that would hide the fix the user
+      // needs to make).
+      return { content: `web_search: ${err.message}` };
     }
     if ((err as { name?: string })?.name === "AbortError" || ctx.signal.aborted) {
       return { content: "web_search: request timed out or was aborted." };
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return { content: `web_search: request failed — ${message}` };
+    // SearxngTransientError (retries exhausted) or an unrecognized-shape
+    // Error both fall back to Bing — the query hasn't been answered yet.
+    const bingKey = cacheKey(query, allowedDomains, blockedDomains, "bing");
+    try {
+      let filtered = getCached(bingKey);
+      if (filtered === undefined) {
+        const results = await searchBing(query, ctx);
+        filtered = filterByDomain(results, allowedDomains, blockedDomains);
+        setCached(bingKey, filtered);
+      }
+      return {
+        content: formatResults(filtered.slice(0, limit), "web_search: SearXNG unreachable, fell back to Bing."),
+      };
+    } catch (bingErr) {
+      if (bingErr instanceof RateLimitedError) {
+        return {
+          content: formatResults(
+            [],
+            "web_search: SearXNG unreachable, fell back to Bing, which rate-limited the request — try again shortly.",
+          ),
+        };
+      }
+      if ((bingErr as { name?: string })?.name === "AbortError" || ctx.signal.aborted) {
+        return { content: "web_search: request timed out or was aborted." };
+      }
+      const message = bingErr instanceof Error ? bingErr.message : String(bingErr);
+      return {
+        content: `web_search: SearXNG unreachable, and the Bing fallback also failed — ${message}`,
+      };
+    }
   }
 };
 

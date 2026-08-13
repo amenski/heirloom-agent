@@ -732,3 +732,83 @@ describe("loadConfig sandbox (permission-profile.md §8, phase (e))", () => {
     expect(sandboxSupportedOnPlatform("win32")).toBe(false);
   });
 });
+
+describe("loadConfig webSearch.searxngUrl", () => {
+  it("is undefined when absent (no warning, Bing-only default)", () => {
+    writeProjectSettings({});
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.searxngUrl).toBeUndefined();
+  });
+
+  it("accepts an https:// URL for a non-local host", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "https://searx.example.com" } });
+    const { config, warnings, errors } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.searxngUrl).toBe("https://searx.example.com");
+  });
+
+  it("accepts http:// for localhost", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "http://localhost:8888" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.searxngUrl).toBe("http://localhost:8888");
+  });
+
+  it("accepts http:// for 127.0.0.1", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "http://127.0.0.1:8888" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.searxngUrl).toBe("http://127.0.0.1:8888");
+  });
+
+  it("accepts http:// for [::1]", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "http://[::1]:8888" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.searxngUrl).toBe("http://[::1]:8888");
+  });
+
+  it("warns and ignores http:// for a non-local host", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "http://searx.example.com" } });
+    const { config, warnings, errors } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings.some((w) => w.includes("only https:// is allowed"))).toBe(true);
+    expect(config.webSearch?.searxngUrl).toBeUndefined();
+  });
+
+  it("warns and ignores a malformed URL", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "not a url" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("is not a valid URL"))).toBe(true);
+    expect(config.webSearch?.searxngUrl).toBeUndefined();
+  });
+
+  it("warns and ignores a non-string searxngUrl", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: 123 } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("webSearch.searxngUrl must be a string"))).toBe(true);
+    expect(config.webSearch?.searxngUrl).toBeUndefined();
+  });
+
+  it("warns and ignores a non-object webSearch", () => {
+    writeProjectSettings({ webSearch: "nope" });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("webSearch must be an object"))).toBe(true);
+    expect(config.webSearch).toBeUndefined();
+  });
+
+  it("rejects a non-http(s) scheme", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "ftp://searx.example.com" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("must be http:// or https://"))).toBe(true);
+    expect(config.webSearch?.searxngUrl).toBeUndefined();
+  });
+
+  it("does not warn about webSearch as an unknown field", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "https://searx.example.com" } });
+    const { warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes('unknown field "webSearch"'))).toBe(false);
+  });
+});

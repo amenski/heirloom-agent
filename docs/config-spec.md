@@ -351,6 +351,33 @@ none:
 ```
 
 ## 10. `enabledSkills`
+### `webSearch.searxngUrl`
+
+Optional string, absent by default. Points `web_search` at a
+[SearXNG](https://docs.searxng.org/) instance the user runs themselves
+(e.g. a single Docker container) as the **primary** search backend, with the
+keyless Bing RSS path becoming the automatic fallback on transient failures
+(network error, 5xx, timeout — surfaced with a one-line status in the tool
+output) and remaining the default when this key is absent. See
+[web-search-spec.md](./web-search-spec.md)'s "SearXNG backend" subsection for
+the full request/fallback/caching behavior.
+
+```jsonc
+{ "webSearch": { "searxngUrl": "http://localhost:8888" } }
+```
+
+- `http://` is accepted **only** for `localhost`, `127.0.0.1`, or `[::1]`;
+  any other host must use `https://`. An invalid value (bad URL, disallowed
+  `http://` host, wrong type) is a **warning**, and the key is ignored — the
+  tool falls back to Bing-only behavior, the same "don't crash launch over an
+  optional knob" posture as `refresh`.
+- The instance must have `json` enabled in its `search.formats` config
+  (SearXNG's `settings.yml`) — many default installs don't, and return 403
+  otherwise. `web_search` treats a 403 as a permanent instance-config problem
+  (not a transient failure) and returns actionable text naming this fix; it
+  does not silently fall back to Bing on a 403.
+
+## `enabledSkills`
 
 Optional `{ "<skill-name>": boolean }` map. A skill whose name maps to
 `false` is **not loaded or indexed** by the skill loader

@@ -40,6 +40,15 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 }
 
+export interface WebSearchConfig {
+  /**
+   * Base URL of a user-run SearXNG instance, used as the primary web_search
+   * backend (Bing RSS is the fallback). http:// is allowed only for
+   * localhost/127.0.0.1/[::1]; any other host must be https://.
+   */
+  searxngUrl?: string;
+}
+
 export interface DeepCodeSettings {
   // ── Env (model/api config) ──
   env?: DeepCodeEnv;
@@ -80,6 +89,8 @@ export interface DeepCodeSettings {
   // ── Web Search ──
   /** Path to custom web search script */
   webSearchTool?: string;
+  /** web_search backend config (heirloom extension) */
+  webSearch?: WebSearchConfig;
 
   // ── Skills ──
   /** Per-skill enable/disable */
@@ -257,6 +268,7 @@ const KNOWN_KEYS = new Set([
   "mcpServers",
   "notify",
   "webSearchTool",
+  "webSearch",
   "enabledSkills",
   "hooks",
   "disableAllHooks",
@@ -766,6 +778,57 @@ function validateStatusline(
   return { enabled, refreshMs, separator, providers };
 }
 
+/** True for localhost/127.0.0.1/[::1] — the only hostnames http:// is allowed for on searxngUrl. */
+function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+}
+
+/**
+ * Validates webSearch.searxngUrl: http:// only for localhost/127.0.0.1/[::1],
+ * https:// required otherwise. Invalid values are a warning, not an error —
+ * an optional knob shouldn't fail launch (same posture as `refresh`).
+ */
+function validateWebSearch(
+  raw: unknown,
+  source: string,
+  warnings: string[],
+): WebSearchConfig | undefined {
+  if (!isObject(raw)) {
+    warnings.push(`${source}: webSearch must be an object — ignoring`);
+    return undefined;
+  }
+  const w = raw as Record<string, unknown>;
+  if (!("searxngUrl" in w)) return {};
+
+  if (typeof w.searxngUrl !== "string") {
+    warnings.push(`${source}: webSearch.searxngUrl must be a string — ignoring`);
+    return {};
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(w.searxngUrl);
+  } catch {
+    warnings.push(`${source}: webSearch.searxngUrl "${w.searxngUrl}" is not a valid URL — ignoring`);
+    return {};
+  }
+
+  if (parsed.protocol === "http:" && !isLocalHostname(parsed.hostname)) {
+    warnings.push(
+      `${source}: webSearch.searxngUrl "${w.searxngUrl}" uses http:// for a non-local host — only https:// is allowed except for localhost/127.0.0.1/[::1] — ignoring`,
+    );
+    return {};
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    warnings.push(
+      `${source}: webSearch.searxngUrl "${w.searxngUrl}" must be http:// or https:// — ignoring`,
+    );
+    return {};
+  }
+
+  return { searxngUrl: w.searxngUrl };
+}
+
 // ── Main loader ──
 
 export function loadConfig(projectDir?: string): LoadResult {
@@ -922,6 +985,12 @@ export function loadConfig(projectDir?: string): LoadResult {
     } else {
       errors.push("config.webSearchTool: must be a string (script path)");
     }
+  }
+
+  // ── webSearch ──
+  if ("webSearch" in merged) {
+    const webSearch = validateWebSearch(merged.webSearch, "config", warnings);
+    if (webSearch) config.webSearch = webSearch;
   }
 
   // ── enabledSkills ──
