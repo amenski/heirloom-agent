@@ -295,13 +295,16 @@ Controls the git-status poller behind the status bar.
 
 ## 13. No telemetry
 
-Heirloom collects **no telemetry** and phones home for nothing. This is a
-deliberate guarantee, not a default that a config key can flip. There is no
-telemetry subsystem in the codebase and no config key enables one — the
-former `telemetryEnabled` key (and the `env.TELEMETRY_ENABLED` string) were
-never consumed and have been removed; `telemetryEnabled` now warns as an
-unknown field. If you set it, nothing happens because there is nothing to
-enable.
+Heirloom collects **no telemetry**. This is a deliberate guarantee, not a
+default that a config key can flip. There is no telemetry subsystem in the
+codebase and no config key enables one — the former `telemetryEnabled` key
+(and the `env.TELEMETRY_ENABLED` string) were never consumed and have been
+removed; `telemetryEnabled` now warns as an unknown field. If you set it,
+nothing happens because there is nothing to enable.
+
+The **only automatic network contact** is the npm update check
+(update-check.md) — and it is inert while the package is `private`, which
+this repo is.
 
 ## 14. Deprecated keys
 

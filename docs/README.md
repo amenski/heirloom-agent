@@ -79,6 +79,9 @@ then follow the reading paths below.
 | [notify-spec.md](./notify-spec.md) | notify hook env contract |
 | [web-search-spec.md](./web-search-spec.md) | Bing RSS search tier + anti-drift rules |
 | [theme-spec.md](./theme-spec.md) | Theme engine, presets, detection |
+| [mcp-spec.md](./mcp-spec.md) | MCP stdio protocol, tool registration, strictMcpConfig |
+| [update-check.md](./update-check.md) | npm update checker (inert for private packages) |
+| [eval-harness.md](./eval-harness.md) | Golden-task runner (⚠️ runner needs fixing, see §4) |
 
 ### Ops
 
@@ -128,10 +131,14 @@ then follow the reading paths below.
    `provider/model`, split on the first slash.
 3. **Default pairing is deepseek/deepseek-v4-pro**; the anthropic API type
    is supported via the AI SDK but has no bundled preset.
-4. **Not yet covered in docs:** `scripts/eval.ts` (golden-task harness),
-   the update-check/UpdatePrompt flow, MCP connector internals beyond tool
-   naming and `strictMcpConfig`, the theme ansi ×2 preset follow-on, and
-   memory-injection mechanics beyond the ≤1024-token cap.
+4. **Previously uncovered areas, now documented (2026-08-13):**
+   [eval-harness.md](./eval-harness.md), [update-check.md](./update-check.md),
+   [mcp-spec.md](./mcp-spec.md). Still thin: memory-injection mechanics
+   beyond the ≤1024-token cap, and the theme ansi ×2 preset follow-on
+   (noted in theme-spec.md §2). The eval runner itself is **broken as
+   written** — `scripts/eval.ts` still targets the deleted `src/index.ts`
+   and the nonexistent `--approve` flag (eval-harness.md §4); fixing it is
+   a code change, not coverage.
 5. **Anchors vs contracts.** `src/file:line` references are navigational
    hints verified on 2026-08-13; they drift as code moves. Treat spec
    *contracts* as normative, anchors as hints. Tool error codes are

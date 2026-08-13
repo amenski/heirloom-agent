@@ -88,8 +88,9 @@ tests — mocking an LLM tests the mock.
 
 ### Golden tasks (agent-level evals)
 Small end-to-end tasks under `fixtures/`, re-run after any prompt or loop
-change (see system-prompt.md, "Changing the Prompt"). Manual for now; a
-harness is post-MVP.
+change (see system-prompt.md, "Changing the Prompt"). The runner is
+`scripts/eval.ts` (`npm run eval`) — see eval-harness.md for the cases it
+covers (currently G2/G3/G5) and its known breakage.
 
 | # | Task | Verifies |
 |---|------|----------|

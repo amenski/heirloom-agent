@@ -1463,16 +1463,16 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   async function handleExit() {
     // Collapse the whole frame (header, input, menu, hint bar) to a single
-    // resume-hint line, flush it to the terminal, then unmount. The transcript
-    // stays in scrollback untouched — only the interactive frame goes away.
-    // The stall-watchdog report is printed only AFTER ink unmounts: stderr
-    // writes while ink still owns the screen get erased by the next frame
-    // redraw (the resume-hint render), so the report never showed.
+    // resume-hint line, flush it to the terminal, then unmount and hand off to
+    // ctx.onExit() — the CLI-side handler that logs session end and calls
+    // process.exit(0). Without that hand-off, Ink unmounts but the process keeps
+    // running on its open handles (git poll, statusline, stdin) and the CLI
+    // hangs at a blank prompt. The transcript stays in scrollback untouched —
+    // only the interactive frame goes away.
     setExitHint(`Resume: heirloom --resume ${ctx.sessionId}`);
-    const reportLine = await ctx.logSessionEnd().catch(() => null);
     await waitUntilRenderFlush().catch(() => {});
     exit();
-    if (reportLine) process.stderr.write(reportLine + "\n");
+    ctx.onExit();
   }
 
   const promptStr = ctx.getPromptStr();
