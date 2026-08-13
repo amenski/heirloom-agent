@@ -91,6 +91,10 @@ const todoHandler: ToolHandler = async (args, ctx) => {
   const store = ctx.todoStore ?? todoStore;
   store.setTodos(items);
 
+  // Persist the snapshot so a resumed session restores the plan. No-op
+  // without a session store (headless, sub-agents) — like appendPermission.
+  await ctx.sessionStore?.appendTodo(ctx.sessionId, items);
+
   // Spec: exactly one in_progress at a time; warn in output when violated,
   // do not reject (tool-spec.md).
   const inProgress = items.filter((t) => t.status === "in_progress").length;

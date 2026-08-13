@@ -354,6 +354,53 @@ describe("SessionStore", () => {
     });
   });
 
+  describe("todo snapshots", () => {
+    it("round-trips appended todo lists in chronological order", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendTodo(id, [
+        { content: "step one", status: "pending" },
+        { content: "step two", status: "in_progress" },
+      ]);
+      await store.appendTodo(id, [
+        { content: "step one", status: "completed" },
+        { content: "step two", status: "in_progress" },
+      ]);
+
+      const rows = await store.queryTodos(id);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].todos).toEqual([
+        { content: "step one", status: "pending" },
+        { content: "step two", status: "in_progress" },
+      ]);
+      // Chronological: the last row is the latest snapshot.
+      expect(rows[1].todos[0].status).toBe("completed");
+    });
+
+    it("redacts secrets in todo content", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      const key = "sk-" + "a".repeat(24);
+      await store.appendTodo(id, [{ content: `use ${key} in config`, status: "pending" }]);
+      const rows = await store.queryTodos(id);
+      expect(rows[0].todos[0].content).not.toContain(key);
+      expect(rows[0].todos[0].content).toContain("[redacted-api-key]");
+    });
+
+    it("todo records are ignored by load() and don't corrupt messages", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      await store.appendMessage(id, { role: "user", content: "hi" });
+      await store.appendTodo(id, [{ content: "plan", status: "pending" }]);
+      await store.appendMessage(id, { role: "assistant", content: "ok" });
+
+      const loaded = await store.load(id);
+      expect(loaded!.messages).toHaveLength(2);
+    });
+
+    it("returns an empty array for a session with no todo records", async () => {
+      const id = await store.create({ cwd: TEST_CWD, provider: "openai", model: "gpt-4", mode: "code" });
+      expect(await store.queryTodos(id)).toEqual([]);
+    });
+  });
+
   describe("old-session resume compatibility", () => {
     it("loads a legacy session that predates permission/token rows", async () => {
       // Simulate an on-disk session written before this feature existed: only

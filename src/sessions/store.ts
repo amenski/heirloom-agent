@@ -80,9 +80,15 @@ export interface TokenUsageRecord {
 }
 
 export interface SessionRecord {
-  type: "meta" | "message" | "state" | "compaction" | "permission" | "token";
+  type: "meta" | "message" | "state" | "compaction" | "permission" | "token" | "todo";
   at: string;
   [key: string]: unknown;
+}
+
+/** A todo list snapshot as persisted by update_todo_list (tool-spec.md). */
+export interface TodoSnapshotRecord {
+  /** The full list at the time of the update (content redacted per item). */
+  todos: { content: string; status: string }[];
 }
 
 export interface LoadedSession {
@@ -308,6 +314,22 @@ export class SessionStore {
 
   async appendToken(sessionId: string, record: TokenUsageRecord): Promise<void> {
     await this.append(sessionId, { type: "token", ...record });
+  }
+
+  async appendTodo(sessionId: string, todos: TodoSnapshotRecord["todos"]): Promise<void> {
+    await this.append(sessionId, {
+      type: "todo",
+      todos: todos.map((t) => ({ content: redactSecrets(t.content), status: t.status })),
+    });
+  }
+
+  /** Returns every todo-list snapshot recorded for a session, in chronological order. */
+  async queryTodos(sessionId: string): Promise<(TodoSnapshotRecord & { at: string })[]> {
+    const records = await this.readRecords(sessionId);
+    if (!records) return [];
+    return records
+      .filter((r) => r.type === "todo")
+      .map((r) => r as unknown as TodoSnapshotRecord & { at: string });
   }
 
   /**

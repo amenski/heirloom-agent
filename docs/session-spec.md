@@ -37,8 +37,8 @@ reference session state.
 
 ## 4. Record types
 
-Each line is one JSON object with a `type` field. Six types: `meta`,
-`message`, `state`, `compaction`, `permission`, `token`.
+Each line is one JSON object with a `type` field. Seven types: `meta`,
+`message`, `state`, `compaction`, `permission`, `token`, `todo`.
 
 ### `meta` — always the first line
 
@@ -126,6 +126,20 @@ auto-approve posture, where `App.tsx` writes nothing). Queried via
 
 Permission records are ignored by `load()`/`loadEffective()` — they don't
 appear in the conversation and don't affect message indexing.
+
+### `todo` — todo-list snapshot
+
+```json
+{"type":"todo","at":"...","todos":[{"content":"Add F feedrate capture","status":"pending"}]}
+```
+
+One row per `update_todo_list` call, written by the tool handler via
+`SessionStore.appendTodo` (content secret-redacted per item). Queried via
+`SessionStore.queryTodos` (chronological); on resume, the last snapshot is
+restored into the panel and the model's first turn context
+(`src/ui/App.tsx`). Ignored by `load()`/`loadEffective()`. Sub-agents
+(`new_task`) explicitly pass `sessionStore: undefined` — their plans are
+ephemeral and never pollute the parent's session.
 
 ### `token` — per-turn token-usage entry
 

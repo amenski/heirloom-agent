@@ -13,7 +13,7 @@ import { runAgent } from "./agent.js";
 import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
-import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal } from "./tools/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode } from "./tools/index.js";
 import { todoStore } from "./tools/todo.js";
 import { PermissionEngine } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
@@ -271,6 +271,17 @@ async function main() {
   const errorRecovery = new ErrorRecovery();
   setSessionId(sessionId);
   setCheckpointManager(checkpoints);
+  setSessionStore(sessionStore);
+  // switch_mode tool → same path /mode uses: load → set activeMode →
+  // persist state. Fresh object identity every switch keeps the stable
+  // preamble cache honest (getStablePreamble compares mode by identity).
+  setSetMode(async (slug: string) => {
+    const mode = await modeLoader.load(slug);
+    if (!mode) return null;
+    shared.activeMode = { ...mode };
+    await sessionStore.appendState(sessionId, { mode: slug });
+    return mode.name;
+  });
 
   const memoryStore = new MemoryStore();
   await memoryStore.init();

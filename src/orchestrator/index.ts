@@ -145,9 +145,11 @@ export class Orchestrator {
 
       const subExecuteTool = (call: ToolCall): Promise<ToolOutput> => {
         if (call.name === "new_task") {
-          return this.createHandler(depth + 1)(call.arguments, { ...ctx, todoStore: subStore });
+          return this.createHandler(depth + 1)(call.arguments, { ...ctx, todoStore: subStore, sessionStore: undefined });
         }
-        return this.options.registry.execute(call, { ...ctx, todoStore: subStore });
+        // sessionStore: undefined — sub-agent plans are ephemeral and must not
+        // pollute the parent's session JSONL.
+        return this.options.registry.execute(call, { ...ctx, todoStore: subStore, sessionStore: undefined });
       };
 
       try {

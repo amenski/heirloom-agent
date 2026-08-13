@@ -252,6 +252,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // Messages from an in-app /resume pick, awaiting the load/compact choice. Null
   // when the chooser is driven by the startup path (which uses ctx.initialMessages).
   const pendingResumeRef = useRef<Message[] | null>(null);
+  // Last persisted todo plan of a resumed session, restored on the first turn.
+  const resumedTodosRef = useRef<TodoItem[] | null>(null);
   const [promptDraft, setPromptDraft] = useState<{ nonce: number; text: string } | null>(null);
   const draftNonceRef = useRef(0);
 
@@ -535,6 +537,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     pendingResumeRef.current = null;
   }, [theme.colorEnabled]);
 
+  // Restore the previous session's last todo plan (persisted by
+  // update_todo_list) so the panel and the model's first turn see it. The
+  // single choke point for both startup and in-app /resume replays.
+  useEffect(() => {
+    const store = ctx.sessionStore as { queryTodos?: (id: string) => Promise<{ todos: { content: string; status: string }[] }[]> } | undefined;
+    if (!store || typeof store.queryTodos !== "function") return;
+    store.queryTodos(ctx.sessionId).then((rows) => {
+      if (rows.length > 0) resumedTodosRef.current = rows[rows.length - 1].todos as TodoItem[];
+    }).catch(() => {});
+  }, [ctx.sessionStore, ctx.sessionId]);
+
   // The chooser is fed either by an in-app /resume pick (pendingResumeRef) or by
   // the startup path (ctx.initialMessages). Compaction operates on shared history
   // in both cases, so this fallback only matters for the "Load entirely" branch.
@@ -574,6 +587,13 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       // store subscriber above clears the panel synchronously. After the turn
       // ends the last state stays on screen — dimmed — until the next turn.
       todoStore.reset();
+      // A resumed session restores its last plan (queryTodos ran at mount);
+      // the first post-resume turn carries it into the model's context via
+      // the existing getTodos volatile injection.
+      if (resumedTodosRef.current) {
+        todoStore.setTodos(resumedTodosRef.current);
+        resumedTodosRef.current = null;
+      }
 
       const scheduleOutput = (line: string) => {
         if (rawMode.mode === "raw") {

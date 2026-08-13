@@ -150,6 +150,23 @@ describe("update_todo_list handler", () => {
     // The module singleton (the parent panel's store) was never touched.
     expect(todoStore.getTodos()).toEqual([]);
   });
+
+  it("persists the snapshot via ctx.sessionStore when provided", async () => {
+    const registry = makeRegistry();
+    const appendTodo = vi.fn(async () => {});
+    const out = await registry.execute(
+      { id: "t1", name: "update_todo_list", arguments: { todos: [todo("step", "in_progress")] } },
+      { ...makeCtx(), sessionStore: { appendTodo } as never },
+    );
+    expect(out.error).toBeUndefined();
+    expect(appendTodo).toHaveBeenCalledWith("test", [todo("step", "in_progress")]);
+  });
+
+  it("no-ops without ctx.sessionStore (headless, sub-agents)", async () => {
+    const registry = makeRegistry();
+    const out = await execUpdate(registry, [todo("step", "pending")]);
+    expect(out.error).toBeUndefined();
+  });
 });
 
 describe("todoStore", () => {

@@ -2,6 +2,7 @@ import { ToolRegistry } from "./registry.js";
 import type { ToolCall, ToolOutput } from "../types.js";
 import type { ToolContext } from "./types.js";
 import type { CheckpointManager } from "../checkpoints/index.js";
+import type { SessionStore } from "../sessions/store.js";
 import { registerFiles } from "./files.js";
 import { registerBash } from "./bash.js";
 import { registerSearch } from "./search.js";
@@ -53,6 +54,14 @@ export function setCheckpointManager(cpm: CheckpointManager): void {
 
 export function setSignal(signal: AbortSignal): void {
   ctx.signal = signal;
+}
+
+export function setSessionStore(store: SessionStore): void {
+  ctx.sessionStore = store;
+}
+
+export function setSetMode(fn: (slug: string) => Promise<string | null>): void {
+  ctx.setMode = fn;
 }
 
 export async function executeTool(call: ToolCall): Promise<ToolOutput> {
