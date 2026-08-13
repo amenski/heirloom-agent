@@ -137,17 +137,22 @@ git: {branch} ({clean|N files modified}) | not a git repository
 Date matters: models guess their training-cutoff year otherwise. Git state
 saves the model one `git status` call per session.
 
-## 6. Project instructions
+## 6. User & project instructions
 
-If `.heirloom/instructions.md` exists in the repo root, its contents are
-injected verbatim under a `# Project instructions` header
-(`src/prompt.ts:233`). This is heirloom's equivalent of Claude Code's
-CLAUDE.md / opencode's AGENTS.md: per-repo conventions the user checks in
-("tests run with pnpm vitest", "never touch src/generated/").
+**User-level** (`getUserInstructions`, `src/prompt.ts`): `~/.claude/CLAUDE.md`
+is included in every session when present, under a `# User instructions`
+header — heirloom honors the Claude Code global-instructions convention.
 
-`AGENTS.md` from the repo root is read as a fallback. The user-level
-`~/.claude/CLAUDE.md` is also included when present.
-`.heirloom/instructions.md` wins over both.
+**Project-level** (`getProjectInstructions`, `src/prompt.ts`): the first
+non-empty of, in order:
+
+1. `.heirloom/instructions.md` (heirloom-native)
+2. `CLAUDE.md` (repo root — the Claude Code convention)
+3. `AGENTS.md` (repo root — the opencode convention)
+
+The winner is injected verbatim under a `# Project instructions` header.
+User-level instructions precede project-level in the preamble, so global
+rules read first and repo conventions layer on top.
 
 ## 7. Project rules
 

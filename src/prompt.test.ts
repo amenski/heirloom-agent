@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadProjectRules, loadProjectResearch, buildVolatileContext, buildStablePreamble, buildRepoMap, REPOMAP_BYTE_BUDGET, MAX_RESEARCH_BYTES } from "./prompt.js";
+import { loadProjectRules, loadProjectResearch, buildVolatileContext, buildStablePreamble, buildRepoMap, getUserInstructions, getProjectInstructions, REPOMAP_BYTE_BUDGET, MAX_RESEARCH_BYTES } from "./prompt.js";
 
 describe("loadProjectRules", () => {
   let projectDir: string;
@@ -312,5 +312,81 @@ describe("buildStablePreamble — repository map injection", () => {
   it("omits the map header entirely when no map is provided", () => {
     const out = buildStablePreamble({ workingDir: process.cwd() });
     expect(out).not.toContain("# Repository map");
+  });
+});
+
+describe("getProjectInstructions — CLAUDE.md chain", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "heirloom-instructions-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeFile(rel: string, content: string): void {
+    const full = join(dir, rel);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, content);
+  }
+
+  it("returns empty when no instructions file exists", () => {
+    expect(getProjectInstructions(dir)).toBe("");
+  });
+
+  it("prefers .heirloom/instructions.md over CLAUDE.md", () => {
+    writeFile("CLAUDE.md", "repo CLAUDE.md");
+    writeFile(".heirloom/instructions.md", "heirloom instructions");
+    expect(getProjectInstructions(dir)).toContain("heirloom instructions");
+    expect(getProjectInstructions(dir)).not.toContain("repo CLAUDE.md");
+  });
+
+  it("falls back to CLAUDE.md when instructions.md is absent", () => {
+    writeFile("CLAUDE.md", "repo CLAUDE.md");
+    expect(getProjectInstructions(dir)).toContain("# Project instructions");
+    expect(getProjectInstructions(dir)).toContain("repo CLAUDE.md");
+  });
+
+  it("uses AGENTS.md only when neither instructions.md nor CLAUDE.md exists", () => {
+    writeFile("AGENTS.md", "agents content");
+    expect(getProjectInstructions(dir)).toContain("agents content");
+  });
+
+  it("ignores an empty CLAUDE.md and falls through to AGENTS.md", () => {
+    writeFile("CLAUDE.md", "   ");
+    writeFile("AGENTS.md", "agents content");
+    expect(getProjectInstructions(dir)).toContain("agents content");
+  });
+});
+
+describe("getUserInstructions — ~/.claude/CLAUDE.md", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "heirloom-home-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("returns empty when ~/.claude/CLAUDE.md is absent", () => {
+    expect(getUserInstructions(home)).toBe("");
+  });
+
+  it("returns a # User instructions section when present", () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "CLAUDE.md"), "global rules");
+    const out = getUserInstructions(home);
+    expect(out).toContain("# User instructions");
+    expect(out).toContain("global rules");
+  });
+
+  it("ignores an empty file", () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "CLAUDE.md"), "\n  \n");
+    expect(getUserInstructions(home)).toBe("");
   });
 });

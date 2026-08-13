@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { join, relative, sep } from "node:path";
 import { promisify } from "node:util";
-import { platform } from "node:os";
+import { homedir, platform } from "node:os";
 
 export interface PromptContext {
   mode?: ModeConfig;
@@ -83,6 +83,11 @@ export function buildStablePreamble(ctx: PromptContext): string {
   if (toolGuide) sections.push(toolGuide);
 
   if (mode?.customInstructions) sections.push(mode.customInstructions);
+
+  // User-level instructions (~/.claude/CLAUDE.md) before project-level, so
+  // global rules read first and repo conventions layer on top of them.
+  const user = getUserInstructions();
+  if (user) sections.push(user);
 
   const proj = getProjectInstructions(ctx.workingDir);
   if (proj) sections.push(proj);
@@ -230,19 +235,27 @@ date: ${date}
 git: ${gitLine}`;
 }
 
-function getProjectInstructions(cwd: string): string {
-  const heirloomPath = join(cwd, ".heirloom", "instructions.md");
-  if (existsSync(heirloomPath)) {
-    const content = readFileSync(heirloomPath, "utf-8").trim();
-    if (content) return `# Project instructions\n${content}`;
+/**
+ * User-level instructions: `~/.claude/CLAUDE.md` (the Claude Code global
+ * file), included in every session when present. Injectable home for tests.
+ */
+export function getUserInstructions(home: string = homedir()): string {
+  const claudePath = join(home, ".claude", "CLAUDE.md");
+  if (existsSync(claudePath)) {
+    const content = readFileSync(claudePath, "utf-8").trim();
+    if (content) return `# User instructions\n${content}`;
   }
+  return "";
+}
 
-  const agentsPath = join(cwd, "AGENTS.md");
-  if (existsSync(agentsPath)) {
-    const content = readFileSync(agentsPath, "utf-8").trim();
-    if (content) return `# Project instructions\n${content}`;
+/** Project instructions: first non-empty of .heirloom/instructions.md, CLAUDE.md, AGENTS.md. */
+export function getProjectInstructions(cwd: string): string {
+  for (const name of [join(cwd, ".heirloom", "instructions.md"), join(cwd, "CLAUDE.md"), join(cwd, "AGENTS.md")]) {
+    if (existsSync(name)) {
+      const content = readFileSync(name, "utf-8").trim();
+      if (content) return `# Project instructions\n${content}`;
+    }
   }
-
   return "";
 }
 
