@@ -1,5 +1,7 @@
 # Deep Dive: Memory, Context, ReAct, Compaction, Token Optimization
 
+**Status:** index · verified 2026-08-13 · canonical doc index: [../README.md](../README.md)
+
 > Design decisions that carry through every phase. Get these wrong and you
 > rewrite the agent loop later; get them right and each phase slots in cleanly.
 

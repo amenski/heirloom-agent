@@ -230,20 +230,12 @@ reasoning effort control (`/effort`).
 
 ## Docs
 
-| | |
-|---|---|
-| [architecture.md](./docs/architecture.md) | Design layers and tradeoffs |
-| [subsystems.md](./docs/subsystems.md) | Index: memory, context, ReAct, failure modes |
-| [tool-spec.md](./docs/tool-spec.md) | Built-in tool contracts |
-| [provider-spec.md](./docs/provider-spec.md) | Model adapter interface |
-| [config-spec.md](./docs/config-spec.md) | Settings reference |
-| [mode-spec.md](./docs/mode-spec.md) | Persona definitions |
-| [permission-spec.md](./docs/permission-spec.md) | Rules, approvals, prompts |
-| [session-spec.md](./docs/session-spec.md) | Conversation storage format |
-| [skill-spec.md](./docs/skill-spec.md) | Skill format and loading |
-| [cli-spec.md](./docs/cli-spec.md) | Flags, commands, keybindings |
-| [security-spec.md](./docs/security-spec.md) | Threat model and mitigations |
-| [conventions.md](./docs/conventions.md) | Code style and testing |
+**Start at [`docs/README.md`](./docs/README.md)** — the canonical index of
+specs, deep dives, and troubleshooting, with reading paths for new
+contributors, maintainers, and users. [`docs/archive/`](./docs/archive/)
+holds superseded designs and completed task briefs (records, not reference).
+
+Having trouble? See [`docs/troubleshooting.md`](./docs/troubleshooting.md).
 
 ---
 

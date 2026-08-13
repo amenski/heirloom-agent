@@ -1,5 +1,10 @@
 # Handoff Spec — Batched Security Fixes (D1/D2/D3/D4)
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Task brief, completed; D1-D4 verified fixed in docs/security-spec.md (2026-07-31).
+
 **For:** implementing subagent (Sonnet). **Author:** planning agent.
 **Origin:** adversarial verification pass 2026-07-29 found 3 of 4 permission
 controls BROKEN. Full findings and fix directions are in

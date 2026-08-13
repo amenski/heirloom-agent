@@ -53,7 +53,9 @@ the [README](./README.md#quickstart) for the provider list.
 3. **Update the relevant spec.** Every subsystem has a doc in
    [`docs/`](./docs/), and every design decision is written down there. If you
    change how a subsystem behaves, update its spec in the same PR — keep code
-   and docs in sync.
+   and docs in sync. New or renamed docs must be listed in
+   [`docs/README.md`](./docs/README.md) (the canonical index) in the same
+   change.
 4. **Keep changes surgical.** Touch only what the change requires; match the
    surrounding style rather than reformatting or refactoring adjacent code.
 
@@ -78,7 +80,7 @@ A quick map of the source tree:
 | `src/mcp/` | Model Context Protocol client/connector |
 | `src/config/` | `settings.json` loader, validation, credentials |
 | `src/ui/` | The Ink TUI (App, prompt input, permission prompt, views) |
-| `docs/` | One spec per subsystem — the source of truth for design decisions |
+| `docs/` | The reference set, indexed by [`docs/README.md`](./docs/README.md) — start there |
 
 When in doubt about which layer to touch, the matching doc in `docs/` explains
 the contract before you read the code.

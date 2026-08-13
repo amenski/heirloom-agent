@@ -1,25 +1,29 @@
-# Provider Adapter Specification
+# Provider Specification
 
-Every provider adapter must implement the `Provider` interface defined in
-`src/providers/types.ts`. This document defines the contract.
+**Status:** current · verified 2026-08-13 · covers `src/providers/{types,presets,aisdk,catalog,registry}.ts`, `src/providers/models.json`, `src/config/credentials.ts`
 
-## Adapters vs Providers
+## 1. Overview
 
-An **adapter** implements a wire format: `openai-compatible`, `anthropic`.
-A **provider** is a config entry binding an adapter to a base URL, API key,
-and model list (config-spec.md, `providers:` map).
+The providers layer abstracts LLM backends behind one contract. Wire formats
+are handled by the **Vercel AI SDK v7** (`ai` + `@ai-sdk/openai` /
+`@ai-sdk/anthropic`) in `src/providers/aisdk.ts`; heirloom layers presets, a
+model catalog, and key resolution on top.
 
-DeepSeek is not its own adapter — it's the `openai-compatible` adapter plus
-a base URL, shipped as a built-in config preset. (`src/providers/deepseek.ts`
-already is the OpenAI SDK with a base URL; the rename to
-`openai-compatible.ts` makes the reality explicit.) Consequences:
+- **Provider** — a named config entry: an API (`openai-compatible` or
+  `anthropic`), a base URL, a key environment variable, and a model list.
+- **Catalog** — `src/providers/models.json` ships bundled presets
+  (deepseek, openai, openrouter, groq, ollama). A user file
+  `~/.heirloom/models.json` deep-merges over the bundled catalog
+  (`src/providers/catalog.ts`) — add or override providers/models without
+  touching code.
+- **AI SDK** — `src/providers/aisdk.ts` maps `streamText` events to the
+  canonical `StreamEvent` contract below. The old per-vendor adapter files
+  (`deepseek.ts`, `openai-compatible.ts`) were deleted in the AI SDK
+  migration — one wire layer serves all backends now.
 
-- New OpenAI-compatible service (OpenRouter, Groq, Ollama, …): **zero code**,
-  config only.
-- New wire format (a genuinely different API shape): one adapter file — the
-  rule below.
+## 2. Contract
 
-## Interface
+`src/providers/types.ts`:
 
 ```typescript
 interface Provider {
@@ -27,76 +31,92 @@ interface Provider {
   streamChat(
     messages: Message[],
     tools: ToolDef[],
-    options?: { temperature?: number; maxTokens?: number }
+    options?: { temperature?: number; maxTokens?: number;
+                signal?: AbortSignal; effort?: string; thinkingEnabled?: boolean },
   ): AsyncGenerator<StreamEvent>;
 }
 ```
 
-## StreamEvent Order
+`StreamEvent`:
 
-Events must be yielded in this order:
-
+```typescript
+type StreamEvent =
+  | { type: "text_delta"; content: string }
+  | { type: "reasoning_delta"; content: string }
+  | { type: "tool_call_start"; id: string; name: string }
+  | { type: "tool_call_delta"; id: string; arguments: string }
+  | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens?: number }
+  | { type: "done"; finishReason: string };
 ```
-text_delta* → (tool_call_start → tool_call_delta*)* → done
-```
 
-- Zero or more `text_delta` events (LLM's text response)
-- Zero or more tool call groups, each: one `tool_call_start` followed by zero or more `tool_call_delta`
-- Exactly one `done` event to signal stream completion
+Rules:
 
-## Message Mapping
-
-Adapters must convert canonical `Message` types to the provider's native format:
-
-| Canonical | OpenAI | Anthropic |
-|-----------|--------|-----------|
-| `SystemMessage` | `{ role: "system", content }` | System param or first `user` turn |
-| `UserMessage` | `{ role: "user", content }` | `{ role: "user", content: [{ type: "text", text: content }] }` |
-| `AssistantMessage` (text) | `{ role: "assistant", content }` | `{ role: "assistant", content: [{ type: "text", text: content }] }` |
-| `AssistantMessage` (tool calls) | `{ role: "assistant", tool_calls: [...] }` | `{ role: "assistant", content: [{ type: "tool_use", ... }] }` |
-| `ToolResultMessage` | `{ role: "tool", tool_call_id, content }` | `{ role: "user", content: [{ type: "tool_result", ... }] }` |
-
-## Requirements
-
-1. **No canonical type contamination.** Adapters import canonical types but
-   never export them. The agent loop only speaks canonical types.
-
-2. **Idempotent.** Calling `streamChat` with the same inputs produces the same
-   sequence of StreamEvents (modulo LLM non-determinism).
-
-3. **Error surface.** Adapter errors are thrown as exceptions carrying
-   `{ status?: number, retryable: boolean }` so the agent loop can apply its
-   retry policy (subsystems.md §6): 429/5xx/network → `retryable: true`;
-   auth/bad-model/invalid-request → `retryable: false`. Adapters never retry
-   internally and never silently swallow errors — retries are the loop's
-   job, once, in one place.
-
-4. **Stateless.** Providers hold no conversation state. The agent loop manages
+1. **No canonical type contamination.** The provider layer imports canonical
+   types but never exports them; the agent loop only speaks canonical types
+   (`src/types.ts`).
+2. **Stateless.** Providers hold no conversation state — the agent loop owns
    the message array.
+3. **Keys are injected, not discovered.** `createProvider` resolves the key
+   and passes it in; providers never read `process.env` themselves.
+4. **Retries are the loop's job.** The provider layer does not retry
+   internally; the agent loop handles transient errors
+   (`src/agent.ts` `isTransientNetworkError`; subsystems.md §6).
 
-5. **Keys are injected, not discovered.** The config layer resolves the key
-   (env var named by `apiKeyEnv`, else `~/.heirloom/credentials.yaml` —
-   config-spec.md) and passes key + baseUrl to the adapter factory:
-   `createOpenAICompatibleProvider({ baseUrl, apiKey })`. Adapters never
-   read `process.env` and never hardcode env-var names — that's what keeps
-   one adapter serving many providers.
+## 3. Key resolution
 
-6. **Tool call accumulation.** Streaming deltas may arrive in any order.
-   `tool_call_start` must NOT be yielded until both `id` and `name` are known.
-   `tool_call_delta` yields raw JSON fragments; the agent loop concatenates and
-   parses.
+`createProvider(name, options)` (`src/providers/presets.ts:103`) resolves in
+order:
 
-## Adding a New Provider
+1. `options.apiKey` (from settings.json `env.API_KEY`, provider-scoped)
+2. `process.env[preset.keyEnv]` (e.g. `DEEPSEEK_API_KEY`)
+3. `~/.heirloom/credentials.yaml` (`heirloom auth` writes it; file enforced
+   `0600`, `src/config/credentials.ts`)
 
-**OpenAI-compatible service:** add a `providers:` entry in config
-(config-spec.md). No code.
+No key resolvable for a provider that requires one → thrown error naming the
+env var and suggesting `heirloom auth`. Providers without `keyEnv` (ollama —
+local) need none.
 
-**New wire format (new adapter):**
-1. Create `src/providers/<api-name>.ts`
-2. Implement `create<ApiName>Provider(opts): Provider` (opts: baseUrl, apiKey)
-3. Map messages (canonical → native) and tools (canonical → native)
-4. Stream and convert to `StreamEvent`
-5. Register the `api:` name in the adapter registry — the only shared file
-   that changes. Nothing in `src/types.ts` or `src/agent.ts` moves.
+## 4. Bundled catalog
 
-That's the test: a new adapter is one file plus one registry line.
+`src/providers/models.json` (5 providers):
+
+| Provider | API | Key env | Default model |
+|----------|-----|---------|---------------|
+| deepseek | openai-compatible | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` |
+| openai | openai-compatible | `OPENAI_API_KEY` | `gpt-5.6-sol` |
+| openrouter | openai-compatible | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
+| groq | openai-compatible | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| ollama | openai-compatible | — (local) | `llama3.2` |
+
+Per-model capabilities (`ModelCapabilities`, `src/providers/types.ts`):
+`contextWindow` (drives compaction), `effort.values` (drives `/effort`),
+`pricing` (**approximate** — feeds only the status-bar cost estimate, never
+billing or routing). `api: "anthropic"` is supported by `aisdk.ts` but has
+no bundled preset — add one via `~/.heirloom/models.json`.
+
+Selection precedence (`src/cli.tsx`): `--model` flag > settings.json
+`model` > settings `env.MODEL`; provider: settings `provider` >
+env/BASE_URL detection > `"deepseek"` default. `--model` takes
+`provider/model`, split on the first slash.
+
+## 5. Adding a provider
+
+**OpenAI-compatible service** (zero code):
+1. Add a preset entry to `~/.heirloom/models.json` (or the bundled catalog).
+
+**A provider the catalog can't express** (code change):
+1. Add the preset to `src/providers/models.json` (+ `presets.ts` entry if the
+   name needs registration) and a test in `presets.test.ts`.
+2. If the wire format is new, extend `src/providers/aisdk.ts` — the AI SDK
+   already covers OpenAI-compatible and Anthropic shapes.
+
+`env.BASE_URL` overrides a built-in preset's base URL (proxy/gateway use).
+`setConfigProviders` (`presets.ts:41`) registers config-supplied providers;
+it is wired programmatically, not to a settings.json key.
+
+## 6. Verified against
+
+`src/providers/types.ts` · `src/providers/presets.ts` (createProvider,
+BUILTIN_PRESETS) · `src/providers/aisdk.ts` · `src/providers/catalog.ts` ·
+`src/providers/models.json` · `src/config/credentials.ts` · `src/cli.tsx`
+(selection precedence)

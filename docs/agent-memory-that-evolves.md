@@ -1,5 +1,9 @@
 # Agents Forget. Here's How We Built Memory That Actually Evolves.
 
+**Status:** research essay (design context only) · no code-verified claims.
+Current behavior lives in [subsystems/memory-architecture.md](./subsystems/memory-architecture.md); this essay describes a speculative four-agent memory design that does not match this codebase's shape.
+
+
 *A practical, research-grounded memory architecture for LLM agents — and the bugs we hit along the way.*
 
 ---

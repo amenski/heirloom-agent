@@ -1,5 +1,10 @@
 # TODO — deferred work
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Deferred-work tracker; every item marked done (conventions.md: trackers are ephemeral).
+
 The prior items in this file (persistent input, message queue, status-bar revamp, output
 formatting/gutter, bracketed-paste and Plan-mode bug fixes, dead `src/index.ts` removal) are all
 **done and merged into the working tree** as of this session. What remains below is forward-looking.

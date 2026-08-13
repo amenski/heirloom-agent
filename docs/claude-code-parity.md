@@ -1,5 +1,8 @@
 # Claude Code Parity — Gap Analysis & Roadmap
 
+**Status:** forward-looking gap analysis · verified 2026-08-10 · not a spec — items land in specs only when shipped. See [improvement-roadmap.md](./improvement-roadmap.md).
+
+
 Status (**2026-08-10**): research-backed comparison of Heirloom's surface against
 Claude Code's current CLI, from the official docs (`docs.anthropic.com/en/docs/
 claude-code/cli-reference` + `/headless`, fetched 2026-08-10; the hooks page

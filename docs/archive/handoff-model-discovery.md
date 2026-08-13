@@ -1,6 +1,10 @@
 # Handoff — Model & Mode Discovery (/model listing + arg completion)
 
-**Note:** historical snapshot. Model IDs below (e.g. `gpt-4o`, `deepseek-chat`,
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Task brief, completed.
+
 `llama-4-scout`) are retired — see `src/providers/models.json` for current IDs.
 
 **For:** subagent (Sonnet). **File:** `src/index.ts` ONLY (plus a test if feasible).

@@ -1,5 +1,10 @@
 # UI Redesign Spec — hand-rolled terminal renderer
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Superseded by the Ink migration that won (see migration-aisdk-ink.md here); targets the deleted src/tui/ renderer and src/index.ts. Its "guidance is current" note is itself stale.
+
 **Note:** this spec's guidance is current; only the example model IDs (e.g.
 `gpt-4o`, `deepseek-chat`) are stale. `src/providers/models.json` is authoritative.
 

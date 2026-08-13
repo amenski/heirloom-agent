@@ -1,12 +1,12 @@
 ## 1. Memory Architecture
 
+**Status:** current · verified 2026-08-13 · covers `src/memory/store.ts`
+
 ### Problem
+
 An agent that forgets everything between sessions is a calculator, not an
-assistant. It should remember:
-- Project conventions (this codebase uses X pattern, Y library)
-- Past decisions (why we chose approach A over B)
-- User preferences (prefers functional style, hates classes)
-- Common pitfalls (this file is auto-generated, don't edit it)
+assistant. It should remember: project conventions, past decisions, user
+preferences, and common pitfalls.
 
 ### Options evaluated
 
@@ -17,64 +17,44 @@ assistant. It should remember:
 | Markdown files (Obsidian) | Human-readable, portable, linkable | Manual search without embeddings | opencode |
 | Hybrid: MD + embeddings | Best of both | Complexity, two sources of truth | — |
 
-### Decision: Hybrid — Markdown files + optional embeddings
+### Decision: Markdown files (+ optional embeddings later)
 
-**Storage:** `~/.heirloom/memory/` (like opencode's `SecondBrain/AgentMemory/`)
+**Storage** (`src/memory/store.ts`): per-project dir
+`~/.heirloom/memory/<project-slug>/` plus a global `MEMORY.md` index:
 
 ```
 ~/.heirloom/memory/
 ├── MEMORY.md              # Index: one line per memory file
-├── _global/
-│   ├── user-prefs.md      # Preferences, style, conventions
-│   └── tool-decisions.md  # Why we chose X over Y
-├── <project-slug>/
-│   ├── sessions.md        # Rolling session log, newest first
-│   ├── decisions.md       # Key architectural decisions
-│   ├── patterns.md        # "This project uses X pattern"
-│   └── pitfalls.md        # "Don't edit this file, it's generated"
-└── sessions/              # FROZEN: old cross-project session logs (read-only)
+└── <project-slug>/
+    ├── sessions.md        # Rolling session log, newest first
+    ├── decisions.md       # Key architectural decisions
+    ├── patterns.md        # "This project uses X pattern"
+    └── pitfalls.md        # "Don't edit this file, it's generated"
 ```
 
-**File format** (one fact per file):
-```markdown
----
-name: canonical-types
-description: Why heirloom uses a canonical type system over SDK types
-type: decision
-date: 2026-07-28
-tags: [architecture, types, providers]
----
+`appendSession()` prepends dated entries to `sessions.md` (called at session
+end, `src/cli.tsx:322`); `writeFact()` appends to `decisions.md` /
+`patterns.md` / `pitfalls.md`.
 
-# Canonical Type System
+### Loading strategy
 
-We chose canonical types (Message, ToolDef, ToolCall) over SDK-native types
-because it makes provider swapping a one-file change. Each adapter maps to/
-from canonical types. The agent loop never touches an SDK import.
-```
+1. On session start: `getInjection()` builds a **≤1,024-token block** — the
+   `MEMORY.md` index head (first 20 lines) plus per-file content with
+   truncation — injected into the stable preamble (system-prompt.md §8).
+2. Facts beyond the cap remain reachable by reading the memory directory
+   directly.
 
-**Loading strategy:**
-1. On session start: read `MEMORY.md` index, load relevant memory files
-2. During conversation: search memory by tag/slug when user mentions related concepts
-3. On session end: append session summary to `sessions.md`, update decision files
+### Write policy
 
-**Write policy (who decides what's durable):**
-- At session end, the compactor's structured summary (§2) is the source:
-  each `decisions[]` entry is a candidate memory fact; `files[]` and
-  `errors_resolved[]` go to `sessions.md` only.
-- The LLM proposes, a filter disposes: skip facts derivable from the repo
-  (code structure, git history, anything in docs/) and facts that only
-  mattered to this one conversation.
-- The user saying "remember X" bypasses the filter — written immediately.
+- The user saying "remember X" is written immediately.
+- Session summaries are appended at session end.
+- Facts derivable from the repo (code structure, git history, anything in
+  docs/) are skipped — memory holds what the repo cannot tell you.
 
-**Injection cap:** memory injected at session start is budgeted at 1,024
-tokens, filled index-first then top-relevance facts until full (same
-budget-fill mechanism as RepoMap, §4f). Facts beyond the cap remain
-reachable via explicit search over the memory directory.
+### Future
 
-**Future:** Add LanceDB for semantic search when memory exceeds ~50 files.
-Start with grep over markdown — it's fast enough for hundreds of files.
-
----
+Add LanceDB for semantic search when memory exceeds ~50 files. Start with
+grep over markdown — it's fast enough for hundreds of files.
 
 ---
 

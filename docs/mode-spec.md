@@ -1,56 +1,70 @@
 # Mode Specification
 
-**Note:** this spec's guidance is current. The example model ID below is written
-`anthropic/claude-sonnet-4-6`; the real ID uses a dot (`anthropic/claude-sonnet-4.6`).
-`src/providers/models.json` is authoritative.
+**Status:** current · verified 2026-08-13 · covers `src/modes/{loader.ts,builtin/*.yaml}`
 
-A mode is a YAML-defined persona that gates tool access, file restrictions,
-model selection, and behavioral instructions.
+## 1. Overview
 
-## Schema
+A mode is a YAML-defined persona that gates tool access, restricts file
+modifications, and adds behavioral instructions. Modes shape the system
+prompt (role definition at the top, custom instructions after the base
+rules — system-prompt.md) and the tool set offered to the model
+(`src/cli.tsx` filters via `registry.getByMode(mode.groups)`).
+
+## 2. Schema
+
+`ModeConfig` (`src/modes/loader.ts:5`):
 
 ```yaml
 # Required
-slug: string             # Unique identifier, kebab-case (e.g., "code", "my-reviewer")
-name: string             # Display name (e.g., "Code", "PR Reviewer")
-roleDefinition: string   # Identity/expertise placed at start of system prompt
+slug: string             # Unique identifier, kebab-case (e.g. "code", "my-reviewer")
+name: string             # Display name (e.g. "Code", "PR Reviewer")
+roleDefinition: string   # Identity/expertise placed at the start of the system prompt
 
 # Optional
-description: string      # Short summary for mode selector
-whenToUse: string        # Guidance for orchestrator auto-selection
+description: string      # Short summary for the mode selector
 groups: string[]         # Allowed tool groups: read, edit, command, mcp, workflow
 fileRegex: string        # Restrict file modifications to matching paths
-customInstructions: string  # Additional rules appended to system prompt
-model: string            # Sticky model (provider/model-id), e.g., "anthropic/claude-sonnet-4-6"
+customInstructions: string  # Additional rules appended to the system prompt
+model: string            # Sticky model (provider/model)
 ```
 
-## Tool Groups
+YAML is parsed by a small hand-rolled parser (`src/modes/loader.ts:16`):
+top-level keys, `>`/`|` folded blocks, indented `- ` lists, `[a, b]` inline
+arrays, quoted scalars.
+
+## 3. Tool groups
+
+`ToolGroup = "read" | "edit" | "command" | "mcp" | "workflow"`
+(`src/tools/types.ts:40`).
 
 | Group | Tools | Purpose |
 |-------|-------|---------|
-| `read` | read_file, list_files, glob, search | Information gathering |
-| `edit` | edit, apply_diff, apply_patch, search_replace, edit_file, write_to_file | Code modification |
-| `command` | run_bash | Shell execution |
-| `mcp` | use_mcp_tool, access_mcp_resource | External tool servers |
-| `workflow` | switch_mode, new_task, ask_followup_question, attempt_completion | Meta-tools |
+| `read` | read_file, list_files, glob, search, web_fetch, web_search | Information gathering |
+| `edit` | edit, edit_file, search_replace, apply_diff, apply_patch, write_to_file | Code modification |
+| `command` | run_bash, run_bash_background, check_job, kill_job | Shell execution |
+| `mcp` | `mcp__<server>__<tool>` (dynamic, per connected server) | External tool servers |
+| `workflow` | new_task | Sub-agent delegation |
 
-## Always-Available Tools
+## 4. Always-available tools
 
-These tools bypass mode gates — they're always accessible:
-- `ask_followup_question` — ask the user for clarification
-- `attempt_completion` — signal task completion
-- `switch_mode` — change to another mode
-- `new_task` — delegate to a sub-agent
-- `update_todo_list` — create/update the task plan (see tool-spec.md)
+These bypass mode gates regardless of group:
 
-## Built-in Modes
+- `ask_user_question` — structured clarification questions (all groups)
+- `update_todo_list` — the task plan checklist (all groups; tool-spec.md)
+- `load_skill` — skill content injection (`always: true` + read;
+  skill-spec.md)
 
-### code
+`new_task` is **not** always-available: it is `workflow`-group only, so only
+the orchestrator mode can delegate.
+
+## 5. Built-in modes
+
+`src/modes/builtin/*.yaml`:
+
+### code (default mode)
 ```yaml
 slug: code
 name: Code
-roleDefinition: "You are a senior software engineer. Write clean, well-typed,
-  well-tested code. Prefer small, focused functions. Add appropriate error handling."
 groups: [read, edit, command]
 ```
 
@@ -58,8 +72,6 @@ groups: [read, edit, command]
 ```yaml
 slug: ask
 name: Ask
-roleDefinition: "You are a knowledgeable technical assistant. Answer questions
-  about the codebase accurately and concisely. Do not modify any files."
 groups: [read]
 ```
 
@@ -67,20 +79,14 @@ groups: [read]
 ```yaml
 slug: architect
 name: Architect
-roleDefinition: "You are a systems architect. Analyze requirements, design
-  solutions, and produce clear specifications. Think before coding."
 groups: [read, edit]
 fileRegex: "\\.(md|yaml|yml|json|txt)$"
-customInstructions: "Only write to documentation and configuration files.
-  For implementation, delegate to the Code mode via new_task."
 ```
 
 ### debug
 ```yaml
 slug: debug
 name: Debug
-roleDefinition: "You are a systematic debugger. Form hypotheses, gather evidence,
-  isolate root causes. Never guess — verify every assumption."
 groups: [read, edit, command]
 ```
 
@@ -88,30 +94,34 @@ groups: [read, edit, command]
 ```yaml
 slug: orchestrator
 name: Orchestrator
-roleDefinition: "You are a task orchestrator. Break complex requests into
-  subtasks, delegate each to the appropriate mode, and synthesize results."
 groups: [workflow]
 ```
 
-## Configuration Precedence
+## 6. Resolution precedence
 
-1. Project `.heirloom/modes/<slug>.yaml` (highest)
-2. Global `~/.heirloom/modes/<slug>.yaml`
-3. Built-in defaults (lowest)
+`ModeLoader.load(slug, projectDir?)` (`src/modes/loader.ts:74`) searches, in
+order (first hit wins, results cached):
 
-Project overrides global. Global overrides built-in.
+1. `./.heirloom/modes/<slug>.yaml` (project — only when projectDir is passed)
+2. `$HEIRLOOM_HOME || ~/.heirloom/modes/<slug>.yaml` (global)
+3. `src/modes/builtin/<slug>.yaml` (built-in defaults)
 
-## Custom Modes
+Project overrides global; global overrides built-in. `listAll()` enumerates
+built-in slugs only.
 
-Users define custom modes by creating YAML files. Example:
+## 7. Custom modes
 
 ```yaml
 # ~/.heirloom/modes/reviewer.yaml
 slug: reviewer
 name: PR Reviewer
-roleDefinition: "You are a thorough code reviewer. Check for bugs, style
-  violations, security issues, and performance problems."
+roleDefinition: "You are a thorough code reviewer. Check for bugs, style violations, security issues, and performance problems."
 groups: [read]
-customInstructions: "Always reference line numbers. Suggest concrete fixes,
-  not vague advice. Prioritize bugs over style."
+customInstructions: "Always reference line numbers. Suggest concrete fixes, not vague advice. Prioritize bugs over style."
 ```
+
+## 8. Verified against
+
+`src/modes/loader.ts` (ModeConfig, load, listAll) · `src/modes/builtin/*.yaml`
+(all five built-ins) · `src/tools/types.ts` (ToolGroup) · `src/cli.tsx`
+(mode → tool-filter wiring, default mode)

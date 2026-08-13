@@ -47,6 +47,11 @@
   changelog/design-decisions section), AC tables → test descriptions.
   Findings and checkmarks are ephemeral — they die with the todo.
 - Nothing in `docs/` may require reading `todo.md` to understand.
+- `docs/README.md` is the canonical doc index. Every current doc carries a
+  status line in the format defined there; new or moved docs update the
+  index in the same change. Superseded/historical material moves to
+  `docs/archive/` — never delete, and nothing in the live set may link
+  into it.
 
 ## Git
 
@@ -71,7 +76,8 @@ zero-config TypeScript, watch mode. `npm test` runs `vitest run`.
 Highest-value targets, in priority order:
 1. **Edit strategies** — each of the 6 tools against fixture files: clean
    match, no match, count mismatch, multi-file patch atomicity (tool-spec.md).
-2. **Permission engine** — insertion order, last-match-wins, glob patterns.
+2. **Permission engine** — rule resolution (most-restrictive-wins,
+   specificity tiers, glob patterns; permission-spec.md).
 3. **ToolRegistry** — mode gating returns exactly the allowed tool subset.
 4. **Compaction budget** — threshold math, tier classification, fidelity check.
 5. **Session loader** — torn last line, state-record folding, compaction

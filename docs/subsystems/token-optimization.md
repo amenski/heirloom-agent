@@ -1,66 +1,55 @@
 ## 4. Token Optimization Strategies
 
-### 4a. Immutable Prefix Caching
+**Status:** current · verified 2026-08-13 · covers `src/prompt.ts`, `src/agent.ts`, `src/compaction/`
 
-The system prompt, tool definitions, and mode definition don't change between
-turns. Mark them as cacheable so the provider reuses computation.
+### 4a. Immutable prefix caching
 
-**DeepSeek/OpenAI:** Not supported in the base API (only Anthropic has native
-prompt caching). Workaround: keep prefix identical across turns so the
-provider's internal cache hits.
+The stable preamble does not change between turns. It is byte-stable by
+construction and sits at `messages[0]` (`src/agent.ts`); a module-level
+cache keyed on mode/skills/memory/workingDir reuses the previous string
+when inputs are unchanged. Volatile content (plan-mode instruction, env,
+todo block) is injected into the trailing user message per request — never
+mutating the cached prefix (system-prompt.md §2).
 
-**Anthropic:** Native prompt caching via `cache_control` breakpoints:
-```typescript
-messages: [
-  { role: "user", content: [
-    { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }
-  ]},
-  // ... rest of conversation (not cached)
-]
-```
+DeepSeek/OpenAI-compatible APIs have no native prefix-cache API; keeping
+the prefix byte-identical lets the provider's internal cache hit.
+Anthropic's native prompt caching is available but not currently wired.
 
-### 4b. Mode-Gated Tool Definitions
+### 4b. Mode-gated tool definitions
 
-Don't send all 11 tools. Only send tools in the active mode's groups:
+Only tools in the active mode's groups are sent (mode-spec.md §3); `ask`
+mode carries none of the edit/shell text, and the `workflow` group gets no
+tool guide at all (`getToolGuide` returns `""`).
 
-| Mode | Tools Sent | Tool Tokens Saved |
-|------|-----------|-------------------|
-| code | 9 tools (read + edit + command) | ~20% vs all |
-| ask | 4 tools (read only) | ~65% vs all |
-| architect | 5 tools (read + edit, docs only) | ~55% vs all |
-| orchestrator | 1 tool (new_task) | ~90% vs all |
+### 4c. Parallel tool execution
 
-### 4c. Parallel Tool Execution
+When the model issues multiple independent read calls in one turn, they
+execute concurrently (`Promise.allSettled` fast path in `src/agent.ts`).
 
-When the LLM issues multiple independent tool calls, execute them concurrently.
-Already implemented in the agent loop (`Promise.all`).
+### 4d. Concise system prompt
 
-### 4d. Concise System Prompt
+Every token in the system prompt costs every turn:
 
-Every token in the system prompt costs every turn. Optimize:
-- Remove fluff ("You are a helpful AI assistant...")
+- Remove fluff ("You are a helpful AI assistant…")
 - Remove rules the model already follows
-- Use shorthand where the model understands it
 - Test: remove a sentence, does quality drop? If not, keep it removed.
 
-Aider's system prompt is remarkably terse — that's intentional.
+Aider's system prompt is remarkably terse — that's intentional. Change
+protocol: system-prompt.md §11.
 
-### 4e. Tool Output Compression
+### 4e. Tool output caps
 
-Large tool outputs (1000+ lines) should be summarized before feeding back:
-- `read_file`: Return first 500 lines + "file truncated at line 500"
-- `search`: Return first 50 matches + "search truncated"
-- `run_bash`: Return last 200 lines of output + exit code
+Resource limits live in the tools themselves (tool-spec.md §2): 2,000-line
+`read_file`, 50-match `search`, 512 KB `run_bash` buffer, 40,000-char
+`web_fetch`, 8,000-char `web_search`. The agent can always request more
+detail with a follow-up call.
 
-The agent can always request more detail with a follow-up tool call.
+### 4f. RepoMap budgeting
 
-### 4f. RepoMap Budgeting
-
-Aider's binary search approach: given a fixed token budget (e.g., 1024 tokens
-for repo context), include as many high-rank files as fit, then stop. Don't
-exceed the budget.
-
----
+Given a fixed token budget, include as many high-rank symbols as fit, then
+stop. Heirloom caps the whole map at 4 KB (`REPOMAP_BYTE_BUDGET`,
+`src/prompt.ts`) and snapshots it per session so it never breaks prefix
+caching.
 
 ---
 

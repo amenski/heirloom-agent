@@ -1,5 +1,10 @@
 # Migration — Vercel AI SDK (providers) + Ink (UI)
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Migration plan, completed 2026-07-29/30.
+
 **Decision (2026-07-29):** stop hand-rolling the two subsystems that caused
 every UI/usage bug this session. Replace `src/providers/*` streaming with the
 Vercel AI SDK and `src/tui/*` with Ink. KEEP the genuinely novel, working

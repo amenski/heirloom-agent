@@ -1,361 +1,298 @@
-# Heirloom — Design Document
+# Architecture
+
+**Status:** current · verified 2026-08-13 · covers the whole `src/` tree; deep dives in [subsystems.md](./subsystems.md)
 
 > Personal AI coding agent. Provider-agnostic, mode-gated, safety-first.
 > Target: opencode-quality CLI, built incrementally from first principles.
 
----
+## 1. Philosophy
 
-## Philosophy
+Build an agent that **you fully understand**. Every line has a known
+purpose. The name "heirloom" means something you build once and keep — the
+architecture reflects that: each layer is independently understandable,
+replaceable, and testable. No layer depends on implementation details of
+another.
 
-Build an agent that **you fully understand**. Every line has a known purpose.
-No framework, no magic — just TypeScript, a provider adapter, and a loop.
+## 2. The 7 layers
 
-The name "heirloom" means something you build once and keep. The architecture
-reflects that: each layer is independently understandable, replaceable, and
-testable. No layer depends on implementation details of another.
-
----
-
-_See [subsystems.md](./subsystems.md) for deep dives on memory, context management, ReAct variants, compaction strategy, and token optimization._
-
-## Architecture: 7 Layers
-
-Inspired by how opencode, RooCode, Aider, and SWE-agent decompose the problem:
+Inspired by how opencode, RooCode, Aider, and SWE-agent decompose the
+problem:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 7: CLI + TUI (index.ts, readline → future: Ink TUI)  │
+│  Layer 7: CLI + TUI (Ink/React — shipped)                   │
 │  What the user sees. Commands, prompts, streaming output.   │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 6: Modes (personas with tool gates + file restrictions)
-│  RooCode's killer feature. Each mode is a YAML-defined       │
-│  persona: Code, Ask, Architect, Debug, Orchestrator.         │
+│  Each mode is a YAML-defined persona: Code, Ask, Architect,  │
+│  Debug, Orchestrator.                                        │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 5: Safety (permissions + checkpoint/restore)          │
-│  opencode's pattern-based allow/ask/deny rules.              │
-│  RooCode's shadow Git checkpoints for undo.                  │
+│  Pattern-based allow/ask/deny rules + shadow-Git checkpoints.│
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 4: Context (compaction + RepoMap + token budget)      │
-│  opencode's auto-compaction with overflow detection.         │
-│  Aider's tree-sitter + PageRank for codebase awareness.      │
+│  Auto-compaction with overflow detection; symbol map.        │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 3: Agent Loop (enhanced ReAct engine)                 │
-│  ReAct paper: Thought → Action → Observation.                │
-│  Aider's self-reflection. SWE-agent's layered error recovery.│
+│  ReAct: Thought → Action → Observation, plus self-reflection │
+│  and layered error recovery.                                 │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 2: Tools (registry + 6 edit strategies + bash + fs)   │
-│  RooCode's 6-edit-tool strategy. SWE-agent's ACI design.    │
 │  Tools are designed for LLM consumption, not human use.      │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 1: Provider Adapters (DeepSeek → Anthropic → ...)     │
-│  Canonical types never touch any provider SDK.               │
-│  Each adapter is ~120 lines of pure mapping.                 │
+│  Layer 1: Providers (AI SDK v7 behind one contract)          │
+│  Canonical types boundary the loop; the SDK handles wires.   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
----
+## 3. Layer 1 — Providers
 
-## Layer 1: Provider Adapters
+The agent loop speaks only canonical types (`src/types.ts`); wire formats
+are the Vercel AI SDK's job (`src/providers/aisdk.ts` maps `streamText`
+events to the canonical `StreamEvent` union). Presets, the model catalog,
+and key resolution live in `src/providers/{presets,catalog,registry}.ts`.
+Full contract: provider-spec.md.
 
-**Why a canonical type system?** Every provider has its own message format:
-- OpenAI: `{ role, content, tool_calls: [{ id, type: "function", function: {...} }] }`
-- Anthropic: `{ role, content: [{ type: "text", text }, { type: "tool_use", ... }] }`
-- Google: yet another shape
+The historical adapter files (`deepseek.ts`, `openai-compatible.ts`,
+`anthropic.ts`) were deleted in the 2026-07-29 AI SDK migration
+(docs/archive/migration-aisdk-ink.md).
 
-If the agent loop speaks any of these natively, swapping providers means
-rewriting the loop. A canonical type system means the loop never changes.
+## 4. Layer 2 — Tools
 
-**Design decisions:**
-- `ToolCall.arguments` is `Record<string,unknown>` (parsed), not a JSON string.
-  The provider adapter handles serialization. The agent loop and tool handlers
-  always receive structured data.
-- `StreamEvent` is a discriminated union of 4 events. Every adapter yields them
-  in the same order: text_delta* → (tool_call_start → tool_call_delta*)* → done.
-  The agent loop doesn't know or care which provider is streaming.
+**Why 6 edit tools instead of 1?** RooCode's key insight: with one generic
+"edit" tool the LLM has to derive the right strategy from the description;
+with 6 specialized tools, the system prompt guides it to pick the right one.
+More prompt tokens = fewer wrong tool calls.
 
-**References:**
-- opencode's `ProviderConfig` + model capabilities matrix
-- The OpenAI/Anthropic SDK type definitions studied side-by-side
-
----
-
-## Layer 2: Tools
-
-**Why 6 edit tools instead of 1?** RooCode's key insight: when you give the LLM
-one generic "edit" tool, it has to figure out the right strategy from the
-description alone. When you give it 6 specialized tools, the system prompt
-guides it to pick the right one. More tokens in the prompt = fewer wrong tool
-calls.
-
-| Tool | Strategy | Inspired By |
+| Tool | Strategy | Inspired by |
 |------|----------|-------------|
 | `edit` | Exact string → replacement | opencode |
+| `edit_file` | Replace-all with count validation | RooCode |
+| `search_replace` | Global find-and-replace | RooCode |
 | `apply_diff` | Unified diff, first occurrence | RooCode, Aider's editblock |
 | `apply_patch` | Multi-file unified diff | RooCode |
-| `search_replace` | Global find-and-replace | RooCode |
-| `edit_file` | Search-replace with count validation | RooCode |
 | `write_to_file` | Full file overwrite | RooCode, opencode |
 
-**Why a ToolRegistry?** SWE-agent's command system showed that tools need
-metadata (which mode they belong to, what files they access, whether they're
-dangerous). A registry centralizes this instead of scattering it across files.
+**ToolRegistry** centralizes tool metadata (mode groups, defs);
+**ToolContext** carries session-scoped state (workingDir, sessionId,
+askUser/askQuestion, signal, checkpoint, fileMtimes, todoStore) so tools
+need more than the LLM's arguments. Full inventory: tool-spec.md.
 
-**Why a ToolContext?** Tools need more than just arguments. They need:
-- `workingDir` — where the agent is operating
-- `sessionId` — for checkpoint scoping
-- `askUser` — for inline permission prompts
-- `signal` — for cancellation
+## 5. Layer 3 — Agent loop
 
-These come from the agent session, not from the LLM. SWE-agent passes them
-implicitly; opencode passes them through a ToolContext. We follow opencode.
+**Why ReAct?** Interleaving reasoning (text output) with acting (tool
+calls) beats either alone (Yao et al., 2022); every major coding agent uses
+this pattern. Enhancements over vanilla ReAct:
 
-**References:**
-- RooCode's 6-edit-tool strategy (see research notes)
-- SWE-agent's ACI: "design tools for LLMs, not humans" (Yang et al., 2024)
-- SWE-agent's Command system with typed arguments and blocklists
+1. **Streaming** — text streams to the user in real time; tool calls
+   accumulate and execute as a batch (parallel fast path for multi-read
+   turns, `src/agent.ts`).
+2. **Self-reflection** (Aider) — a failed tool result feeds back to the LLM
+   before the user sees it; one chance to self-correct
+   (`src/selfreflection/`).
+3. **Layered error recovery** (SWE-agent) — parse error → correction
+   prompt; tool error → reflection; fatal → preserved-state system message
+   (`src/errorrecovery/`).
+4. **Auto-compaction** (opencode) — old messages summarized before the
+   next call when the budget trips (subsystems.md §2).
+5. **Loop guards** — 3 identical failures warn, 4 trip loop detection, 5
+   consecutive failures end the turn; `maxTurns` default 100.
 
----
+### One turn, end to end
 
-## Layer 3: Agent Loop
+```
+user message
+   │
+   ▼
+buildStablePreamble (cached, byte-stable, messages[0])
+   │
+   ▼
+buildVolatileContext (plan-mode + research, env) ──► prepended to trailing user msg
+   │   + live todo block (re-read per sub-turn)
+   ▼
+provider.streamChat (AI SDK) ──► text_delta* streamed to UI
+   │
+   ▼
+tool calls ──► registry.execute ──► PermissionEngine (most-restrictive-wins, audited)
+   │              │  allow ──► handler (ToolOutput, never throws)
+   │              │  ask   ──► askUser prompt (posture-aware)
+   │              └─ deny  ──► PERMISSION_DENIED
+   ▼
+observations appended ──► diagnostics check ──► compaction check (0.7 × window)
+   ▼
+stop: done | aborted | max_turns
+```
 
-**Why ReAct?** The ReAct paper (Yao et al., 2022) established that interleaving
-reasoning (the LLM's text output) with acting (tool calls) produces better
-results than either alone. Every major coding agent uses this pattern.
+### Sequence (Mermaid)
 
-**Enhancements over vanilla ReAct:**
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as App.tsx (Ink TUI)
+    participant R as runAgent (agent.ts)
+    participant P as prompt.ts
+    participant S as Provider (AI SDK)
+    participant T as ToolRegistry
+    participant E as PermissionEngine
+    participant C as Checkpoints
 
-1. **Streaming.** Text streams to the user in real time (open code pattern).
-   Tool calls accumulate in the background, then execute as a batch.
+    U->>A: prompt
+    A->>R: runAgentTurn(input, callbacks)
+    R->>P: buildStablePreamble + buildVolatileContext
+    loop while turn < maxTurns
+        R->>S: streamChat(messages + volatile prefix, tools)
+        S-->>R: text_delta* / tool_call*
+        R-->>A: onText / onToolStart / onToolResult callbacks
+        R->>E: resolve(tool, args)
+        alt allow
+            E-->>R: allow
+            R->>T: execute(call, ctx)
+            T->>C: checkpoint save (edit tools)
+            T-->>R: ToolOutput
+        else ask
+            E-->>R: ask
+            R->>U: askUser prompt
+            U-->>R: approve / deny
+        else deny
+            E-->>R: deny
+            R-->>A: PERMISSION_DENIED
+        end
+    end
+    R-->>A: final text + stopReason
+    A-->>U: rendered transcript
+```
 
-2. **Self-reflection** (from Aider). When a tool fails (file not found, diff
-   doesn't apply), the error is fed back to the LLM as a system message before
-   the user ever sees it. The LLM gets one chance to self-correct.
+## 6. Layer 4 — Context management
 
-3. **Layered error recovery** (from SWE-agent):
-   - Layer 1: Parse error → requery with format template
-   - Layer 2: Tool execution error → self-reflection
-   - Layer 3: Fatal → save state, notify user
+RepoMap gives the LLM a compressed, semantically rich view of the codebase
+(session-stable snapshot, 4 KB cap); compaction summarizes old messages
+when the window fills so conversations can run arbitrarily long. Token
+budget uses a chars/4 heuristic (`src/compaction/budget.ts`). Deep dive:
+subsystems.md §2 and §4.
 
-4. **Auto-compaction** (from opencode). When the conversation exceeds the
-   context window budget, old messages are summarized before the next LLM call.
+## 7. Layer 5 — Safety
 
-**Design decisions:**
-- The agent loop takes a `Provider` interface, not a concrete client. This is
-  the dependency inversion that makes the whole architecture work.
-- `maxTurns` (default 100, matching Claude Code's per-turn tool-call budget) prevents infinite tool-calling loops. opencode calls
-  this `steps`; it's the same concept.
+Pattern-based permissions (evaluated most-restrictive-wins, fail-closed on
+unresolved) plus per-session shadow-Git checkpoints that rewind files *and*
+conversation state. Deep dives: permission-spec.md, security-spec.md,
+checkpoint details in session-spec.md.
 
-**References:**
-- ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)
-- Aider's `run_one()` method with self-reflection (base_coder.py)
-- SWE-agent's `forward_with_handling` with layered retry (agents.py)
+## 8. Layer 6 — Modes
 
----
+A mode is a YAML persona gating tool groups and file writes: **code** (full
+access), **ask** (read-only), **architect** (docs/config writes only),
+**debug** (full access + systematic instructions), **orchestrator**
+(`new_task` delegation only). This prevents "oops, I accidentally edited
+your production config" at the architectural level. Details: mode-spec.md.
 
-## Layer 4: Context Management
+## 9. Layer 7 — CLI & TUI
 
-**Why RepoMap?** Aider's key innovation: instead of giving the LLM the entire
-file tree or requiring the user to manually add files, use tree-sitter to build
-a symbol graph, then PageRank-rank symbols by relevance to the current
-conversation. The LLM gets a compressed but semantically rich view of the
-codebase.
+Ink/React TUI (`src/ui/App.tsx`), rendered with `incrementalRendering`.
+Layout: transcript (`OutputArea`) → todo panel → modal overlays → queued
+follow-ups → `PromptInput` + status bar → `HintBar` (deliberately the last
+row — see the repaint note in `src/ui/HintBar.tsx`). Full command surface:
+cli-spec.md.
 
-**Why compaction?** opencode demonstrated that auto-compaction (summarizing old
-messages when the context window fills up) enables conversations of arbitrary
-length. Without it, the agent hits the context limit and the user has to
-manually clear.
+## 10. Where files live
 
-**Design decisions:**
-- Token estimation uses a char/4 heuristic in Phase 4. Future: use tiktoken
-  for exact counts.
-- Compaction uses the same LLM (or a cheaper model) to summarize, extracting
-  files changed, decisions made, and key observations.
-- RepoMap uses binary search to maximize useful files within a fixed token
-  budget (Aider's approach).
+| Scope | Location |
+|-------|----------|
+| Global config | `~/.heirloom/settings.json` (or `$HEIRLOOM_HOME/settings.json` — partial support, see config-spec.md §15) |
+| Global credentials | `~/.heirloom/credentials.yaml` (0600) |
+| Global modes | `~/.heirloom/modes/<slug>.yaml` |
+| Project config | `./.heirloom/settings.json` |
+| Project modes | `./.heirloom/modes/<slug>.yaml` |
+| Project instructions | `./.heirloom/instructions.md` (or `AGENTS.md`) |
+| Project rules | `./.heirloom/rules/**/*.md` |
+| Project research | `./.heirloom/research/**/*.md` |
+| Project skills | `./.heirloom/skills/`, `./.agents/skills/` |
+| Sessions | `~/.heirloom/sessions/<slug>/<id>.jsonl` |
+| Checkpoints | `~/.heirloom/checkpoints/<sessionId>/` (shadow git repo) |
+| Memory | `~/.heirloom/memory/<slug>/` + global `MEMORY.md` |
 
-**References:**
-- Aider's RepoMap (repomap.py) — tree-sitter + PageRank + binary search
-- opencode's compaction — auto-trigger, overflow detection, summarization
-
----
-
-## Layer 5: Safety
-
-**Why pattern-based permissions?** opencode's system is the most mature: rules
-are evaluated in insertion order, the last matching rule wins, and patterns
-support glob syntax. This is simpler than RooCode's allowlist/denylist with
-longest-prefix matching, and equally expressive.
-
-**Why checkpoint/restore?** RooCode's shadow Git repository is the only
-open-source coding agent that ties checkpoints to the conversation, allowing
-you to rewind both files AND conversation state. This makes experimentation
-safe — you can always undo.
-
-**Design decisions:**
-- Default: `ask` for all tools. User must explicitly allow.
-- Broad rules first, narrow rules last (insertion order matters, like opencode).
-- Shadow Git repo is per-session, distinct from the user's Git repo.
-- The shadow repo honors the project's `.gitignore` (plus always-excludes
-  `.git/`, `node_modules/`) — otherwise every checkpoint commits dependency
-  trees and checkpointing becomes unusably slow on real repos.
-- Two restore modes: files-only (compare approaches) and full (complete reset).
-
-**References:**
-- opencode's `PermissionRuleset` with last-match-wins
-- RooCode's checkpoint system (shadow Git repo)
-- Claude Code's permission modes → approval modes (see [permission-spec.md](./permission-spec.md))
-
----
-
-## Layer 6: Modes
-
-**Why modes?** RooCode's most innovative feature. A "mode" is a persona that
-gates which tools the LLM can access and which files it can modify:
-
-- **Code**: full access (read, edit, command). Everyday coding.
-- **Ask**: read-only. Quick answers without risk.
-- **Architect**: read + docs-only writes. Planning, not implementation.
-- **Debug**: full access with systematic troubleshooting instructions.
-- **Orchestrator**: only `new_task`. Delegates to other modes.
-
-This prevents the "oops, I accidentally edited your production config" problem
-at the architectural level, not the permission level.
-
-**Design decisions:**
-- Modes are YAML files, not code. Users can define custom modes.
-- Tool gates are by group (read/edit/command), not by individual tool.
-- File restrictions use regex patterns.
-- Sticky model per mode — switching to Architect auto-switches to a reasoning model.
-- Project modes override global modes (like opencode's config merge).
-
-**Why orchestrator mode?** RooCode's Boomerang Tasks showed that multi-agent
-orchestration can be done without complex infrastructure: the orchestrator
-spawns sub-agents with isolated context, and only summaries bubble back. This
-prevents context poisoning from long task chains.
-
-**References:**
-- RooCode's mode system (custom_modes.yaml, .roomodes)
-- RooCode's Boomerang Tasks (orchestrator with context isolation)
-
----
-
-## Layer 7: CLI
-
-**Why readline for now?** Phase 1 is about the engine, not the UI. readline
-gives us a working CLI in ~40 lines. Future: replace with Ink (React for
-terminals) for syntax highlighting, streaming with virtual diff, and TUI
-controls like opencode.
-
-**Commands** (full reference: [cli-spec.md](./cli-spec.md)):
-- `/exit` — quit
-- `/help` — show commands
-- `/mode <slug>` — switch mode
-- `/clear` — clear conversation
-- `/compact` — force compaction
-- `/checkpoint` — manual checkpoint
-- `/restore [files|full]` — restore
-
-**References:**
-- opencode's TUI (SolidJS + @opentui)
-- RooCode's CLI (headless extension host pattern with ExtensionClient)
-
----
-
-## Research Foundation
-
-| Paper / Source | Key Idea | Applied To |
-|---------------|----------|------------|
-| ReAct (Yao 2022) | Thought → Action → Observation loop | Layer 3: Core agent loop |
-| SWE-agent (Yang 2024) | Agent-Computer Interface, layered error recovery | Layers 2, 3: Tool design, error handling |
-| Toolformer (Schick 2023) | LLMs self-decide when to call APIs | Layer 3: `tool_choice: "auto"` |
-| opencode | Permissions, compaction, plugin hooks, MCP | Layers 4, 5, 9 |
-| RooCode | Modes, 6-edit-tool, checkpoints, orchestrator | Layers 2, 5, 6 |
-| Aider | RepoMap, SEARCH/REPLACE, self-reflection, token budget | Layers 2, 3, 4 |
-
----
-
-## File Manifest
+## 11. File manifest
 
 ```
 src/
+├── cli.tsx                     # Entry: main(), subcommand dispatch, slash routing
+├── cli-args.ts                 # yargs: flags, validation, epilog
+├── exec-runner.ts              # Headless -p mode (runExecMode)
+├── agent.ts                    # Layer 3: runAgent loop, permission gating
+├── prompt.ts                   # buildStablePreamble / buildVolatileContext / rules / repo map
 ├── types.ts                    # Canonical types: Message, ToolDef, ToolCall, ToolOutput
-├── agent.ts                    # Layer 3: Enhanced ReAct loop
-├── config.ts                   # Config loading (~/.heirloom/config.yaml)
-├── index.ts                    # Layer 7: CLI entry point
 │
 ├── providers/
-│   ├── types.ts                # Provider interface + StreamEvent union
-│   ├── deepseek.ts             # DeepSeek adapter (OpenAI-compatible API)
-│   └── anthropic.ts            # Anthropic adapter (future)
+│   ├── types.ts                # Provider interface, StreamEvent, ModelCapabilities
+│   ├── presets.ts              # BUILTIN_PRESETS, createProvider, key resolution
+│   ├── aisdk.ts                # AI SDK v7 streamText → StreamEvent mapping
+│   ├── catalog.ts              # ~/.heirloom/models.json merge
+│   ├── registry.ts             # capability lookup
+│   └── models.json             # bundled provider/model catalog
 │
 ├── tools/
-│   ├── types.ts                # ToolContext, ToolHandler types
-│   ├── registry.ts             # ToolRegistry class
-│   ├── files.ts                # read_file, write_to_file, list_files, glob
-│   ├── edit.ts                 # 6 edit strategies (edit, apply_diff, apply_patch, etc.)
-│   ├── bash.ts                 # run_bash
+│   ├── types.ts                # ToolContext, ToolHandler, ToolGroup
+│   ├── registry.ts             # ToolRegistry (register/getByMode/execute)
+│   ├── files.ts                # read_file, list_files, glob
+│   ├── edit.ts                 # 6 edit tools + stale-file detection
+│   ├── bash.ts                 # run_bash (120s cap)
+│   ├── jobs.ts                 # run_bash_background, check_job, kill_job
 │   ├── search.ts               # search (grep)
-│   └── index.ts                # Register all tools, export for CLI
+│   ├── web-search.ts           # web_search (Bing RSS, keyless)
+│   ├── web-fetch.ts            # web_fetch (Readability, SSRF guard)
+│   ├── web-fetch-guard.ts      # hostname allow/deny
+│   ├── ask_user_question.ts    # structured clarification
+│   ├── todo.ts                 # update_todo_list + TodoStore
+│   └── index.ts                # registration + module ToolContext
 │
-├── permissions/
-│   └── engine.ts               # Pattern-based allow/ask/deny ruleset
-│
-├── checkpoints/
-│   └── index.ts                # Shadow Git checkpoint/restore manager
-│
-├── compaction/
-│   ├── budget.ts               # Token estimation + threshold check
-│   └── compactor.ts            # Summarization engine
-│
-├── repomap/
-│   └── index.ts                # tree-sitter symbol extraction + PageRank ranking
-│
+├── permissions/                # engine, rules, bash-normalize, destructive,
+│                               # guarded, builtin-allow, diffpreview
+├── checkpoints/                # shadow-Git checkpoint/restore
+├── compaction/                 # budget.ts + compactor.ts
+├── repomap/                    # symbol map (4KB budget)
+├── sessions/                   # JSONL store, index, redaction
+├── memory/                     # per-project memory store
+├── skills/                     # SKILL.md loader + trust + load_skill
 ├── modes/
-│   ├── loader.ts               # YAML mode loader + precedence rules
-│   └── builtin/                # Default modes
-│       ├── code.yaml
-│       ├── ask.yaml
-│       ├── architect.yaml
-│       ├── debug.yaml
-│       └── orchestrator.yaml
-│
-├── skills/
-│   └── loader.ts               # Progressive disclosure skill loader (future)
-│
-└── mcp/
-    └── client.ts               # MCP client for external tool discovery (future)
+│   ├── loader.ts               # YAML mode loader + precedence
+│   └── builtin/*.yaml          # code, ask, architect, debug, orchestrator
+├── mcp/                        # client.ts + connector.ts (mcp__ tools)
+├── orchestrator/               # new_task sub-agents
+├── selfreflection/             # error reflection
+├── errorrecovery/              # JSON-correction + fatal handling
+├── diagnostics/                # post-edit checks + stall watchdog
+├── auth/                       # heirloom auth wizard
+├── notify.ts                   # notify hook
+└── ui/                         # Ink TUI: App, core/, views/, components/,
+                                # contexts, keybindings, theme, statusline
 ```
 
----
+## 12. Key design tradeoffs
 
-## Key Design Tradeoffs
+1. **Canonical types vs SDK types.** Canonical types make the agent loop
+   provider-agnostic forever; the AI SDK now handles wire formats.
+   Decision: canonical types at the loop boundary, SDK underneath.
+2. **6 edit tools vs 1.** More tools = more prompt tokens, but higher-
+   quality edits. Decision: 6 tools.
+3. **Git-based checkpoints vs file snapshots.** Git is heavier but gives
+   diff viewing, selective restore, and conversation-aware rollback for
+   free. Decision: shadow Git repo.
+4. **YAML modes vs code-defined modes.** YAML lets users define custom
+   modes without TypeScript. Decision: YAML.
+5. **readline vs Ink TUI.** Decided 2026-07-29: **Ink** (React for
+   terminals) — shipped (`src/ui/`).
+6. **Single process vs client/server.** opencode runs a local server; the
+   TUI is a client. Decision: single process — heirloom is a personal
+   agent, and the extra protocol layer buys nothing yet. Guardrail held:
+   the agent loop does no I/O itself — output flows through callbacks, and
+   headless printing lives in `src/exec-runner.ts` — so a server frontend
+   remains a Layer 7 swap, not a rewrite.
 
-1. **Canonical types vs SDK types.** Canonical types add a mapping layer (~40
-   lines per adapter) but make the agent loop provider-agnostic forever.
-   Decision: canonical types. The mapping code is trivial and the benefit is permanent.
+## 13. Research foundation
 
-2. **6 edit tools vs 1.** More tools = more tokens in the system prompt. But
-   more specialized tools = higher-quality edits. RooCode's data shows this
-   tradeoff pays off. Decision: 6 tools.
-
-3. **Git-based checkpoints vs file snapshots.** Git is heavier but gives us
-   diff viewing, selective restore, and conversation-aware rollback for free.
-   Decision: shadow Git repo.
-
-4. **YAML modes vs code-defined modes.** YAML is less type-safe but allows
-   users to define custom modes without writing TypeScript. RooCode uses YAML
-   successfully. Decision: YAML.
-
-5. **readline vs Ink TUI.** readline is 40 lines; Ink is a framework. Phase 1
-   ships with readline because the engine is the priority. Decision: start with
-   readline, migrate to Ink when the engine stabilizes.
-
-6. **Single process vs client/server.** opencode runs a local server; the TUI
-   is just a client. That enables IDE integration, shared sessions, and
-   multiple frontends — at the cost of a protocol layer and two lifecycles.
-   Decision: single process. Heirloom is a personal agent; the extra moving
-   parts buy nothing yet. Guardrail: the agent loop must never import readline
-   or write to stdout directly (I/O stays in Layer 7, passed in as callbacks),
-   so a server frontend remains a Layer 7 swap, not a rewrite.
-   *Note: `runAgent` currently violates this — it writes to `process.stdout`
-   directly. Fix when touching agent.ts in Phase 2.*
+| Paper / Source | Key idea | Applied to |
+|----------------|----------|------------|
+| ReAct (Yao 2022) | Thought → Action → Observation loop | Layer 3 |
+| SWE-agent (Yang 2024) | Agent-Computer Interface, layered error recovery | Layers 2, 3 |
+| opencode | Permissions, compaction, MCP | Layers 4, 5 |
+| RooCode | Modes, 6-edit-tool, checkpoints, orchestrator | Layers 2, 5, 6, 8 |
+| Aider | RepoMap, self-reflection, token budget | Layers 3, 4 |

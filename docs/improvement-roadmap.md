@@ -1,5 +1,8 @@
 # Improvement Roadmap
 
+**Status:** forward-looking roadmap · refreshed 2026-08-08 · not a spec — shipped items are marked ✅ with commit hashes; unshipped items are plans, not behavior.
+
+
 Status (**refreshed 2026-08-08**): **the entire do-now tier and the whole
 in-flight wave have shipped.** What remains is the design-first tier — items
 that need a decision or a design doc before any code, plus a handful of small

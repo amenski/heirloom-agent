@@ -1,42 +1,46 @@
 ## 5. Session Lifecycle
 
+**Status:** current · verified 2026-08-13 · covers `src/sessions/store.ts`, `src/cli.tsx`, `src/exec-runner.ts`
+
 ```
 NEW SESSION
   │
-  ├── Load config (~/.heirloom/config.yaml)
-  ├── Load modes (~/.heirloom/modes/)
+  ├── Load config (~/.heirloom/settings.json + ./.heirloom/settings.json)
+  ├── Load modes (~/.heirloom/modes/, ./.heirloom/modes/)
   ├── Load project memory (~/.heirloom/memory/<project-slug>/)
-  │     └── Inject relevant memories into system prompt
-  ├── Parse RepoMap (if enabled)
+  │     └── Inject ≤1024-token memory block into the stable preamble
+  ├── Build RepoMap snapshot (≤4 KB)
   │
   ▼
 RUNNING
   │
-  ├── User input → Plan (todo list)
-  ├── Execute plan (ReAct + Reflect loop)
-  ├── Compact when needed (structured YAML summary)
-  ├── Checkpoint before file writes
+  ├── User input → plan (update_todo_list) when multi-step
+  ├── Execute plan (ReAct + Reflect loop, §3)
+  ├── Compact when threshold trips (§2)
+  ├── Checkpoint save at each turn start
   │
   ▼
 END SESSION
   │
-  ├── Final compaction (full structured summary)
-  ├── Update memory files:
-  │     ├── Append to sessions.md
-  │     ├── Update decisions.md (new decisions)
-  │     ├── Update patterns.md (new patterns observed)
-  │     └── Update pitfalls.md (new pitfalls encountered)
-  └── Save final checkpoint
+  ├── Session JSONL flushed (meta|message|state|compaction|permission|token records)
+  ├── Append session summary to memory sessions.md (src/cli.tsx:322)
+  └── Final checkpoint
 ```
 
-### Resuming a Session
+### Storage
 
-1. Load last session's structured compaction summary
-2. Scan memory files for relevant context
-3. Present summary to user: "Previous session: refactored auth module, 3/6 steps done"
-4. User can continue or start fresh
+Per-session append-only JSONL at
+`~/.heirloom/sessions/<slug>/<id>.jsonl` with a `sessions-index.json` cache.
+Record types, secret redaction, torn-line → `failed` status, and resume
+semantics: session-spec.md.
 
----
+### Resuming a session
+
+1. Load the session's records and replay compaction overlays
+   (`loadEffective`, `src/sessions/store.ts`).
+2. Present a load/compact choice before replaying the transcript.
+3. The user continues or starts fresh (`-r`, `-c`, `/resume`, `/continue` —
+   cli-spec.md).
 
 ---
 

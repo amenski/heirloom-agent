@@ -1,5 +1,10 @@
 # Handoff — finish the AI SDK + Ink migration
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Task brief, completed.
+
 **For:** subagent (Sonnet). The user did the bulk of this migration already.
 Your job: review what's there, fix the concrete defects below, get it running
 and correct in a real terminal. Do NOT rearchitect — the structure is good.

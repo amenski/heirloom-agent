@@ -1,5 +1,10 @@
 # Heirloom — Follow-ups
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Bug-investigation tracker, resolved; the one open item was folded into root todo.md.
+
 Open items parked for later. Captured 2026-08-04, revised 2026-08-06.
 
 ## STILL BROKEN

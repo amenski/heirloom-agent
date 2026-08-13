@@ -1,5 +1,10 @@
 # Heirloom → Deep Code CLI Redesign — Implementation Plan
 
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Plan whose Phase 2+ was abandoned; contains a false claim (credentials.json - the real store is credentials.yaml).
+
 > **Target:** Redesign Heirloom to match Deep Code CLI behavior.
 > **Phase:** Config system + permissions first (foundation for everything else).
 > **Status:** Phase 1.1–1.3 DONE. Phase 2 onward TODO.

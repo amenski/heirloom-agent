@@ -1,6 +1,10 @@
 # Handoff Spec — Terminal UI Refresh + Model-Declared Effort
 
-**Note:** historical snapshot. Model IDs below (e.g. `deepseek-chat`) are
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Task brief, completed; references a screenshot that no longer exists.
+
 retired — see `src/providers/models.json` for current IDs.
 
 **For:** implementing subagent (Sonnet).

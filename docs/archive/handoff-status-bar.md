@@ -1,6 +1,10 @@
 # Handoff — Persistent status bar (mode · model · cwd · context % · cost)
 
-**Note:** historical snapshot. Model IDs below (e.g. `gpt-4o`, `deepseek-chat`)
+> **ARCHIVED - historical record (2026-08-13).** Describes a superseded design or
+> a completed task brief. Nothing here describes current behavior. The live
+> documentation set is indexed in [../README.md](../README.md).
+> Why: Task brief, completed.
+
 are retired — see `src/providers/models.json` for current IDs.
 
 **For:** subagent (Sonnet). **Files:** `src/index.ts`, `src/providers/presets.ts`,
