@@ -684,6 +684,30 @@ describe("runAgent", () => {
       expect(executeTool).toHaveBeenCalledTimes(1);
     });
 
+    it("executes through the real registry without a permission prompt (builtin allow)", async () => {
+      const { provider, receivedMessages } = makeProvider([
+        [
+          { type: "tool_call_start", id: "c1", name: "attempt_completion" },
+          { type: "tool_call_delta", id: "c1", arguments: '{"summary":"done"}' },
+          { type: "done", finishReason: "tool_calls" },
+        ],
+      ]);
+      const askUser = vi.fn(async () => true);
+
+      await runAgent("finish", {
+        provider,
+        tools: [],
+        executeTool, // real registry — real handler returns stop: true
+        permissions: new PermissionEngine(undefined, "/workspace"),
+        askUser,
+      });
+
+      // The builtin allow rule means the final call never hits the prompt;
+      // had the rule been missing, askUser would have been called.
+      expect(askUser).not.toHaveBeenCalled();
+      expect(receivedMessages).toHaveLength(1);
+    });
+
     it("does not end the turn when a tool returns stop: false/undefined", async () => {
       const { provider, receivedMessages } = makeProvider([
         [

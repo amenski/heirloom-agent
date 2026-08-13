@@ -27,4 +27,7 @@ export const BUILTIN_ALLOW_RULES: PermissionRule[] = [
   // glob. Never prompts — the model checks items off mid-turn, and a prompt
   // on every call would be noise.
   { tool: "update_todo_list", kind: "any", pattern: "", action: "allow", origin: "config" },
+  // Meta tool: side-effect-free — ends the turn with a summary. A prompt on
+  // the final call of a task would be pure noise.
+  { tool: "attempt_completion", kind: "any", pattern: "", action: "allow", origin: "config" },
 ];
