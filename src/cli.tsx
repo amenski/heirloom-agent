@@ -82,15 +82,6 @@ if (isMainModule()) {
   void main();
 }
 
-/**
- * The status-line level segment (permission-profile.md §9): a dim
- * "profile: <level>" marker beside the posture segment — setting a level
- * below unrestricted is a deliberate, visible change. Absent (feature off) →
- * no segment, the bar is byte-identical to today. Exported for the same
- * reason handleSlashCore/completer are: unit-testing the segment decision
- * without running the real CLI startup. The "·" separator between segments
- * is added by StatusBar itself.
- */
 async function main() {
   initPresets();
 
