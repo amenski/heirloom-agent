@@ -825,4 +825,33 @@ describe("loadConfig webSearch.searxngUrl", () => {
     expect(warnings).toHaveLength(0);
     expect(config.webSearch?.searxngUrl).toBe("https://searx.example.com");
   });
+
+  it("parses webSearch.enrich: false (the key that disables inline enrichment)", () => {
+    writeProjectSettings({ webSearch: { enrich: false } });
+    const { config, warnings, errors } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.enrich).toBe(false);
+  });
+
+  it("accepts webSearch.enrich: true", () => {
+    writeProjectSettings({ webSearch: { enrich: true } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.enrich).toBe(true);
+  });
+
+  it("parses enrich alongside searxngUrl", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "https://searx.example.com", enrich: false } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch).toEqual({ searxngUrl: "https://searx.example.com", enrich: false });
+  });
+
+  it("warns and ignores a non-boolean webSearch.enrich", () => {
+    writeProjectSettings({ webSearch: { enrich: "yes" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("webSearch.enrich must be a boolean"))).toBe(true);
+    expect(config.webSearch?.enrich).toBeUndefined();
+  });
 });

@@ -4,11 +4,16 @@ import { ToolRegistry } from "./registry.js";
 import { pkg } from "../version.js";
 import { loadConfig } from "../config/loader.js";
 import { searchSearxng, SearxngConfigError } from "./web-search-searxng.js";
+import { fetchAndProcess } from "./web-fetch.js";
+import { sanitizeControlChars } from "./web-fetch-guard.js";
 
 const USER_AGENT = `heirloom-agent/${pkg.version} (+cli)`;
 const TIMEOUT_MS = 10_000;
 const BODY_CAP_BYTES = 512 * 1024;
 const OUTPUT_CAP_CHARS = 8_000;
+const ENRICHED_OUTPUT_CAP_CHARS = 20_000;
+const ENRICH_COUNT = 3;
+const CONTENT_CAP_CHARS = 2_000;
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 8;
 const CACHE_TTL_MS = 60_000;
@@ -18,6 +23,9 @@ interface WebResult {
   title: string;
   url: string;
   snippet?: string;
+  /** Inline enrichment: extracted page text (≤ CONTENT_CAP_CHARS), set only
+   *  for the top ENRICH_COUNT results post-domain-filter (handoff Phase 2). */
+  content?: string;
 }
 
 type Backend = "bing" | "searxng";
@@ -29,8 +37,14 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-function cacheKey(query: string, allowedDomains: string[], blockedDomains: string[], backend: Backend): string {
-  return JSON.stringify([query, allowedDomains, blockedDomains, backend]);
+function cacheKey(
+  query: string,
+  allowedDomains: string[],
+  blockedDomains: string[],
+  backend: Backend,
+  enrich: boolean,
+): string {
+  return JSON.stringify([query, allowedDomains, blockedDomains, backend, enrich]);
 }
 
 function getCached(key: string): WebResult[] | undefined {
@@ -237,24 +251,64 @@ function wrapUntrusted(text: string): string {
   ].join("\n");
 }
 
+function truncateContent(s: string, max = CONTENT_CAP_CHARS): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
+ * Best-effort inline enrichment (handoff Phase 2): fetches the top
+ * ENRICH_COUNT results concurrently through web_fetch's own pipeline —
+ * https-only, per-hop SSRF checks, redirects, content-type dispatch, body
+ * caps — and attaches ≤ CONTENT_CAP_CHARS of sanitized extracted text. A
+ * failing fetch (SSRF-blocked, non-HTML, timeout, HTTP error) degrades that
+ * result to snippet-only silently; enrichment never fails the search. The
+ * fetched text is NOT written into web_fetch's module cache — the two tools
+ * stay decoupled.
+ */
+async function enrichResults(results: WebResult[], ctx: ToolContext): Promise<WebResult[]> {
+  const top = results.slice(0, ENRICH_COUNT);
+  const settled = await Promise.allSettled(
+    top.map(async (r) => {
+      const { text } = await fetchAndProcess(r.url, ctx);
+      return sanitizeControlChars(text);
+    }),
+  );
+  return results.map((r, i) => {
+    if (i >= ENRICH_COUNT) return r;
+    const outcome = settled[i];
+    if (outcome.status !== "fulfilled") return r;
+    const content = outcome.value.trim();
+    return content ? { ...r, content } : r;
+  });
+}
+
 /**
  * Renders results with the untrusted-content wrapper around **web content
  * only**. Tool-generated status text (rate limits, empty results, backend
  * fallback notices) stays outside the delimiters — the banner marks what the
  * backend returned, not what Heirloom says about it (web-search-spec.md,
- * Tier 3 output format).
+ * Tier 3 output format). Enriched results gain a `---` separator followed by
+ * the extracted excerpt; the total cap is 20 000 chars when any content is
+ * present, 8 000 for snippet-only output. Exported for tests (the 20 000-char
+ * branch is unreachable through the handler: 3 results × 2 000-char content
+ * cap + 200-char snippet caps bound the output well below it).
  */
-function formatResults(results: WebResult[], status: string): string {
+export function formatResults(results: WebResult[], status: string): string {
   const lines: string[] = [];
   for (const r of results) {
     lines.push(`- [web] ${r.title} — ${r.url}`);
     if (r.snippet) lines.push(`  ${truncateSnippet(r.snippet)}`);
+    if (r.content) {
+      lines.push("---", truncateContent(r.content));
+    }
   }
   if (lines.length === 0) return status || "No results found.";
 
+  const hasContent = results.some((r) => r.content);
+  const cap = hasContent ? ENRICHED_OUTPUT_CAP_CHARS : OUTPUT_CAP_CHARS;
   let out = lines.join("\n");
-  if (out.length > OUTPUT_CAP_CHARS) {
-    out = `${out.slice(0, OUTPUT_CAP_CHARS)}\n… (truncated)`;
+  if (out.length > cap) {
+    out = `${out.slice(0, cap)}\n… (truncated)`;
   }
   return status ? `${wrapUntrusted(out)}\n${status}` : wrapUntrusted(out);
 }
@@ -262,6 +316,11 @@ function formatResults(results: WebResult[], status: string): string {
 /** Reads webSearch.searxngUrl from config, if set. Loaded fresh per call — cheap sync file read, same pattern as cli.tsx/exec-runner.ts. */
 function resolveSearxngUrl(): string | undefined {
   return loadConfig().config.webSearch?.searxngUrl;
+}
+
+/** Reads webSearch.enrich (default true when absent) — loaded fresh per call like resolveSearxngUrl. */
+function resolveEnrich(): boolean {
+  return loadConfig().config.webSearch?.enrich !== false;
 }
 
 /**
@@ -293,15 +352,17 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
   }
 
   const searxngUrl = resolveSearxngUrl();
+  const enrich = resolveEnrich();
 
   // ── No SearXNG configured: exactly today's Bing-only behavior. ──
   if (!searxngUrl) {
-    const key = cacheKey(query, allowedDomains, blockedDomains, "bing");
+    const key = cacheKey(query, allowedDomains, blockedDomains, "bing", enrich);
     try {
       let filtered = getCached(key);
       if (filtered === undefined) {
         const results = await searchBing(query, ctx);
         filtered = filterByDomain(results, allowedDomains, blockedDomains);
+        if (enrich) filtered = await enrichResults(filtered, ctx);
         setCached(key, filtered);
       }
       return { content: formatResults(filtered.slice(0, limit), "") };
@@ -318,12 +379,13 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
   }
 
   // ── SearXNG configured: primary, with Bing fallback on transient failure. ──
-  const searxngKey = cacheKey(query, allowedDomains, blockedDomains, "searxng");
+  const searxngKey = cacheKey(query, allowedDomains, blockedDomains, "searxng", enrich);
   try {
     let filtered = getCached(searxngKey);
     if (filtered === undefined) {
       const results = await searchSearxng(searxngUrl, query, ctx);
       filtered = filterByDomain(results, allowedDomains, blockedDomains);
+      if (enrich) filtered = await enrichResults(filtered, ctx);
       setCached(searxngKey, filtered);
     }
     return { content: formatResults(filtered.slice(0, limit), "") };
@@ -339,12 +401,13 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
     }
     // SearxngTransientError (retries exhausted) or an unrecognized-shape
     // Error both fall back to Bing — the query hasn't been answered yet.
-    const bingKey = cacheKey(query, allowedDomains, blockedDomains, "bing");
+    const bingKey = cacheKey(query, allowedDomains, blockedDomains, "bing", enrich);
     try {
       let filtered = getCached(bingKey);
       if (filtered === undefined) {
         const results = await searchBing(query, ctx);
         filtered = filterByDomain(results, allowedDomains, blockedDomains);
+        if (enrich) filtered = await enrichResults(filtered, ctx);
         setCached(bingKey, filtered);
       }
       return {

@@ -95,7 +95,7 @@ async function readBodyCapped(res: Response): Promise<string> {
   return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
 }
 
-function htmlToText(html: string, url: string): string {
+export function htmlToText(html: string, url: string): string {
   const { document } = parseHTML(html, { url });
   const reader = new Readability(document);
   const article = reader.parse();
@@ -117,7 +117,7 @@ function htmlToText(html: string, url: string): string {
 }
 
 /** Fetches `startUrl`, following up to MAX_REDIRECTS manual redirect hops with an SSRF check before each one, and dispatches on the final content-type. */
-async function fetchAndProcess(startUrl: string, ctx: ToolContext): Promise<{ text: string; finalUrl: string }> {
+export async function fetchAndProcess(startUrl: string, ctx: ToolContext): Promise<{ text: string; finalUrl: string }> {
   let currentUrl = startUrl;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {

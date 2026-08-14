@@ -1,6 +1,7 @@
 # Handoff: `web_search` v2 — SearXNG backend + inline content enrichment
 
-Status: **designed 2026-08-11, not started.** Implementer: Sonnet session.
+Status: **Phase 1 shipped 2026-08-11, Phase 2 shipped 2026-08-14.** See the
+phase sections for implementation notes.
 Owner approved the two anti-drift reversals below in the 2026-08-11 design
 conversation (search quality via keyless Bing RSS was flagged as the hard
 blocker; SearXNG chosen over paid APIs and over building an index).
@@ -105,6 +106,29 @@ don't create a directory or an abstraction layer beyond one function):
 - Cache key includes backend; domain filters still apply to SearXNG results.
 
 ## Phase 2 — inline content enrichment
+
+> **Shipped 2026-08-14.** Implementation notes:
+> - `webSearch.enrich` (boolean, default **true**) parsed in
+>   `src/config/loader.ts`; `enrichCount` fixed at 3 (not configurable).
+>   `webSearch.enrich: false` restores snippet-only output + the 8 000-char cap.
+> - `fetchAndProcess`/`htmlToText` exported from `src/tools/web-fetch.ts`
+>   (export keyword only, no behavior change). Per result, web-search.ts calls
+>   `fetchAndProcess` and applies `sanitizeControlChars` afterwards, exactly as
+>   `webFetchHandler` does; the 3 fetches run concurrently via
+>   `Promise.allSettled`, and a failing fetch (SSRF-blocked, non-HTML,
+>   timeout, HTTP error) degrades that result to snippet-only silently.
+> - The 60s result cache stores the **enriched** results (extracted text
+>   attached to the top 3), so repeat queries don't re-fetch pages; the cache
+>   key now includes the enrich mode so a config flip doesn't serve
+>   stale-mode entries. Nothing is written into web_fetch's module cache —
+>   the modules stay decoupled.
+> - Output cap: 20 000 chars when any content block is present, 8 000 for
+>   snippet-only output (same `… (truncated)` overflow marker); per-result
+>   content cap 2 000 chars with a `…` marker. Enriched output stays inside
+>   the existing single untrusted-content wrapper pair.
+> - Permission subject and guarded-tier behavior unchanged — enrichment
+>   happens after the (already-approved) search, reusing web_fetch's own SSRF
+>   guards per result.
 
 ### Behavior
 

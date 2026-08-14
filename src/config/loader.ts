@@ -47,6 +47,14 @@ export interface WebSearchConfig {
    * localhost/127.0.0.1/[::1]; any other host must be https://.
    */
   searxngUrl?: string;
+  /**
+   * Inline content enrichment: when true (default), web_search fetches the
+   * top 3 result pages through web_fetch's pipeline and includes a bounded
+   * excerpt per result. Set to false to restore snippet-only output (and its
+   * 8 000-char cap). Best-effort — a failing page fetch never fails the
+   * search. (handoff-web-search-searxng.md Phase 2)
+   */
+  enrich?: boolean;
 }
 
 export interface DeepCodeSettings {
@@ -785,8 +793,9 @@ function isLocalHostname(hostname: string): boolean {
 
 /**
  * Validates webSearch.searxngUrl: http:// only for localhost/127.0.0.1/[::1],
- * https:// required otherwise. Invalid values are a warning, not an error —
- * an optional knob shouldn't fail launch (same posture as `refresh`).
+ * https:// required otherwise. Also parses webSearch.enrich (default true when
+ * absent). Invalid values are a warning, not an error — an optional knob
+ * shouldn't fail launch (same posture as `refresh`).
  */
 function validateWebSearch(
   raw: unknown,
@@ -798,44 +807,49 @@ function validateWebSearch(
     return undefined;
   }
   const w = raw as Record<string, unknown>;
-  if (!("searxngUrl" in w)) return {};
+  const result: WebSearchConfig = {};
 
-  if (typeof w.searxngUrl !== "string") {
-    warnings.push(`${source}: webSearch.searxngUrl must be a string — ignoring`);
-    return {};
+  if ("searxngUrl" in w) {
+    if (typeof w.searxngUrl !== "string") {
+      warnings.push(`${source}: webSearch.searxngUrl must be a string — ignoring`);
+    } else {
+      let parsed: URL | undefined;
+      try {
+        parsed = new URL(w.searxngUrl);
+      } catch {
+        warnings.push(`${source}: webSearch.searxngUrl "${w.searxngUrl}" is not a valid URL — ignoring`);
+      }
+      if (parsed) {
+        if (parsed.protocol === "http:" && !isLocalHostname(parsed.hostname)) {
+          warnings.push(
+            `${source}: webSearch.searxngUrl "${w.searxngUrl}" uses http:// for a non-local host — only https:// is allowed except for localhost/127.0.0.1/[::1] — ignoring`,
+          );
+        } else if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          warnings.push(
+            `${source}: webSearch.searxngUrl "${w.searxngUrl}" must be http:// or https:// — ignoring`,
+          );
+        } else if (parsed.username || parsed.password) {
+          warnings.push(
+            `${source}: webSearch.searxngUrl must not embed credentials — ignoring`,
+          );
+        } else {
+          // Store the parsed, validated URL (trailing slash stripped) so the
+          // value the client fetches is exactly the one this check approved.
+          result.searxngUrl = parsed.toString().replace(/\/$/, "");
+        }
+      }
+    }
   }
 
-  let parsed: URL;
-  try {
-    parsed = new URL(w.searxngUrl);
-  } catch {
-    warnings.push(`${source}: webSearch.searxngUrl "${w.searxngUrl}" is not a valid URL — ignoring`);
-    return {};
+  if ("enrich" in w) {
+    if (typeof w.enrich === "boolean") {
+      result.enrich = w.enrich;
+    } else {
+      warnings.push(`${source}: webSearch.enrich must be a boolean — ignoring`);
+    }
   }
 
-  if (parsed.protocol === "http:" && !isLocalHostname(parsed.hostname)) {
-    warnings.push(
-      `${source}: webSearch.searxngUrl "${w.searxngUrl}" uses http:// for a non-local host — only https:// is allowed except for localhost/127.0.0.1/[::1] — ignoring`,
-    );
-    return {};
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    warnings.push(
-      `${source}: webSearch.searxngUrl "${w.searxngUrl}" must be http:// or https:// — ignoring`,
-    );
-    return {};
-  }
-  if (parsed.username || parsed.password) {
-    warnings.push(
-      `${source}: webSearch.searxngUrl must not embed credentials — ignoring`,
-    );
-    return {};
-  }
-
-  // Store the parsed, validated URL (trailing slash stripped) so the value
-  // the client fetches is exactly the one this check approved.
-  const normalized = parsed.toString().replace(/\/$/, "");
-  return { searxngUrl: normalized };
+  return result;
 }
 
 // ── Main loader ──

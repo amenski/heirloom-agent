@@ -377,6 +377,27 @@ the full request/fallback/caching behavior.
   (not a transient failure) and returns actionable text naming this fix; it
   does not silently fall back to Bing on a 403.
 
+### `webSearch.enrich`
+
+Optional boolean, **default `true`**. When enabled (the default), `web_search`
+fetches the **top 3** results (post domain-filter) concurrently through
+`web_fetch`'s own pipeline — https-only, per-hop SSRF checks, content-type
+dispatch, body caps — and includes a bounded excerpt (≤ 2 000 chars) per
+result in the tool output, collapsing the usual search→fetch round trips into
+one call (handoff-web-search-searxng.md Phase 2). Set to `false` to restore
+snippet-only output and its 8 000-char cap.
+
+```jsonc
+{ "webSearch": { "searxngUrl": "http://localhost:8888", "enrich": false } }
+```
+
+Enrichment is best-effort: a result whose page fetch fails (SSRF-blocked,
+non-HTML, timeout, HTTP error) is shown snippet-only — it is never a reason
+for the search to fail. The excerpt count is fixed at 3 and is **not**
+configurable (simplicity; revisit on demand). A non-boolean value is a
+warning and the key is ignored (default applies), same posture as the other
+optional webSearch keys.
+
 ## `enabledSkills`
 
 Optional `{ "<skill-name>": boolean }` map. A skill whose name maps to
