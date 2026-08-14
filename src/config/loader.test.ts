@@ -811,4 +811,18 @@ describe("loadConfig webSearch.searxngUrl", () => {
     const { warnings } = loadConfig(projectDir);
     expect(warnings.some((w) => w.includes('unknown field "webSearch"'))).toBe(false);
   });
+
+  it("rejects a URL with embedded credentials", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "https://user:pass@searx.example.com" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings.some((w) => w.includes("must not embed credentials"))).toBe(true);
+    expect(config.webSearch?.searxngUrl).toBeUndefined();
+  });
+
+  it("stores the parsed URL with the trailing slash stripped", () => {
+    writeProjectSettings({ webSearch: { searxngUrl: "https://searx.example.com/" } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(warnings).toHaveLength(0);
+    expect(config.webSearch?.searxngUrl).toBe("https://searx.example.com");
+  });
 });

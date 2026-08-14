@@ -825,8 +825,17 @@ function validateWebSearch(
     );
     return {};
   }
+  if (parsed.username || parsed.password) {
+    warnings.push(
+      `${source}: webSearch.searxngUrl must not embed credentials — ignoring`,
+    );
+    return {};
+  }
 
-  return { searxngUrl: w.searxngUrl };
+  // Store the parsed, validated URL (trailing slash stripped) so the value
+  // the client fetches is exactly the one this check approved.
+  const normalized = parsed.toString().replace(/\/$/, "");
+  return { searxngUrl: normalized };
 }
 
 // ── Main loader ──
