@@ -1,15 +1,12 @@
 /**
- * Heirloom StatusBar — Professional-grade status line
+ * Heirloom StatusBar — the session status line above the hint bar.
  *
- * Displays:
- * - Current mode (with mode-specific color)
- * - Provider/model
- * - Working directory (smart-truncated based on terminal width)
- * - Context usage % (color-coded: safe/yellow/red) with visual bar
- * - Session cost (dollar amount)
- * - Effort level
- * - Git branch + status indicators (ahead/behind/dirty)
- * - Session duration timer (HH:MM:SS)
+ * Segments are built by the caller (see buildStatusBar in cli.tsx) and
+ * typically include: active mode/posture, effort level, context usage
+ * (meter + %), and session cost — plus gitStatus and the optional session
+ * timer rendered directly by this component. Provider/model rides as a
+ * chip on the input box instead (buildModelPill in cli.tsx), since it's a
+ * property of the next message rather than ambient session state.
  *
  * All colors are theme-driven via ThemeContext.
  */

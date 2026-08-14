@@ -464,8 +464,13 @@ async function main() {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}${shared.activeMode.name}`, { raw: true }));
     }
     if (shared.posture === "autoApprove") {
-      // Short form in the bar ("aa"); the hint bar and docs spell it out.
-      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.warning)}aa`, { raw: true }));
+      // Spelled out, not abbreviated. This is the highest-consequence state the
+      // bar reports — tools run without asking — so it must be readable at a
+      // glance by someone who has never read the docs. The old short form
+      // ("aa") was the least legible label on the row while naming the most
+      // dangerous state, and the hint bar does NOT spell it out as once
+      // assumed: it shows the *action* (⇧ Tab → normal), not the current state.
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.warning)}auto-approve`, { raw: true }));
     } else if (shared.posture === "plan") {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.info)}plan`, { raw: true }));
     } else if (!shared.activeMode?.name) {
@@ -481,15 +486,15 @@ async function main() {
     // (see buildModelPill), because it is a property of the message you are
     // about to send rather than ambient session state.
 
-    // Effort as a filled chip: it is a mode you switched into, so it should read
-    // as a set value rather than another word in a list. Shown only when the
-    // model declares effort levels.
-    if (shared.activeEffort && getActiveModelCaps()?.effort) {
-      segments.push(T(nextId(), chip(shared.activeEffort, {
-        fg: resolvedTheme.theme.textInverse,
-        bg: resolvedTheme.theme.warning,
-        colorEnabled,
-      }), { raw: true }));
+    // Thinking mode, labelled the same way the welcome screen labels it
+    // ("thinking high" / "thinking on" / "thinking off") so the two agree — a
+    // bare "high" in the bar did not say what was high. Plain dim text rather
+    // than a filled chip: this is a preference you set and forget, and as an
+    // orange slab it was the loudest thing on a row where it is the least
+    // urgent. The orange is now spent on auto-approve and a full context.
+    // Shown only when the model declares effort levels.
+    if (thinkingEnabled && getActiveModelCaps()?.effort) {
+      segments.push(dim(nextId(), `thinking ${shared.activeEffort ?? "on"}`));
     }
 
     const ctxPercent = getContextPercent();
@@ -506,6 +511,14 @@ async function main() {
         colorEnabled,
       });
       segments.push(T(nextId(), `ctx ${bar} ${Math.round(ctxPercent)}%`, { raw: true, dimColor: true }));
+    }
+
+    // Session cost: ambient like context fill, not an alarm — dim treatment,
+    // no color thresholds. Hidden until spend is nonzero (getCostStr already
+    // guards this) so a fresh session doesn't show "$0.0000".
+    const costStr = getCostStr();
+    if (costStr !== null) {
+      segments.push(dim(nextId(), `$${costStr}`));
     }
 
     return segments;

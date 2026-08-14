@@ -5,7 +5,7 @@ import { Box, Text } from "ink";
 import { ThemeProvider, TerminalProvider } from "./contexts.js";
 import HintBar from "./HintBar.js";
 import { stripAnsi as strip } from "./test-helpers.js";
-import { DARK_THEME, ansiFg } from "./theme.js";
+import { DARK_THEME, BUILTIN_THEMES, ansiFg } from "./theme.js";
 
 /** Ink narrows a blanket reset to foreground-off when closing a colour run. */
 const ANSI_FG_RESET = "\x1b[39m";
@@ -120,5 +120,30 @@ describe("HintBar", () => {
     const rows = strip(lastFrame() ?? "").split("\n").filter((r) => r.trim() !== "");
     expect(rows[0]).toContain("STATUS-BAR");
     expect(rows[rows.length - 1]).toContain("[esc] interrupt");
+  });
+
+  /**
+   * Key-cap legibility regression.
+   *
+   * The cap used to paint `textDim` on `border`. Those slots sit a few steps
+   * apart on the same grey ramp in most themes and are the SAME VALUE (8) in
+   * ansi-dark/ansi-light, so the chord rendered as an invisible slab — the
+   * label beside it was readable while the key it described was not.
+   */
+  it("never paints a key-cap in its own background colour", () => {
+    for (const [name, t] of Object.entries(BUILTIN_THEMES)) {
+      expect(
+        t.textBright,
+        `${name}: key-cap fg must differ from its border background`,
+      ).not.toBe(t.border);
+    }
+  });
+
+  it("paints the key-cap brighter than the label beside it", () => {
+    const { lastFrame } = renderBar(<HintBar left={LEFT} />, true);
+    const frame = lastFrame() ?? "";
+    // The cap carries an explicit bright foreground; the label is dim (\x1b[2m).
+    expect(frame).toContain(ansiFg(DARK_THEME.textBright));
+    expect(frame).toContain("\x1b[2m");
   });
 });
