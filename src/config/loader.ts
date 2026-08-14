@@ -99,6 +99,12 @@ export interface DeepCodeSettings {
   /** When true, only allowlisted MCP server commands may be spawned (default false) */
   strictMcpConfig?: boolean;
 
+  /** When true, show the client-side estimated cost (status bar segment +
+   *  the /cost estimate line). Default false: the estimate is pricing-table
+   *  math the owner has asked to keep hidden (2026-08-14); token counts
+   *  always display. The code stays — this only gates the display. */
+  showCost?: boolean;
+
   // ── Temperature ──
   temperature?: number;
 
@@ -256,6 +262,7 @@ const KNOWN_KEYS = new Set([
   "disableAllHooks",
   "debugLogEnabled",
   "strictMcpConfig",
+  "showCost",
   "temperature",
   // Heirloom extensions
   "provider",
@@ -973,6 +980,15 @@ export function loadConfig(projectDir?: string): LoadResult {
       config.strictMcpConfig = merged.strictMcpConfig;
     } else {
       errors.push("config.strictMcpConfig: must be a boolean");
+    }
+  }
+
+  // ── showCost (display flag, default false — hidden) ──
+  if ("showCost" in merged) {
+    if (typeof merged.showCost === "boolean") {
+      config.showCost = merged.showCost;
+    } else {
+      errors.push("config.showCost: must be a boolean");
     }
   }
 

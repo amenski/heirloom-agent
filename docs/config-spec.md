@@ -95,6 +95,13 @@ are fatal — `main()` exits 1 (`src/cli.tsx`).
   // deno, go, java (src/mcp/connector.ts).
   "strictMcpConfig": false,
 
+  // When true, show the client-side estimated cost (status bar segment +
+  // the /cost estimate line). Default false (hidden): the estimate is
+  // pricing-table math the owner has asked to keep out of view
+  // (2026-08-14); token counts always display. The estimate machinery
+  // stays intact behind this flag.
+  "showCost": false,
+
   // Theme (heirloom extension)
   "theme": {
     "mode": "dark",                        // "dark" | "light" | "auto"

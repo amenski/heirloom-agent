@@ -235,6 +235,26 @@ describe("loadConfig strictMcpConfig", () => {
     expect(config.strictMcpConfig).toBeUndefined();
   });
 
+  it("accepts showCost: true", () => {
+    writeProjectSettings({ showCost: true });
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(config.showCost).toBe(true);
+  });
+
+  it("showCost defaults to undefined (hidden) when absent", () => {
+    writeProjectSettings({});
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors).toHaveLength(0);
+    expect(config.showCost).toBeUndefined();
+  });
+
+  it("rejects a non-boolean showCost with a validation error", () => {
+    writeProjectSettings({ showCost: "yes" });
+    const { config, errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("showCost"))).toBe(true);
+  });
+
   it("rejects a non-boolean strictMcpConfig with a validation error", () => {
     writeProjectSettings({ strictMcpConfig: "yes" });
     const { config, errors } = loadConfig(projectDir);

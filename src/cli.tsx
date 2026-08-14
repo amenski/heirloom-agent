@@ -506,8 +506,10 @@ async function main() {
 
     // Session cost: ambient like context fill, not an alarm — dim treatment,
     // no color thresholds. Hidden until spend is nonzero (getCostStr already
-    // guards this) so a fresh session doesn't show "$0.0000".
-    const costStr = getCostStr();
+    // guards this) so a fresh session doesn't show "$0.0000". Gated behind
+    // settings showCost (default false — owner asked to hide it 2026-08-14;
+    // the estimate machinery stays for when the flag is on).
+    const costStr = configResult.config.showCost ? getCostStr() : null;
     if (costStr !== null) {
       segments.push(dim(nextId(), `$${costStr}`));
     }
@@ -1063,7 +1065,10 @@ export async function handleSlashCore(
     }
     case "/cost": {
       console.log(`Session: ${(shared.sessionInput / 1000).toFixed(1)}k in / ${(shared.sessionOutput / 1000).toFixed(1)}k out`);
-      const cost = getCostStr(); console.log(`Estimated cost: $${cost ?? "0.0000"}`);
+      if (configResult.config.showCost) {
+        const cost = getCostStr();
+        console.log(`Estimated cost: $${cost ?? "0.0000"}`);
+      }
       return;
     }
     case "/usage": {
