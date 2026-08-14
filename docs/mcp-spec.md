@@ -1,6 +1,6 @@
 # MCP Specification
 
-**Status:** current · verified 2026-08-13 · covers `src/mcp/{client,connector}.ts`, `src/ui/views/McpStatusList.tsx`
+**Status:** current · verified 2026-08-14 · covers `src/mcp/{client,connector,pins}.ts`, `src/ui/views/McpStatusList.tsx`
 
 ## 1. Overview
 
@@ -37,9 +37,10 @@ environment for the child.
   *basename* is in the allowlist may run — `npx, node, python3, python,
   uvx, uv, bun, deno, go, java`. A blocked server is marked `failed` with
   the reason in `errorMap` (visible in `/mcp`), never spawned.
-- `reconnectMCPServer(name, config)` disconnects a stale client, re-checks
-  the allowlist, spawns, lists tools, and registers them; the `/mcp` view
-  exposes it as a per-server reconnect action.
+- `reconnectMCPServer(name, config, { approvePinChange })` disconnects a
+  stale client, re-checks the allowlist, spawns, lists tools, compares
+  against the persisted tool-def pin (§6), and registers them; the `/mcp`
+  view exposes it as a per-server reconnect action.
 
 ## 4. Tool registration
 
@@ -70,13 +71,25 @@ one model-facing tool:
 - Servers run as **untrusted child processes** — hence the
   `strictMcpConfig` launcher allowlist (§3).
 - MCP tool **results and descriptions are untrusted input** (security-spec
-  §3 — a server can rug-pull a description after review; T10 open).
+  §3 — a server can rug-pull a description after review).
+- **Tool-definition pinning (security-spec T10, fixed 2026-08-14)**:
+  `src/mcp/pins.ts` hashes each advertised tool (`name + description +
+  canonicalized inputSchema`) and persists per server name to
+  `~/.heirloom/mcp-pins.json` (mode 0600, atomic tmp+rename, hashes only).
+  Every connect — first-ever or reconnect — compares against the pin: a
+  description/schema change (or a tool added/removed) marks the server
+  `pinChanged` in `/mcp` (`pinned-defs changed — re-approve`), the changed
+  defs are **not re-registered** (a stderr warning names the server), and
+  pressing **R** asks a y/n confirmation before re-pinning and registering
+  (`approvePinChange: true`). First-ever connects pin without prompting.
+  Unchanged reconnects are silent.
 - Every `mcp__*` call passes through the normal permission engine; rules
   use the `mcp__*` wildcard form.
 
 ## 7. Verified against
 
-`src/mcp/connector.ts` (statuses, allowlist, registration, reconnect) ·
+`src/mcp/connector.ts` (statuses, allowlist, registration, reconnect,
+pinning) · `src/mcp/pins.ts` (pin store, compare, re-pin) ·
 `src/mcp/client.ts` (spawn, JSON-RPC, listTools/callTool) ·
-`src/ui/views/McpStatusList.tsx` (status view + reconnect) ·
-`src/cli.tsx` (connect/disconnect wiring)
+`src/ui/views/McpStatusList.tsx` (status view + reconnect + re-approval
+confirmation) · `src/cli.tsx` (connect/disconnect wiring)

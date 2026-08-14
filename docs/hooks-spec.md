@@ -125,6 +125,12 @@ One JSON object on **stdin**, one line:
   travels in the JSON, not the environment.
 - stdout is captured (cap 64 KB, truncation note beyond); stderr is
   capped the same way and forwarded to the debug log only (2026-08-13 fix).
+- The payload write is **fire-and-forget**: a hook that exits instantly
+  without reading stdin closes its read end and the write fails EPIPE —
+  that error is deliberately swallowed (`child.stdin.on("error", () => {})`,
+  `src/hooks/runner.ts`), so an instant-exit hook can never crash the host
+  process (fixed 2026-08-14 after the trust-test flake exposed the
+  unhandled-stream crash).
 
 ## 4. Exit codes & stdout JSON
 

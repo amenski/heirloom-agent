@@ -3,6 +3,7 @@ import { resolve, relative, join } from "node:path";
 import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler, ToolContext } from "./types.js";
 import { ToolRegistry } from "./registry.js";
+import { wrapUntrusted } from "./untrusted-content.js";
 
 const readFileHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
@@ -13,7 +14,10 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
     const lines = content.split("\n").slice(0, 2000);
     let result = lines.map((l, i) => `${i + 1}: ${l}`).join("\n");
     if (lines.length >= 2000) result += "\n(file truncated at 2000 lines)";
-    return { content: result };
+    // Markers around the whole numbered block — the truncation footer is part
+    // of the payload (same convention as web_fetch's). Error text below stays
+    // unwrapped: it is the tool's own voice.
+    return { content: wrapUntrusted(result) };
   } catch (err: unknown) {
     return { content: `Error reading file: ${(err as Error).message}` };
   }

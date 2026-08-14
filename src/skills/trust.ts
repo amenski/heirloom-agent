@@ -1,11 +1,26 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, chmodSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
+import { resolveHome } from "../config/loader.js";
 
-const TRUST_FILE = join(homedir(), ".heirloom", "skill-trust.json");
+/**
+ * Trust-on-first-use store for project-declared skills (security-spec.md T4,
+ * skill-spec.md §6). Mirrors hooks-trust.json: a JSON file under ~/.heirloom
+ * (HEIRLOOM_HOME honored, same as every other user-level file) keyed by the
+ * skill's absolute source path, storing only the full sha256 of the SKILL.md
+ * content — never the content itself. Global user skills (~/.heirloom/skills,
+ * ~/.agents/skills) never consult this store — they are trusted implicitly
+ * (same split hooks-spec §6 chose for global vs project hooks).
+ *
+ * Unlike the previous auto-trust-on-first-sight behavior, an unseen or edited
+ * project skill is withheld from the session until the user explicitly
+ * confirms: `checkSkillTrust` only classifies (new | changed | trusted), and
+ * `trustSkill` records the decision. Interactive sessions ask via the
+ * SkillTrustPrompt modal; headless runs skip untrusted skills with a stderr
+ * warning — fail closed, like hooks.
+ */
 
-interface TrustEntry {
+export interface SkillTrustEntry {
   path: string;
   hash: string;
   firstSeen: number;
@@ -13,52 +28,106 @@ interface TrustEntry {
   trusted: boolean;
 }
 
-interface TrustStore {
-  skills: Record<string, TrustEntry>;
+export interface SkillTrustStore {
+  skills: Record<string, SkillTrustEntry>;
 }
 
-function loadTrustStore(): TrustStore {
-  if (!existsSync(TRUST_FILE)) return { skills: {} };
+function skillTrustFilePath(): string {
+  return `${resolveHome()}/skill-trust.json`;
+}
+
+export function loadSkillTrust(): SkillTrustStore {
+  const path = skillTrustFilePath();
+  if (!existsSync(path)) return { skills: {} };
   try {
-    return JSON.parse(readFileSync(TRUST_FILE, "utf-8"));
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    if (parsed && typeof parsed === "object" && parsed.skills && typeof parsed.skills === "object") {
+      return parsed as SkillTrustStore;
+    }
+    return { skills: {} };
   } catch {
     return { skills: {} };
   }
 }
 
-function saveTrustStore(store: TrustStore): void {
-  const dir = dirname(TRUST_FILE);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(TRUST_FILE, JSON.stringify(store, null, 2));
+/**
+ * Write the trust store: mode 0600, atomic (tmp + rename), and any failure is
+ * swallowed with a stderr note — a trust-save failure must never become an
+ * unhandled rejection at a turn boundary. The skill still runs for the
+ * session; only the persistence is lost.
+ */
+export function saveSkillTrust(store: SkillTrustStore): void {
+  const path = skillTrustFilePath();
+  const dir = dirname(path);
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}`;
+    writeFileSync(tmp, JSON.stringify(store, null, 2), { mode: 0o600 });
+    renameSync(tmp, path);
+    chmodSync(path, 0o600);
+  } catch (err) {
+    process.stderr.write(`heirloom: failed to write skill-trust.json: ${(err as Error).message}\n`);
+  }
 }
 
-function hashFile(filePath: string): string {
-  const content = readFileSync(filePath, "utf-8");
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+/**
+ * Canonicalize a skill path for store keys: realpath, so the same file is
+ * always the same key. Without this, a workspace reached through a symlink
+ * (or, on macOS, the `/var` → `/private/var` spelling difference) would get
+ * two keys and re-ask every session. Falls back to the raw path if the file
+ * is gone (e.g. deleted while the trust modal was open).
+ */
+function realSkillPath(skillPath: string): string {
+  try {
+    return realpathSync(skillPath);
+  } catch {
+    return skillPath;
+  }
 }
 
-export type TrustResult =
+/** Full sha256 of a SKILL.md's content — the trust key, not the content itself. */
+export function skillContentHash(skillPath: string): string {
+  return createHash("sha256").update(readFileSync(skillPath)).digest("hex");
+}
+
+export type SkillTrustResult =
   | { status: "trusted" }
   | { status: "new"; name: string; sourcePath: string }
   | { status: "changed"; name: string; sourcePath: string };
 
-export function checkSkillTrust(skillPath: string, skillName: string): TrustResult {
-  const hash = hashFile(skillPath);
-  const store = loadTrustStore();
-  const entry = store.skills[skillPath];
-
-  if (!entry) {
-    store.skills[skillPath] = { path: skillPath, hash, firstSeen: Date.now(), trusted: true };
-    saveTrustStore(store);
-    return { status: "new", name: skillName, sourcePath: skillPath };
-  }
-
-  if (entry.hash !== hash) {
-    entry.hash = hash;
-    entry.lastChanged = Date.now();
-    saveTrustStore(store);
-    return { status: "changed", name: skillName, sourcePath: skillPath };
-  }
-
+/**
+ * Classify a skill's current content against the trust store WITHOUT
+ * persisting anything: the trust decision is recorded only when the user
+ * explicitly confirms (trustSkill), so an unseen or edited project skill can
+ * be withheld from the session until the ask-tier confirmation. A hash
+ * mismatch (content edit) re-classifies as `changed` — the tamper signal.
+ */
+export function checkSkillTrust(skillPath: string, skillName: string): SkillTrustResult {
+  const key = realSkillPath(skillPath);
+  const hash = skillContentHash(key);
+  const store = loadSkillTrust();
+  const entry = store.skills[key];
+  if (!entry) return { status: "new", name: skillName, sourcePath: key };
+  if (entry.hash !== hash) return { status: "changed", name: skillName, sourcePath: key };
   return { status: "trusted" };
+}
+
+/**
+ * Record an explicit "trust forever" decision: store the current content
+ * hash, keyed by the canonical (realpath) source path. First trust sets
+ * firstSeen; a re-trust after a content change records lastChanged.
+ */
+export function trustSkill(skillPath: string, skillName: string): void {
+  const key = realSkillPath(skillPath);
+  const store = loadSkillTrust();
+  const existing = store.skills[key];
+  const hash = skillContentHash(key);
+  store.skills[key] = {
+    path: key,
+    hash,
+    firstSeen: existing?.firstSeen ?? Date.now(),
+    lastChanged: existing && existing.hash !== hash ? Date.now() : existing?.lastChanged,
+    trusted: true,
+  };
+  saveSkillTrust(store);
 }

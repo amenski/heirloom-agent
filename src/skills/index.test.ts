@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SkillLoader, isSkillEnabled } from "./index.js";
+import { trustSkill } from "./trust.js";
 
 describe("isSkillEnabled", () => {
   it("returns true when the map is undefined (default enabled)", () => {
@@ -31,11 +32,14 @@ describe("SkillLoader.load honors enabledSkills", () => {
   function writeSkill(name: string) {
     const dir = join(projectDir, ".heirloom", "skills", name);
     mkdirSync(dir, { recursive: true });
+    const path = join(dir, "SKILL.md");
     writeFileSync(
-      join(dir, "SKILL.md"),
+      path,
       `---\nname: ${name}\ndescription: test ${name}\n---\nBody of ${name}`,
       "utf-8",
     );
+    // Pre-trust, as a previous interactive session's ask would have.
+    trustSkill(path, name);
   }
 
   beforeEach(() => {

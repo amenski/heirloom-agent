@@ -17,7 +17,7 @@ import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
 import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground, setSandboxLevel } from "./tools/index.js";
 import { jobManager } from "./tools/jobs.js";
 import { todoStore } from "./tools/todo.js";
-import { PermissionEngine, ProfileEvaluator, authorize, type ProfileLevel } from "./permissions/index.js";
+import { PermissionEngine, ProfileEvaluator, authorize } from "./permissions/index.js";
 import { previewEdit } from "./permissions/diffpreview.js";
 import { ModeLoader, type ModeConfig } from "./modes/loader.js";
 import { Compactor, keepBoundary } from "./compaction/compactor.js";
@@ -91,12 +91,6 @@ if (isMainModule()) {
  * without running the real CLI startup. The "·" separator between segments
  * is added by StatusBar itself.
  */
-export function profileLevelSegment(
-  level: ProfileLevel | undefined,
-): import("./ui/types.js").StatusSegment[] {
-  return level ? [{ id: "profile", text: `profile: ${level}`, dimColor: true }] : [];
-}
-
 async function main() {
   initPresets();
 
@@ -470,18 +464,18 @@ async function main() {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}${shared.activeMode.name}`, { raw: true }));
     }
     if (shared.posture === "autoApprove") {
-      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.warning)}auto-approve`, { raw: true }));
+      // Short form in the bar ("aa"); the hint bar and docs spell it out.
+      segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.warning)}aa`, { raw: true }));
     } else if (shared.posture === "plan") {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.info)}plan`, { raw: true }));
     } else if (!shared.activeMode?.name) {
       segments.push(T(nextId(), `${statusDot(resolvedTheme.theme.success)}normal`, { raw: true }));
     }
 
-    // Permission profile level (permission-profile.md §9): a dim marker beside
-    // the posture segment — "setting a level below unrestricted is a
-    // deliberate, visible change". Absent (feature off) → no segment, the bar
-    // is byte-identical to today.
-    segments.push(...profileLevelSegment(permissionProfile?.level));
+    // The permission profile level is NOT in the bar: it is static config
+    // (set once in settings), not ambient session state — the bar shows what
+    // changes mid-session (mode, posture, effort, context fill). The level is
+    // visible in `heirloom doctor` and /permissions (decided 2026-08-14).
 
     // The model is NOT here — it rides as a chip on the input box's right edge
     // (see buildModelPill), because it is a property of the message you are

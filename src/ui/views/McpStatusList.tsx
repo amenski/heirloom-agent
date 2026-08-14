@@ -18,6 +18,8 @@ export default function McpStatusList({ onClose, width }: Props) {
   const [statuses, setStatuses] = useState<McpServerStatusEntry[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [drillDown, setDrillDown] = useState<string | null>(null);
+  // Server awaiting the re-approval confirmation for changed tool defs (T10).
+  const [pinReapprove, setPinReapprove] = useState<string | null>(null);
 
   function refresh() {
     setStatuses(getMCPServerStatuses());
@@ -33,9 +35,28 @@ export default function McpStatusList({ onClose, width }: Props) {
     name: n,
     status: "starting" as McpServerStatus,
     toolCount: 0,
+    pinChanged: false,
   }));
 
   useInput((value, key) => {
+    if (pinReapprove) {
+      // Tool-definition re-approval confirmation (T10): y = accept the
+      // changed defs (reconnect re-pins and re-registers), anything else
+      // cancels and the server stays flagged.
+      if (value.toLowerCase() === "y") {
+        const name = pinReapprove;
+        setPinReapprove(null);
+        const configs = getServerConfigs();
+        const config = configs[name];
+        if (config) {
+          reconnectMCPServer(name, config, { approvePinChange: true }).then(() => refresh());
+        }
+        return;
+      }
+      setPinReapprove(null);
+      return;
+    }
+
     if (drillDown) {
       if (key.escape) {
         setDrillDown(null);
@@ -59,7 +80,13 @@ export default function McpStatusList({ onClose, width }: Props) {
 
     if ((value === "r" || value === "R") && !key.ctrl && !key.meta) {
       const s = servers[selectedIdx];
-      if (s && s.status === "failed") {
+      if (!s) return;
+      if (s.pinChanged) {
+        // Changed defs are not re-registered until the user approves.
+        setPinReapprove(s.name);
+        return;
+      }
+      if (s.status === "failed") {
         const configs = getServerConfigs();
         if (configs[s.name]) {
           reconnectMCPServer(s.name, configs[s.name]).then(() => refresh());
@@ -116,6 +143,9 @@ export default function McpStatusList({ onClose, width }: Props) {
                       ) : s.status === "failed" ? (
                         <Text dimColor color="yellow"> (failed)</Text>
                       ) : null}
+                      {s.pinChanged ? (
+                        <Text color="yellow">{isSelected ? " — " : " "}pinned-defs changed — re-approve</Text>
+                      ) : null}
                       {s.status === "reconnecting" ? (
                         <Text dimColor color="yellow"> reconnecting...</Text>
                       ) : null}
@@ -128,6 +158,12 @@ export default function McpStatusList({ onClose, width }: Props) {
               })}
             </Box>
           )}
+
+          {pinReapprove ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="yellow">Tool definitions for {pinReapprove} changed since last approval — re-approve? (y/n)</Text>
+            </Box>
+          ) : null}
 
           <Box flexDirection="column" marginTop={1}>
             <Text dimColor>↑↓ navigate · Enter drill-down · R reconnect · Esc close</Text>

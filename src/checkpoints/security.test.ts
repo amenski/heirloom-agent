@@ -75,6 +75,76 @@ describe("checkpoint secret handling", () => {
     expect(envFiles).toHaveLength(0);
   });
 
+  it("fixture: a gitignored .env is absent from the shadow repo (git ls-tree)", async () => {
+    // security-spec T9 re-verify: the workspace .gitignore ignores .env, and
+    // the shadow repo must never contain it.
+    const mgr = await chkptManager();
+    const hash = await mgr.save("fixture-gitignored");
+    expect(hash).toBeTruthy();
+
+    const tree = execSync(
+      `git --git-dir="${shadowGitDir()}" ls-tree -r --name-only HEAD`,
+      { encoding: "utf-8", stdio: "pipe" },
+    ).trim();
+    const files = tree.split("\n").filter(Boolean);
+
+    expect(files).toContain(".gitignore");
+    expect(files).toContain("app.ts");
+    expect(files).not.toContain(".env");
+  });
+
+  it("fixture: with NO workspace .gitignore, .env is STILL excluded — the info/exclude backstop (T9 verified result)", async () => {
+    // The T9 row previously claimed a .gitignore-less workspace would commit
+    // .env into the shadow repo. Verified 2026-08-14: false for .env — the
+    // shadow repo's own .git/info/exclude list (checkpoints/index.ts) covers
+    // .env/.env.* and common secret names regardless of the workspace.
+    rmSync(join(workspaceDir, ".gitignore"));
+    execSync("git add -A && git commit -m 'remove gitignore'", {
+      cwd: workspaceDir,
+      stdio: "pipe",
+    });
+
+    const mgr = await chkptManager();
+    const hash = await mgr.save("fixture-no-gitignore");
+    expect(hash).toBeTruthy();
+
+    const tree = execSync(
+      `git --git-dir="${shadowGitDir()}" ls-tree -r --name-only HEAD`,
+      { encoding: "utf-8", stdio: "pipe" },
+    ).trim();
+    const files = tree.split("\n").filter(Boolean);
+
+    expect(files).toContain("app.ts");
+    expect(files).not.toContain(".env");
+  });
+
+  it("fixture: a secret file OUTSIDE the backstop list IS committed without a workspace .gitignore (T9 residual weakness)", async () => {
+    // The honest residual gap: the info/exclude backstop is a finite list of
+    // known secret names. .npmrc (registry auth tokens) is not on it, so with
+    // no workspace .gitignore it lands in the shadow repo.
+    writeFileSync(
+      join(workspaceDir, ".npmrc"),
+      "//registry.npmjs.org/:_authToken=test-secret-token\n",
+    );
+    rmSync(join(workspaceDir, ".gitignore"));
+    execSync("git add -A && git commit -m 'remove gitignore'", {
+      cwd: workspaceDir,
+      stdio: "pipe",
+    });
+
+    const mgr = await chkptManager();
+    const hash = await mgr.save("fixture-npmrc");
+    expect(hash).toBeTruthy();
+
+    const tree = execSync(
+      `git --git-dir="${shadowGitDir()}" ls-tree -r --name-only HEAD`,
+      { encoding: "utf-8", stdio: "pipe" },
+    ).trim();
+    const files = tree.split("\n").filter(Boolean);
+
+    expect(files).toContain(".npmrc");
+  });
+
   it("excludes .env from the shadow repo even when the workspace has NO .gitignore at all (D4 backstop)", async () => {
     // Simulate a workspace that never had a .gitignore: remove it and
     // re-commit the removal so the shadow repo's --work-tree sees a

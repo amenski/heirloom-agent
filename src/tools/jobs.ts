@@ -10,6 +10,7 @@ import {
   validateCwdWithinTrustedRoot,
   type SandboxLevel,
 } from "../sandbox/seatbelt.js";
+import { wrapUntrusted } from "./untrusted-content.js";
 
 // Background jobs can produce unbounded output (dev servers, tail -f); holding
 // it all in memory would leak. Each stream keeps the most recent 1MB and flags
@@ -429,9 +430,11 @@ const checkJobHandler: ToolHandler = async (args) => {
     `Status: ${report.status}${report.exitCode !== null ? ` (exit ${report.exitCode})` : ""}`,
     `Running for: ${(report.runningMs / 1000).toFixed(1)}s`,
   ];
-  if (report.stdout) lines.push(`stdout:\n${report.stdout}`);
+  // The command's own bytes are wrapped in the untrusted-content delimiters;
+  // the status lines above stay outside (tool voice, like web_search's).
+  if (report.stdout) lines.push(`stdout:\n${wrapUntrusted(report.stdout)}`);
   else lines.push("stdout: (none)");
-  if (report.stderr) lines.push(`stderr:\n${report.stderr}`);
+  if (report.stderr) lines.push(`stderr:\n${wrapUntrusted(report.stderr)}`);
   else lines.push("stderr: (none)");
   if (report.stdoutTruncated) lines.push("(stdout truncated — kept last 1MB)");
   if (report.stderrTruncated) lines.push("(stderr truncated — kept last 1MB)");

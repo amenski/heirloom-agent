@@ -2,6 +2,7 @@ import { MCPClient } from "./client.js";
 import { registry } from "../tools/index.js";
 import type { ToolGroup } from "../tools/types.js";
 import type { McpServerConfig } from "../config/loader.js";
+import { loadMcpPins, mcpPinsChanged, pinMcpServer } from "./pins.js";
 
 export type McpServerStatus = "connected" | "failed" | "reconnecting" | "starting";
 
@@ -16,6 +17,8 @@ export interface McpServerStatusEntry {
   toolCount: number;
   /** Present when the server failed to start; naming the reason (e.g. blocked by strictMcpConfig). */
   error?: string;
+  /** True when the advertised tool definitions differ from the persisted pin (T10) — re-approve via /mcp. */
+  pinChanged?: boolean;
 }
 
 /**
@@ -44,6 +47,7 @@ const toolSnapshots = new Map<string, ToolSnapshot[]>();
 const statusMap = new Map<string, McpServerStatus>();
 const errorMap = new Map<string, string>();
 const clientsMap = new Map<string, MCPClient>();
+const pinChangedMap = new Map<string, boolean>();
 let serverConfigsMap = new Map<string, McpServerConfig>();
 let strictMcpConfig = false;
 
@@ -56,7 +60,13 @@ export function getMCPServerStatuses(): McpServerStatusEntry[] {
   for (const [name, status] of statusMap) {
     const tools = toolSnapshots.get(name) ?? [];
     const error = errorMap.get(name);
-    entries.push({ name, status, toolCount: tools.length, ...(error ? { error } : {}) });
+    entries.push({
+      name,
+      status,
+      toolCount: tools.length,
+      ...(error ? { error } : {}),
+      ...(pinChangedMap.get(name) ? { pinChanged: true } : {}),
+    });
   }
   return entries;
 }
@@ -65,7 +75,11 @@ export function getMCPServerTools(serverName: string): ToolSnapshot[] {
   return toolSnapshots.get(serverName) ?? [];
 }
 
-export async function reconnectMCPServer(name: string, config: McpServerConfig): Promise<void> {
+export async function reconnectMCPServer(
+  name: string,
+  config: McpServerConfig,
+  options?: { approvePinChange?: boolean },
+): Promise<void> {
   statusMap.set(name, "reconnecting");
   errorMap.delete(name);
 
@@ -98,6 +112,24 @@ export async function reconnectMCPServer(name: string, config: McpServerConfig):
     const tools = await client.listTools();
     toolSnapshots.set(name, tools.map(t => ({ name: t.name, inputSchema: t.inputSchema as Record<string, unknown> | undefined })));
 
+    // T10 tool-definition pinning: every connect (first-ever or reconnect)
+    // compares the advertised defs against the persisted pin. A change is the
+    // rug-pull signal — the changed tools are NOT (re)registered until the
+    // user approves via /mcp (R → confirmation), which reconnects with
+    // approvePinChange to re-pin and register. First-ever connects pin
+    // without prompting.
+    const pins = loadMcpPins();
+    const alreadyPinned = pins.servers[name] !== undefined;
+    const pinChanged = mcpPinsChanged(pins, name, tools);
+    if (pinChanged && !options?.approvePinChange) {
+      pinChangedMap.set(name, true);
+      statusMap.set(name, "connected");
+      process.stderr.write(
+        `  [mcp] ${name}: tool definitions changed since last approval — not re-registered; open /mcp and press R to re-approve\n`,
+      );
+      return;
+    }
+
     for (const tool of tools) {
       const namespacedName = `mcp__${name}__${tool.name}`;
       registry.register({
@@ -124,6 +156,15 @@ export async function reconnectMCPServer(name: string, config: McpServerConfig):
         },
         groups: ["mcp", name] as ToolGroup[],
       });
+    }
+
+    if (pinChanged && options?.approvePinChange) {
+      // User approved the changed defs: re-pin them and clear the flag.
+      pinMcpServer(pins, name, tools);
+      pinChangedMap.delete(name);
+    } else if (!alreadyPinned) {
+      // First-ever connect: pin without prompting.
+      pinMcpServer(pins, name, tools);
     }
 
     statusMap.set(name, "connected");

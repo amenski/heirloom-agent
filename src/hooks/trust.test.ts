@@ -50,6 +50,16 @@ const scriptFile = () => {
   return join(dir, "guard.sh");
 };
 
+/**
+ * Keep the hook's stdin read end open until the runner closes the pipe (cat
+ * reads to EOF). These tests' commands (`touch`, `echo`) exit instantly;
+ * under machine load the runner's payload write (runner.ts runHook) can then
+ * hit EPIPE — an 'error' event on the child's stdin with no listener, which
+ * crashes the test worker. Holding the pipe open makes the write structurally
+ * safe, no fixed sleeps or timing.
+ */
+const holdStdin = (cmd: string): string => `${cmd}; cat > /dev/null`;
+
 beforeEach(() => {
   mkdirSync(TEST_DIR, { recursive: true });
   mkdirSync(HOME_DIR, { recursive: true });
@@ -64,7 +74,7 @@ afterEach(() => {
 describe("TOFU trust", () => {
   it("trusts global hooks implicitly — never prompts", async () => {
     const runner = makeRunner(globalConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     const confirmTrust = vi.fn(async () => true);
     runner.confirmTrust = confirmTrust;
@@ -78,7 +88,7 @@ describe("TOFU trust", () => {
 
   it("prompts exactly once per unseen project hook, then runs it", async () => {
     const runner = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     const confirmTrust = vi.fn(async () => true);
     runner.confirmTrust = confirmTrust;
@@ -89,7 +99,7 @@ describe("TOFU trust", () => {
     expect(confirmTrust).toHaveBeenCalledTimes(1);
     expect(confirmTrust).toHaveBeenCalledWith(expect.objectContaining({
       event: "PreToolUse",
-      command: `touch '${markerFile}'`,
+      command: holdStdin(`touch '${markerFile}'`),
       origin: "project",
     }));
     expect(existsSync(markerFile)).toBe(true);
@@ -97,7 +107,7 @@ describe("TOFU trust", () => {
 
   it("persists the trust forever when the user says yes", async () => {
     const runner = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     runner.confirmTrust = async () => true;
     await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
@@ -107,7 +117,7 @@ describe("TOFU trust", () => {
     // A brand-new runner (next session, same HOME + cwd) must not prompt again.
     const confirmTrust = vi.fn(async () => true);
     const second = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     second.confirmTrust = confirmTrust;
     await second.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
@@ -117,7 +127,7 @@ describe("TOFU trust", () => {
 
   it("a 'no' skips the hook for the rest of the session without re-prompting", async () => {
     const runner = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     const confirmTrust = vi.fn(async () => false);
     runner.confirmTrust = confirmTrust;
@@ -131,7 +141,7 @@ describe("TOFU trust", () => {
 
   it("headless skips untrusted project hooks with a stderr warning and never prompts", async () => {
     const runner = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }), { headless: true });
     const stderr: string[] = [];
     const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
@@ -155,7 +165,7 @@ describe("TOFU trust", () => {
   it("headless runs trusted project hooks without prompting", async () => {
     // Pre-trust the pair (as a previous interactive session would have).
     const runner = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     runner.confirmTrust = async () => true;
     await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} }); // interactive ask, persists
@@ -164,7 +174,7 @@ describe("TOFU trust", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       const headless = makeRunner(projectConfig({
-        PreToolUse: [{ command: `touch '${markerFile}'` }],
+        PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
       }), { headless: true });
       headless.verifyTrust();
       await headless.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
@@ -178,7 +188,7 @@ describe("TOFU trust", () => {
 
   it("disableAllHooks overrides everything — no prompts, no warnings, nothing runs", async () => {
     const runner = makeRunner(
-      projectConfig({ PreToolUse: [{ command: `touch '${markerFile}'` }] }),
+      projectConfig({ PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }] }),
       { headless: true, disableAllHooks: true },
     );
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -239,7 +249,7 @@ describe("content-hashed, project-scoped trust keys (fix 1)", () => {
 
   it("a script content change is treated as unseen — re-confirms before running", async () => {
     const script = scriptFile();
-    writeFileSync(script, "touch one");
+    writeFileSync(script, holdStdin("touch one"));
     const runner = makeRunner(projectConfig({
       PreToolUse: [{ command: "hook-scripts/guard.sh" }],
     }));
@@ -253,7 +263,7 @@ describe("content-hashed, project-scoped trust keys (fix 1)", () => {
     // swap the script content — the key must change and the ask must fire
     // again even though the command string is identical.
     await new Promise((r) => setTimeout(r, 20));
-    writeFileSync(script, "touch two");
+    writeFileSync(script, holdStdin("touch two"));
     await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
 
     expect(confirmTrust).toHaveBeenCalledTimes(2);
@@ -264,7 +274,7 @@ describe("content-hashed, project-scoped trust keys (fix 1)", () => {
     const projectB = join(TEST_DIR, "project-b");
     for (const dir of [projectA, projectB]) {
       mkdirSync(join(dir, "hook-scripts"), { recursive: true });
-      writeFileSync(join(dir, "hook-scripts", "guard.sh"), "echo hi");
+      writeFileSync(join(dir, "hook-scripts", "guard.sh"), holdStdin("echo hi"));
     }
     const cfgA = parseHooksConfig(undefined, { PreToolUse: [{ command: "hook-scripts/guard.sh" }] }, "test", [])!;
     const cfgB = parseHooksConfig(undefined, { PreToolUse: [{ command: "hook-scripts/guard.sh" }] }, "test", [])!;
@@ -290,7 +300,7 @@ describe("content-hashed, project-scoped trust keys (fix 1)", () => {
 
   it("deleting a trusted script's file makes it untrusted again (missing = untrusted)", async () => {
     const script = scriptFile();
-    writeFileSync(script, "touch one");
+    writeFileSync(script, holdStdin("touch one"));
     const runner = makeRunner(projectConfig({
       PreToolUse: [{ command: "hook-scripts/guard.sh" }],
     }));
@@ -312,7 +322,7 @@ describe("trust file hygiene (fix 6)", () => {
     const runner = makeRunner(projectConfig({
       PreToolUse: [{ matcher: "run_bash", command: "hook-scripts/guard.sh" }],
     }));
-    writeFileSync(scriptFile(), "echo hi");
+    writeFileSync(scriptFile(), holdStdin("echo hi"));
     runner.confirmTrust = async () => true;
     await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
 
@@ -343,7 +353,7 @@ describe("trust file hygiene (fix 6)", () => {
 
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const runner = makeRunner(projectConfig({
-      PreToolUse: [{ command: `touch '${markerFile}'` }],
+      PreToolUse: [{ command: holdStdin(`touch '${markerFile}'`) }],
     }));
     runner.confirmTrust = async () => true;
     try {

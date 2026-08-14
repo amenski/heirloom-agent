@@ -296,6 +296,11 @@ export class HookRunner {
         settle({ exitCode: code, timedOut: false, stdout, stderr });
       });
 
+      // The payload is fire-and-forget: a hook that exits instantly without
+      // reading stdin closes its read end, and the write then fails EPIPE.
+      // Without this listener that surfaces as an uncaughtException and
+      // crashes the host process (found via the trust.test.ts flake, 2026-08-14).
+      child.stdin.on("error", () => {});
       child.stdin.write(payloadLine + "\n");
       child.stdin.end();
     });

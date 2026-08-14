@@ -177,12 +177,11 @@ Posture semantics (permission-spec.md): `normal` asks per policy;
 unresolved/guarded tiers; `plan` is read-only and requires a
 `<proposed_plan>` block before implementing.
 
-**Profile level on the status line.** When settings.json sets
-`permissionProfile`, the status line shows a dim `profile: <level>` segment
-beside the posture segment (`src/cli.tsx` `buildStatusBar` /
-`profileLevelSegment`) — setting a level below `unrestricted` is a
-deliberate, visible change (permission-profile.md §9). Unconfigured → no
-segment; the bar is byte-identical to today.
+**Profile level is NOT on the status line** (decided 2026-08-14): the
+level is static configuration, not ambient session state, and the bar
+shows only what changes mid-session (mode, posture, effort, context
+fill). The configured level is visible in `heirloom doctor` and
+`/permissions` instead.
 
 ## 7. Keybindings
 

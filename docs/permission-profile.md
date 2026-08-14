@@ -121,9 +121,9 @@ is in both lists the more specific entry wins, ties go to deny.
   condition), and through the `Orchestrator`'s `profile` option so
   sub-agents inherit the boundary together with the rule engine (§6). No
   parallel context channel.
-- The status line shows a dim `profile: <level>` segment beside the posture
-  segment when a level is configured (`cli.tsx` `profileLevelSegment`);
-  unconfigured → no segment, bar unchanged (§9).
+- The status line does NOT show the level (reversed 2026-08-14): static
+  config belongs in `heirloom doctor` and `/permissions`, not the bar —
+  the bar shows only session-mutable state.
 - M.1 (in this phase): the approval overlay's edit-in-workspace condition is
   profile-derived — `ProfileEvaluator.editTargetInWriteSet`
   (workspace-write → workspace roots; strict-sandbox → no write-set, no
@@ -294,10 +294,10 @@ startup notice. This mirrors Codex's backend choice and finally closes the
 - `permissionProfile` absent ⇒ level `unrestricted` + empty rules ⇒
   **byte-for-byte today's behavior** (layers 2–3 only). The feature is
   additive; nothing existing changes until the owner sets a level.
-- Setting a level below `unrestricted` is a deliberate, visible change:
-  the status line always shows the level next to posture (the
-  always-visible segment supersedes the earlier one-line-notice idea —
-  implemented 2026-08-13, phase (d)).
+- Setting a level below `unrestricted` is a deliberate, visible change —
+  visible in `heirloom doctor` and `/permissions`, not the status line
+  (the earlier status-line segment was removed 2026-08-14: the level is
+  static config, and the bar shows only session-mutable state).
 
 ## 10. Phasing & verification
 

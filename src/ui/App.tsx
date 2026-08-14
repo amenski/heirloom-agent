@@ -54,6 +54,8 @@ import { buildWelcomeLines } from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
 import AskUserQuestionPrompt from "./views/AskUserQuestionPrompt.js";
 import HookTrustPrompt from "./views/HookTrustPrompt.js";
+import SkillTrustPrompt from "./views/SkillTrustPrompt.js";
+import type { SkillDef } from "../skills/index.js";
 import PlanImplementationPrompt from "./views/PlanImplementationPrompt.js";
 import SessionList from "./views/SessionList.js";
 import SkillList from "./views/SkillList.js";
@@ -230,6 +232,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     entry: HookEntry;
     resolve: (trusted: boolean) => void;
   } | null>(null);
+  // TOFU trust confirmation for an unseen or changed project skill
+  // (skill-spec.md §6, security-spec T4). Same ask-tier pattern; the mount
+  // effect below drives one modal per pending skill and applies the decision
+  // via loader.acceptTrust before any turn can start.
+  const [skillTrustPrompt, setSkillTrustPrompt] = useState<{
+    skill: SkillDef;
+    status: "new" | "changed";
+    resolve: (trusted: boolean) => void;
+  } | null>(null);
 
   // Permission/execution posture, cycled by Shift+Tab: normal → autoApprove → plan.
   // - normal: permissions ask per policy.
@@ -333,6 +344,31 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       });
     void ctx.hooks.dispatch("SessionStart", {});
   }, [ctx.hooks]);
+
+  // Skill TOFU (security-spec T4): skills load before Ink mounts, so
+  // untrusted project skills are deferred (loader.pendingTrust) and asked
+  // here, one modal per skill, in load order. The modal blocks input until
+  // answered, so no turn — and no system prompt containing the skill's index
+  // line — can start before every decision lands. Same Promise+modal pattern
+  // as the hook trust ask.
+  useEffect(() => {
+    const loader = ctx.skillLoader;
+    if (!loader || loader.pendingTrust.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const pending of [...loader.pendingTrust]) {
+        if (cancelled) return;
+        const trusted = await new Promise<boolean>((resolve) => {
+          setSkillTrustPrompt({ skill: pending.skill, status: pending.status, resolve });
+        });
+        if (cancelled) return;
+        loader.acceptTrust(pending.skill, trusted);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ctx.skillLoader]);
 
   // Config-driven statusline providers: subscribe and run the async refresh
   // loop. Segments are pushed in from outside render; the loop never blocks or
@@ -1669,7 +1705,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   const term = useTerminalInfo();
 
   const modalOpen =
-    !!askPrompt || !!askQuestionPrompt || !!hookTrustPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
+    !!askPrompt || !!askQuestionPrompt || !!hookTrustPrompt || !!skillTrustPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
     showUndoSelector || showMcpStatus || showPermissionHistory || showUsage || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   const prevModalOpenRef = useRef(modalOpen);
@@ -1730,6 +1766,17 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           resolve={(trusted) => {
             setHookTrustPrompt(null);
             hookTrustPrompt.resolve(trusted);
+          }}
+        />
+      )}
+
+      {skillTrustPrompt && (
+        <SkillTrustPrompt
+          skill={skillTrustPrompt.skill}
+          status={skillTrustPrompt.status}
+          resolve={(trusted) => {
+            setSkillTrustPrompt(null);
+            skillTrustPrompt.resolve(trusted);
           }}
         />
       )}
@@ -2000,7 +2047,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !hookTrustPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showUsage && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !hookTrustPrompt && !skillTrustPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showUsage && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={promptHistory}
@@ -2052,9 +2099,11 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         // with fuzzy filtering, and is discoverable without a hint.
         right={[
           // "/" is the honest router — the slash menu reaches everything,
-          // matching Claude Code. (A "^M model" hint lived here once: dead on
+          // matching Claude Code. Rendered without the key-cap chip: "/" is a
+          // literal character you type, not a key chord, so chipping it like
+          // "esc" looked wrong. (A "^M model" hint lived here once: dead on
           // arrival, since Ctrl+M is byte-identical to Enter in a terminal.)
-          { key: "/", label: "commands" },
+          { key: "", label: "/ commands" },
         ]}
       />
     </Box>

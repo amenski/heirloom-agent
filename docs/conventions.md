@@ -42,6 +42,9 @@
 - `todo.md` is **untracked** working state (gitignored): checkmarks, audit
   findings, acceptance-criteria drafts, agent instructions. Append to it;
   never regenerate it wholesale.
+- `dev-todo.md` is the same class of file — the gitignored dev-agent
+  handoff queue (one item per feature: checkboxes, anchors, verify line).
+  Planner-owned; parallel dev agents are told not to edit it.
 - `docs/` is the committed record. When a phase completes, promote what
   matters: implementation decisions → the relevant spec (with a line in its
   changelog/design-decisions section), AC tables → test descriptions.

@@ -10,7 +10,8 @@ const DOTS_WIDTH = 8;
 
 
 export interface Hint {
-  /** The key chord, rendered bright (e.g. "esc", "ctrl+shift+p"). */
+  /** The key chord, rendered as a key-cap chip (e.g. "esc", "ctrl+shift+p").
+   *  Empty for a hint with no chord — the label renders plain (e.g. "/ commands"). */
   key: string;
   /** What the chord does, rendered dim (e.g. "interrupt"). */
   label: string;
@@ -56,11 +57,13 @@ function HintBar({ left, right = [], working = false }: HintBarProps) {
   // beside it, so the row reads as "this key does that" rather than a run of
   // equally-weighted words.
   const render = (h: Hint) =>
-    `${chip(h.key, {
-      fg: theme.theme.textDim,
-      bg: theme.theme.border,
-      colorEnabled: theme.colorEnabled,
-    })} ${dim(h.label)}`;
+    h.key
+      ? `${chip(h.key, {
+          fg: theme.theme.textDim,
+          bg: theme.theme.border,
+          colorEnabled: theme.colorEnabled,
+        })} ${dim(h.label)}`
+      : dim(h.label);
   const width = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
   // A fixed-width travelling dot. The field is always DOTS_WIDTH characters so

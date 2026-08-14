@@ -39,6 +39,29 @@
   explicit `allow` rules for scripted use.
 - `/permissions` shows this session's decision history.
 
+## Permission profile & sandbox (when enabled)
+
+- **Where's my profile level?** — the PermissionProfile level is NOT on
+  the status bar (static config, decided 2026-08-14); it's visible in
+  `heirloom doctor` and `/permissions`.
+- **Edits stopped prompting** — under `workspace-write`, edits inside the
+  workspace auto-allow (the M.1 overlay condition); `strict-sandbox` never
+  auto-allows edits. Deliberate, not a bug (permission-profile.md §10(d)).
+- **Bash writes fail outside the workspace** — with `sandbox.enabled`,
+  bash children run under a macOS Seatbelt profile; writes anywhere
+  outside the workspace root fail at the kernel and surface as
+  `Exit code: 1` (not a tool error). A `cwd` outside the workspace is
+  rejected before spawn: `Working directory escapes the sandbox workspace
+  root: …`.
+- **`npm install` / tooling fails with EPERM** — the sandbox also denies
+  writes to `~/.npm`, `~/.cache`, `/tmp`. Adjust the carve-outs or set
+  `sandbox.enabled: false` (policy-only) — see permission-profile.md §8.
+- **`web_fetch` returns "Permission denied"** — under a profile with
+  `network.deny: ["*"]`, only allowlisted hosts are reachable; add hosts
+  to `network.allow`. `web_search` needs `www.bing.com` allowlisted.
+- Revert: `sandbox.enabled: false` keeps the policy layer; removing
+  `permissionProfile` restores pre-profile behavior entirely.
+
 ## Sessions
 
 - **A session shows `failed`** — the JSONL file has a torn final line (a
@@ -105,6 +128,12 @@ From `src/ui/test-helpers.ts` (UI tests):
 - **`<Static>` frame semantics** — containment assertions are fine, but a
   committed line never repaints, so "split across frames" assertions are
   not.
+- **Hook-spawn tests** — an instant-exit hook command closes its stdin
+  read end before the payload write lands → EPIPE; with no listener on
+  `child.stdin` that crashes the worker (uncaughtException). Hold the read
+  end open with `; cat > /dev/null` in the fixture command — structurally
+  EPIPE-proof, no sleeps. (The production side swallows EPIPE
+  deliberately: the payload is fire-and-forget, hooks-spec.md §4.)
 
 ## FAQ
 

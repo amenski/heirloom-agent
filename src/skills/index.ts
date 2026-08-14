@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ToolDef } from "../types.js";
 import type { ToolHandler } from "../tools/types.js";
-import { checkSkillTrust } from "./trust.js";
+import { checkSkillTrust, trustSkill } from "./trust.js";
 
 export interface SkillDef {
   name: string;
@@ -160,12 +160,24 @@ export function isSkillEnabled(
 }
 
 export class SkillLoader {
-  // "[skill] ... loaded/changed" lines, collected instead of console.log'd —
-  // load() runs before Ink's render() takes raw-mode control of stdin, so
-  // printing here directly would garble whatever the user is typing at
-  // startup. The caller shows these in the app's scrollback after mount
-  // (see initialNotice in cli.tsx), same as the resumed-session notice.
+  // "[skill] ... trusted" lines, collected instead of console.log'd — load()
+  // runs before Ink's render() takes raw-mode control of stdin, so printing
+  // here directly would garble whatever the user is typing at startup. The
+  // caller shows these in the app's scrollback after mount (see initialNotice
+  // in cli.tsx), same as the resumed-session notice.
   notices: string[] = [];
+
+  /**
+   * Project skills awaiting the ask-tier TOFU confirmation (security-spec T4).
+   * load() defers them instead of asking, because skills load before Ink
+   * mounts: the TUI (App.tsx) drives the SkillTrustPrompt modal for each
+   * entry at mount and applies the decision via acceptTrust. The skill's
+   * index line never enters the system prompt before the user decides.
+   */
+  pendingTrust: Array<{ skill: SkillDef; status: "new" | "changed" }> = [];
+
+  /** The loaded list — the same array load() returned, so acceptTrust pushes are visible to the caller. */
+  private skills: SkillDef[] = [];
 
   async load(options?: {
     headless?: boolean;
@@ -174,14 +186,17 @@ export class SkillLoader {
     const allSkills: SkillDef[] = [];
     const seen = new Set<string>();
 
-    const dirs = [
-      join(process.cwd(), ".heirloom", "skills"),
-      join(process.cwd(), ".agents", "skills"),
-      join(homedir(), ".heirloom", "skills"),
-      join(homedir(), ".agents", "skills"),
+    // Project skills first, global user skills second. The trust split (mirror
+    // of hooks-spec §6): global dirs are the user's own — trusted implicitly;
+    // project-declared skills run content-hashed TOFU.
+    const dirs: Array<{ dir: string; global: boolean }> = [
+      { dir: join(process.cwd(), ".heirloom", "skills"), global: false },
+      { dir: join(process.cwd(), ".agents", "skills"), global: false },
+      { dir: join(homedir(), ".heirloom", "skills"), global: true },
+      { dir: join(homedir(), ".agents", "skills"), global: true },
     ];
 
-    for (const dir of dirs) {
+    for (const { dir, global } of dirs) {
       const skills = await scanDir(dir);
       for (const skill of skills) {
         if (!seen.has(skill.name)) {
@@ -190,27 +205,49 @@ export class SkillLoader {
             seen.add(skill.name);
             continue;
           }
+
+          if (global) {
+            seen.add(skill.name);
+            allSkills.push(skill);
+            continue;
+          }
+
           const trustResult = checkSkillTrust(skill.sourcePath, skill.name);
 
-          if (options?.headless && trustResult.status !== "trusted") {
+          if (trustResult.status === "trusted") {
+            seen.add(skill.name);
+            allSkills.push(skill);
+            continue;
+          }
+
+          if (options?.headless) {
             process.stderr.write(`[warn] Skipping untrusted skill in headless: ${skill.name} (${trustResult.status})\n`);
             continue;
           }
 
-          // New skills register silently (a fresh project would otherwise spam a
-          // line per skill). "changed" stays visible: it is the tamper warning —
-          // the only signal that a skill's content differs from what previously ran.
-          if (trustResult.status === "changed") {
-            this.notices.push(`  [skill] ${trustResult.name} changed — ${trustResult.sourcePath}`);
-          }
-
-          seen.add(skill.name);
-          allSkills.push(skill);
+          // Interactive: hold for the ask-tier confirmation (App.tsx drives
+          // the modal after mount). Not marked seen — a later dir with the
+          // same name and different content still gets its own classification.
+          this.pendingTrust.push({ skill, status: trustResult.status });
         }
       }
     }
 
+    this.skills = allSkills;
     return allSkills;
+  }
+
+  /**
+   * Apply the user's TOFU decision from the ask modal (y = trust that hash
+   * forever, persisted to skill-trust.json; n = skip this session, no
+   * persistence). Pushes trusted skills into the shared loaded list so the
+   * prompt index and /skills see them from the first turn onward.
+   */
+  acceptTrust(skill: SkillDef, trusted: boolean): void {
+    if (!trusted) return;
+    trustSkill(skill.sourcePath, skill.name);
+    this.skills.push(skill);
+    this.notices.push(`  [skill] ${skill.name} trusted — ${skill.sourcePath}`);
   }
 }
 

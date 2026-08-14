@@ -9,6 +9,7 @@ import {
   validateCwdWithinTrustedRoot,
   type SandboxLevel,
 } from "../sandbox/seatbelt.js";
+import { wrapUntrusted } from "./untrusted-content.js";
 
 const RUN_BASH_TIMEOUT_MS = 120_000;
 // run_bash keeps the most recent 512KB of output (the old exec maxBuffer
@@ -130,9 +131,9 @@ export function runBashTimed(
       settled = true;
       clearTimeout(timer);
       if (code === 0) {
-        resolve({ content: `${stdout || "(no output)"}${truncationNote()}` });
+        resolve({ content: wrapUntrusted(`${stdout || "(no output)"}${truncationNote()}`) });
       } else {
-        resolve({ content: `Exit code: ${code}\n${stdout}\n${stderr}${truncationNote()}` });
+        resolve({ content: wrapUntrusted(`Exit code: ${code}\n${stdout}\n${stderr}${truncationNote()}`) });
       }
     });
 
@@ -159,7 +160,7 @@ export function runBashTimed(
       }
       killTree(proc);
       // Same shape the old exec-based handler produced on a timeout kill.
-      resolve({ content: `Exit code: null\n${stdout}\n${stderr}` });
+      resolve({ content: wrapUntrusted(`Exit code: null\n${stdout}\n${stderr}`) });
     }, timeoutMs);
   });
 }

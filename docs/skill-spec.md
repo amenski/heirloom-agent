@@ -81,12 +81,30 @@ but wrong too often; a per-message LLM classification call is accurate but
 adds latency and cost to every turn. Letting the model read the index and
 decide reuses the existing tool machinery and is how Claude Code does it.
 
-## 6. Trust
+## 6. Trust (TOFU, security-spec T4 — fixed 2026-08-14)
 
-`checkSkillTrust` (`src/skills/trust.ts`) hashes each skill's content into
-`~/.heirloom/skill-trust.json` and classifies it `new | changed | trusted`.
-Untrusted skills are **skipped in headless mode** — interactive sessions may
-use them, headless runs only get trusted skills.
+`checkSkillTrust` / `trustSkill` (`src/skills/trust.ts`) hash each SKILL.md's
+content (full sha256) into `~/.heirloom/skill-trust.json` and classify it
+`new | changed | trusted`. The store follows the hooks-trust hygiene: mode
+0600, atomic tmp+rename writes, HEIRLOOM_HOME honored, keyed by the
+realpath'd source path, storing only `{ path, hash, firstSeen, lastChanged,
+trusted }` — never the content.
+
+- **Global user skills** (`~/.heirloom/skills`, `~/.agents/skills`) are the
+  user's own — trusted implicitly, never asked about and never written to
+  the store (the same global-vs-project split hooks-spec §6 chose).
+- **Project skills** (`.heirloom/skills`, `.agents/skills`) run TOFU: an
+  unseen (`new`) or content-edited (`changed`) skill is **withheld** from
+  the loaded list — its index line cannot enter the system prompt — until
+  an ask-tier confirmation (`SkillTrustPrompt`, the same Promise+modal
+  pattern as the hook trust ask; driven by App.tsx at startup, one modal
+  per skill, before any turn). y = trust that hash forever (persisted), n =
+  skip this session (nothing persisted). A content edit re-classifies as
+  `changed` and re-asks even after a previous trust.
+- **Headless** runs skip untrusted project skills with a stderr warning —
+  fail closed, like hooks.
+
+## 7. CLI
 
 ## 7. CLI
 
