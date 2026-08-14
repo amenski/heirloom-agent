@@ -1,0 +1,19 @@
+name: Registry guard
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Block private registry host
+        run: |
+          if grep -RInE 'codeart[i]fact|67812181117[5]|motor[k]' . \
+              --exclude-dir=.git --exclude-dir=node_modules; then
+            echo "::error::Private package registry host / AWS account ID found in the repository."
+            exit 1
+          fi

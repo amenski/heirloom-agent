@@ -10,3 +10,6 @@ dist/
 todo.md
 .heirloom/
 dev-todo.md
+
+# keep private registry config/auth out of the repo
+.npmrc
