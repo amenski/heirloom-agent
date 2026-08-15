@@ -193,13 +193,11 @@ results. For richer results (and inline content excerpts), run your own
 [SearXNG](https://docs.searxng.org/) instance locally and point heirloom at it:
 
 ```bash
-# 1. One-time: give the instance its own secret
-sed -i '' "s/CHANGE_ME_RUN_openssl_rand_hex_32/$(openssl rand -hex 32)/" searxng/settings.yml
-
-# 2. Start it (localhost-only, port 8888)
+# 1. Start it (localhost-only, port 8888). On first boot the compose file
+#    generates a fresh secret_key and persists it into searxng/settings.yml.
 docker compose up -d
 
-# 3. Verify
+# 2. Verify
 curl -s http://localhost:8888/healthz    # → OK
 curl -s "http://localhost:8888/search?q=test&format=json" | head -c 120
 ```

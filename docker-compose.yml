@@ -13,4 +13,20 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8888/
     volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./searxng/settings.yml:/etc/searxng/settings.yml
+    # The shipped settings.yml carries a placeholder secret_key. On first
+    # boot this guard replaces it with a fresh random value IN THE MOUNTED
+    # FILE (python3 is guaranteed present in the image), so the instance
+    # never runs with the placeholder — there is no skipped-step failure
+    # mode. SearXNG's settings loader does NOT substitute ${ENV} values, so
+    # env-injection is not an option for this image (verified 2026-08-15).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        if grep -q CHANGE_ME_RUN_openssl_rand_hex_32 /etc/searxng/settings.yml; then
+          SECRET=$$(python3 -c "import secrets; print(secrets.token_hex(32))");
+          sed -i "s/CHANGE_ME_RUN_openssl_rand_hex_32/$${SECRET}/" /etc/searxng/settings.yml;
+          echo "searxng: generated a fresh secret_key (persisted in searxng/settings.yml)";
+        fi;
+        exec /usr/local/searxng/entrypoint.sh
