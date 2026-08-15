@@ -1,6 +1,6 @@
 # Theme Spec
 
-**Status:** current · verified 2026-08-13 · covers `src/ui/theme.ts`, `src/ui/components/ThemeDropdown/` · open items: ansi ×2 presets
+**Status:** current · verified 2026-08-13 · covers `src/ui/theme.ts`, `src/ui/components/ThemeDropdown/` · open items: none
 
 ## 1. Overview
 
@@ -31,7 +31,16 @@ through to `resolveTheme` at startup.
   added to `BUILTIN_THEMES` as full `ThemeDefinition` objects (all ~20
   semantic slots + 19-color `SyntaxColors` + `statusBar` sub-palette),
   faithful ANSI-256 approximations with the tuned promptFg/accent contrast
-  convention. Still pending: the `ansi ×2` presets.
+  convention.
+- **ANSI base-16 presets** — `ansi-dark`/`ansi-light` (F1, shipped
+  2026-08-03): "dumb-terminal" variants of dark/light restricting every slot
+  to the 8+8 basic ANSI codes (0–15) — no 256-color, no truecolor — with
+  syntax colors mapped to base colors and bright variants for emphasis
+  (`src/ui/theme.ts`). The `/theme` picker lists them automatically (it
+  enumerates `BUILTIN_THEMES`), and both resolve by name in
+  `resolveTheme`. Verified: `src/ui/theme.test.ts` registration + resolve
+  tests, `src/ui/components/ThemeDropdown/index.test.ts` picker adoption,
+  `src/ui/HintBar.test.tsx` key-cap contrast regression.
 - **Accepted limitation (decided 2026-08-13):** a theme change applies to
   new output and the live frame only. Already-flushed scrollback keeps the
   colors baked in at push time until `/clear` or restart — `<Static>` is

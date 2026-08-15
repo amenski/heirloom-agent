@@ -27,7 +27,7 @@ get promoted to `todo.md` / a spec only when picked up.
 | 2 | **Lifecycle hooks** | `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart/End`, `PreCompact`, `Notification`, `Stop`, `SubagentStop`; Setup `init`/`maintenance` matchers | `notify.ts` is a single completion-boundary shell hook | M | Most leverage per line; already flagged in improvement-roadmap (PR #263 hooks). Build on `notify.ts`. |
 | 3 | **Custom slash commands from files** | `.claude/commands/*.md` (frontmatter: description, argument-hint, allowed-tools, model) | Builtin registry only (`src/ui/core/slash-commands.ts`); `ModeLoader`/`SkillLoader` already do file loading | S | Cheap, reuses existing loader patterns. |
 | 4 | **Flag parity batch** | `--max-turns`, `--system-prompt-file`, `--append-system-prompt`, `--allowedTools`/`--disallowedTools`, `--permission-mode`, `--name`/`/rename`, `--fork-session`, `--bare`, `--settings` | `maxTurns` exists in `agent.ts` (default 100) but no flag; permissions via config+posture only; sessions have a renamable `title` but no flag/command | S each | Small, individually shippable. |
-| 5 | **Subagents** (`--agents`, `new_task`) | `claude --agents '{"reviewer":{...}}'`; subagent frontmatter (name, description, tools, model) | `new_task` **wired 2026-08-11** — mounts in the TUI + headless registries, delegates to any mode's `runAgent` turn, inherits the parent's permission engine; no `--agents` config or custom frontmatter yet | M–L | Half built; remaining lift is `--agents`-style definitions (per-mode tool/model overrides) + the permission-inheritance design doc. |
+| 5 | **Subagents** (`--agents`, `new_task`) | `claude --agents '{"reviewer":{...}}'`; subagent frontmatter (name, description, tools, model) | `new_task` + frontmatter agent definitions **shipped 2026-08-15**: `.heirloom/agents/*.md` (name, description, mode, model?, instructions), project > global, resolved by `new_task`'s `agent` param; the def changes persona/toolset/model only — permission inheritance, depth cap 3, 10 sub-turns, tagged audit unchanged | M–L | Mostly closed — remaining delta is inline `--agents` JSON definitions (`--agents` flag not built) |
 | 6 | **Git worktrees** (`-w`) | `claude -w feature-auth` → isolated worktree at `<repo>/.claude/worktrees/<name>`; `#<n>`/PR URL support | No worktree support; `workflow.gitCommands` is deprecated/ignored (`loader.ts:789`) | L | Greenfield; separate workstream. |
 | 7 | **Background bash at exit** | `claude -p` terminates background Bash ~5s after result, kills the process tree | Long `run_bash` calls tie up the turn (already on improvement-roadmap as "background/streaming command output") | M | Reuses the existing roadmap item; different framing (exit semantics + tree kill). |
 
@@ -177,11 +177,11 @@ nest; `--append-subagent-system-prompt` appends text to every subagent's prompt.
 In `stream-json`, subagent messages carry `parent_tool_use_id` for transcript
 reconstruction.
 
-**Heirloom today (code-verified 2026-08-11):** `src/orchestrator/index.ts` has an `Orchestrator` class + a `new_task` tool def, now **wired** in both the TUI (`cli.tsx:181–189`) and headless `-p` (`exec-runner.ts:141–150`) registries. Sub-agents run a real `runAgent` turn in the requested mode's toolset, inheriting the parent's **live** permission engine (rules + approval posture — no escalation) and the parent's provider factory (follows mid-session `/model` switches). Enforcement today: depth cap 3, max 10 sub-agent turns; sub-agent tools = target mode's group tools + `new_task` (for recursion).
+**Heirloom today (code-verified 2026-08-15):** `src/orchestrator/index.ts` has an `Orchestrator` class + a `new_task` tool def, **wired** in both the TUI (`cli.tsx`) and headless `-p` (`exec-runner.ts`) registries. Sub-agents run a real `runAgent` turn in the requested mode's toolset, inheriting the parent's **live** permission engine (rules + approval posture — no escalation) and the parent's provider factory (follows mid-session `/model` switches). Enforcement: depth cap 3, max 10 sub-agent turns; sub-agent tools = target mode's group tools + `new_task` (for recursion).
 
-**Gap vs. Claude Code:** `--agents` inline definitions / subagent frontmatter (per-mode model, description, tool overrides). The permission-inheritance + recursion-limits design doc shipped 2026-08-13 ([subsystems/orchestration.md](./subsystems/orchestration.md) §7), along with sub-agent audit/token rows tagged `source: "subagent"` in the parent session.
+**Shipped 2026-08-15 — frontmatter agent definitions (feature-plans.md §F4).** `.heirloom/agents/<name>.md` with frontmatter `name` (required), `description` (required — the prompt index line), `mode` (required — the sub-agent's toolset), `model` (optional `provider/model`, validated against the model catalog at startup, unknown → warning), `instructions` (optional — prepended to the sub-agent's system prompt). Resolution is project > global (`~/.heirloom/agents/`), project winning per name. `new_task` gained an optional `agent?: string` parameter: with it, the sub-run uses the def's mode/model/instructions; without it, today's behavior is byte-identical. Unknown agent names fail with `UNKNOWN_AGENT` listing the available names. The def changes persona/toolset/model only — permission inheritance, depth caps, and the tagged `source: "subagent"` audit are unchanged. The name+description index is injected into the stable preamble ("Available agents", one line per agent), and `/skills` prints a one-line agent list.
 
-**Recommendation:** partially built — `new_task` is usable now and documented. The next slice (frontmatter-style agent definitions) should ride on the permission-model work.
+**Remaining gap vs. Claude Code:** inline `--agents` JSON definitions (`--agents` flag not built) and per-subagent tool lists beyond a mode's group set.
 
 ---
 
@@ -230,7 +230,7 @@ and pair naturally with #2 (`SessionEnd` hooks on SIGTERM).
 3. **#4 flag batch** — pick the 2–3 that hurt most (`--max-turns`,
    `--allowedTools`, `--permission-mode` are the CI-relevant trio).
 4. **#3 custom slash commands** — cheap, reuses loaders.
-5. **#5 subagents, #6 worktrees** — separate design docs; #5 finishes the now-wired `Orchestrator` (`new_task` ships, `--agents`-style definitions + permission-inheritance doc remain).
+5. **#5 subagents, #6 worktrees** — separate design docs; #5 shipped 2026-08-15 (frontmatter agent definitions, feature-plans.md §F4; inline `--agents` JSON remains).
 
 ## Open questions / verify during implementation
 

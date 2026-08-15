@@ -22,6 +22,12 @@ yargs (`src/cli-args.ts`) as flags plus an optional positional `prompt`; a
 non-flag word that is not `auth`/`doctor` is treated as a positional prompt,
 not rejected as an unknown command.
 
+`doctor` runtime health (F2, 2026-08-15): when `webSearch.searxngUrl` is
+configured, `doctor` also GETs `{url}/healthz` with a 3 s timeout and no
+retries (diagnostics, not the web_search tool path) and prints
+`SearXNG: ok (N ms)` or `SearXNG: unreachable — searches will fall back to
+Bing.` — `src/cli.tsx` `probeSearXngHealth`.
+
 ### Key entry
 
 - **Masked interactive input.** On a TTY the key prompt reads in raw mode and
@@ -227,3 +233,21 @@ commands typed mid-turn stay queued and run at turn end (FIFO). Shipped
 - The interactive UI is an Ink TUI and requires a TTY; launching the
   interactive path without a TTY prints `heirloom requires an interactive
   terminal (TTY)...` and exits 1. (`-p` headless mode does not need a TTY.)
+
+## 9. In-session delegation — `new_task`
+
+The `new_task` tool (workflow group; exposed to every mode) spawns a
+sub-agent with an isolated context; only its summary returns. Full semantics
+in subsystems/orchestration.md §7. Parameters:
+
+| Param | Required | Meaning |
+|-------|----------|---------|
+| `description` | yes | Self-contained task description (the sub-agent cannot see the parent conversation) |
+| `mode` | no | The sub-agent's mode/toolset; defaults to `code` |
+| `agent` | no | A defined agent name (`.heirloom/agents/<name>.md`, feature-plans.md §F4) — overrides `mode` and the parent's model with the def's own; unknown name → tool error listing available agents |
+
+With `agent` absent, behavior is unchanged (call-provided `mode`, parent
+model). Defined agents' `name` + `description` lines are indexed into the
+system prompt ("Available agents") so the model knows the names it may pass;
+the `/skills` slash command prints a one-line agent list. `new_task` is
+available both interactively and headless (`-p`).

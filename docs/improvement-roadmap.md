@@ -75,7 +75,7 @@ architectural swings on the roadmap; drop the rest.
 | **PermissionProfile ACL model** (path/network/git sandbox) | #263 | L | A *parallel* permission architecture to the current rule engine — needs its own design doc + a reconcile-or-migrate decision. |
 | ~~**Sub-task orchestration**~~ (`new_task` tool, `src/orchestrator/`) ✅ **wired 2026-08-11** · **design doc + tagged audit shipped 2026-08-13** | — | L | `new_task` is mounted in both the TUI (`cli.tsx:181–189`) and headless `-p` (`exec-runner.ts:141–150`) registries; sub-agents run a real `runAgent` turn in the target mode's toolset, inherit the parent's live permission engine (rules + approval posture, no escalation) and per-spawn provider factory (follows `/model` switches). Enforcement: depth cap 3, max 10 sub-agent turns. The inheritance/recursion design doc is [subsystems/orchestration.md](./subsystems/orchestration.md) §7; sub-agent audit/token rows now land in the parent session tagged `source: "subagent"` (session-spec.md). |
 | ~~**Hierarchical project rules** (`.heirloom/rules/**`)~~ ✅ **shipped 2026-08-01** (`7290aab`) | #266 | M | Additive to `instructions.md`/`AGENTS.md`; landed — promoted to Do-now shipped list. |
-| **Auto error-fix loop + `<error_analysis>`** | #266 | M | Must first audit overlap with existing `errorrecovery/` + `selfreflection/`. |
+| ~~**Auto error-fix loop + `<error_analysis>`**~~ ✅ **shipped 2026-08-15** | #266 | M | Audited → build-the-delta: `run_bash` non-zero+stderr exits now set `error` and prepend a grepped `<error_analysis>` block; retry-cap exhaustion fires an escalation diagnostic. |
 | **Lifecycle hooks** (shell on events) | #263 | M | Powerful but another untrusted-exec surface — opt-in + security-spec first. Highest-leverage of the remaining roadmap tier. |
 | **Mid-turn steering** | local (usage) | M | Inject a message typed during a running turn into the live agent loop, instead of the user losing the turn to Esc. Pairs with input queueing (buffer a message typed mid-turn, send it next). Not from any PR — surfaced by real use. |
 | **Background / streaming command output** | local (usage) | M | Long `run_bash` calls (test suites, builds, dev servers) need live output in the transcript and a background+poll mode; today a dev server ties up or times out the tool call. Not from any PR — surfaced by real use. |
@@ -286,14 +286,24 @@ files keyed by session id — decide per phase.
 - **Verify:** a nested rule file (`rules/api/naming.md`) appears as a scoped
   section in the system prompt.
 
-### Phase 4 — Auto error-fix + `<error_analysis>`
-- **First** audit `src/errorrecovery/` and `src/selfreflection/` for overlap —
-  enhance, don't duplicate.
-- Then: on a failed tool result, inject a bounded fix-reminder (≤3 retries);
-  have the bash tool prepend a grepped `<error_analysis>` block on non-zero
-  exit.
-- **Verify:** a failing bash command triggers exactly one fix-retry cycle, not
-  an infinite loop; escalates after the cap.
+### Phase 4 — Auto error-fix + `<error_analysis>` — ✅ shipped 2026-08-15 (build-the-delta)
+- **Audit verdict (2026-08-15): build-the-delta** — ~70% overlap. Already
+  present and threaded into the loop: the ≤3 retry cap and the tool-error
+  fix-reminder (`src/selfreflection/`) plus the loop guards
+  (5-consecutive-failure, identical-call). The gap: `run_bash` non-zero exits
+  only set `content`, never `error` — so none of that machinery engaged for
+  the most common failure class — and no `<error_analysis>` header existed.
+- **Delta shipped:** (1) `run_bash` non-zero exits **with non-empty stderr**
+  now set `error: "Exit code: N"` and prepend a compact grepped
+  `<error_analysis>` block (last ≤20 stderr lines matching
+  `error|failed|fatal|exception|undefined|no such|unable|cannot`, plus the
+  exit line; omitted when nothing matches) — silent non-zero exits
+  (`grep -q`/`diff`/test idioms) stay content-only, no error; (2) when the
+  reflector's retry cap is exhausted, the agent fires
+  `onDiagnostic("retry cap exhausted — escalating")`.
+- **Verify:** tsc clean; a failing bash command triggers exactly one
+  fix-retry cycle, not an infinite loop; escalates after the cap
+  (bash.test.ts + agent.test.ts).
 
 ### Phase 5 — SQLite (optional, deferred)
 - Only if #1–#3 demonstrate a real need for cross-session SQL queries. Adopt

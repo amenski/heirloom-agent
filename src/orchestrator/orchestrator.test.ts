@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync, rmSync } from "node:fs";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Orchestrator } from "./index.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ModeLoader } from "../modes/loader.js";
+import { AgentLoader } from "../agents/index.js";
 import { PermissionEngine } from "../permissions/index.js";
 import { SessionStore, slugify } from "../sessions/store.js";
 import { executeTool as realExecuteTool, registry as realRegistry } from "../tools/index.js";
@@ -238,6 +241,139 @@ describe("Orchestrator", () => {
     expect(out.error).toBeUndefined();
     expect(providerFactory).toHaveBeenCalledTimes(3);
     expect(out.content).toContain("**Result**: level 0 done");
+  });
+
+  describe("agent definitions (feature-plans.md §F4)", () => {
+    let home: string;
+    let project: string;
+    let prevHome: string | undefined;
+
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), "agents-home-"));
+      project = await mkdtemp(join(tmpdir(), "agents-proj-"));
+      prevHome = process.env.HEIRLOOM_HOME;
+      process.env.HEIRLOOM_HOME = home;
+      await mkdir(join(project, ".heirloom", "agents"), { recursive: true });
+    });
+
+    afterEach(async () => {
+      if (prevHome === undefined) delete process.env.HEIRLOOM_HOME;
+      else process.env.HEIRLOOM_HOME = prevHome;
+      await rm(home, { recursive: true, force: true });
+      await rm(project, { recursive: true, force: true });
+    });
+
+    it("runs new_task with agent=<name> using the def's mode and model", async () => {
+      const { registry } = makeRegistry();
+      const { provider, received } = makeProvider([
+        toolCallTurn("c1", "read_file", '{"path":"a.txt"}'),
+        textTurn("review done"),
+      ]);
+      await writeFile(
+        join(project, ".heirloom", "agents", "reviewer.md"),
+        "---\nname: reviewer\ndescription: reviews code\nmode: code\nmodel: deepseek/deepseek-v4-flash\ninstructions: |\n  Be critical.\n  Cite paths.\n---\n",
+      );
+      const agentLoader = new AgentLoader();
+      await agentLoader.load(project);
+      const modelIds: (string | undefined)[] = [];
+      const orchestrator = new Orchestrator({
+        provider: (modelId?: string) => {
+          modelIds.push(modelId);
+          return provider;
+        },
+        registry,
+        modeLoader: new ModeLoader(),
+        agents: agentLoader,
+      });
+      orchestrator.register(registry);
+
+      const out = await registry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "review this", agent: "reviewer" } },
+        ctx,
+      );
+
+      expect(out.error).toBeUndefined();
+      expect(out.content).toContain("**Result**: review done");
+      // The def's model override reached the provider factory as "provider/model".
+      expect(modelIds).toEqual(["deepseek/deepseek-v4-flash"]);
+      // The sub-agent ran with the def mode's toolset plus new_task.
+      const subTools = received[0].tools.map((t) => t.name);
+      expect(subTools).toEqual(expect.arrayContaining(["read_file", "run_bash", "new_task"]));
+      // The def's instructions prepend the sub-agent's system prompt; the
+      // def mode's role definition follows.
+      const sys = String(received[0].messages[0].content);
+      expect(sys.startsWith("Be critical. Cite paths.")).toBe(true);
+      expect(sys).toContain("senior software engineer");
+    });
+
+    it("returns UNKNOWN_AGENT listing available names without spawning", async () => {
+      const { registry } = makeRegistry();
+      const { provider } = makeProvider([textTurn("never used")]);
+      await writeFile(
+        join(project, ".heirloom", "agents", "reviewer.md"),
+        "---\nname: reviewer\ndescription: reviews code\nmode: code\n---\n",
+      );
+      const agentLoader = new AgentLoader();
+      await agentLoader.load(project);
+      const providerFactory = vi.fn(() => provider);
+      const orchestrator = new Orchestrator({
+        provider: providerFactory,
+        registry,
+        modeLoader: new ModeLoader(),
+        agents: agentLoader,
+      });
+      orchestrator.register(registry);
+
+      const out = await registry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "x", agent: "nope" } },
+        ctx,
+      );
+
+      expect(out.error).toBe("UNKNOWN_AGENT");
+      expect(out.content).toContain('Unknown agent: "nope"');
+      expect(out.content).toContain("Available agents: reviewer");
+      expect(providerFactory).not.toHaveBeenCalled();
+    });
+
+    it("without the agent param behaves as today: call-provided mode, parent model, no def content", async () => {
+      const { registry } = makeRegistry();
+      const { provider, received } = makeProvider([
+        toolCallTurn("c1", "read_file", '{"path":"a.txt"}'),
+        textTurn("plain done"),
+      ]);
+      await writeFile(
+        join(project, ".heirloom", "agents", "reviewer.md"),
+        "---\nname: reviewer\ndescription: reviews code\nmode: code\ninstructions: |\n  Be critical.\n---\n",
+      );
+      const agentLoader = new AgentLoader();
+      await agentLoader.load(project);
+      const modelIds: (string | undefined)[] = [];
+      const orchestrator = new Orchestrator({
+        provider: (modelId?: string) => {
+          modelIds.push(modelId);
+          return provider;
+        },
+        registry,
+        modeLoader: new ModeLoader(),
+        agents: agentLoader,
+      });
+      orchestrator.register(registry);
+
+      const out = await registry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "read the file", mode: "code" } },
+        ctx,
+      );
+
+      expect(out.error).toBeUndefined();
+      // Parent-model path: factory called with no model id.
+      expect(modelIds).toEqual([undefined]);
+      // No agent instructions, no agents index in the sub-run preamble — the
+      // sub-run is byte-identical to a pre-F4 spawn.
+      const sys = String(received[0].messages[0].content);
+      expect(sys.startsWith("You are a senior software engineer")).toBe(true);
+      expect(sys).not.toContain("Be critical");
+      expect(sys).not.toContain("# Available agents");
+    });
   });
 
   describe("sub-agent audit (decision H)", () => {

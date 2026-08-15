@@ -32,6 +32,7 @@ import { readHiddenLine } from "./auth/hidden-input.js";
 import { SessionStore, type CompactionSummary } from "./sessions/store.js";
 import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
+import { AgentLoader, type AgentDef } from "./agents/index.js";
 import { loadConfig } from "./config/loader.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
@@ -160,14 +161,21 @@ async function main() {
     return preset.models[shared.activeModel ?? preset.defaultModel];
   }
 
-  function getProvider() {
+  function getProvider(modelId?: string) {
+    // An optional "provider/model" id (a defined agent's model override, §F4)
+    // creates a provider bound to that model instead of the session's.
+    const slash = modelId ? modelId.indexOf("/") : -1;
+    const overrideProvider = slash > 0 ? modelId!.slice(0, slash) : undefined;
+    const overrideModel = slash > 0 ? modelId!.slice(slash + 1) : undefined;
+    const provName = overrideProvider ?? shared.providerName;
     // The startup env.API_KEY/env.BASE_URL are scoped to the provider active at
-    // startup. Once /model switches to a different provider, a key/host meant
-    // for the old provider must not leak to the new one — fall through to that
-    // provider's own keyEnv/getCredential resolution instead.
-    const isStartupProvider = shared.providerName === startupProviderName;
-    return createProvider(shared.providerName, {
-      modelOverride: shared.activeModel,
+    // startup. Once /model switches to a different provider (or a sub-agent
+    // spawns on another provider), a key/host meant for the old provider must
+    // not leak to the new one — fall through to that provider's own
+    // keyEnv/getCredential resolution instead.
+    const isStartupProvider = provName === startupProviderName;
+    return createProvider(provName, {
+      modelOverride: overrideModel ?? shared.activeModel,
       baseUrl: isStartupProvider ? resolvedBaseUrl : undefined,
       apiKey: isStartupProvider ? resolvedApiKey : undefined,
     });
@@ -207,10 +215,17 @@ async function main() {
   // stderr warning; interactive runs defer the ask to first dispatch.
   hooks.verifyTrust();
 
+  // Agent definitions (feature-plans.md §F4): loaded once at startup — project
+  // `.heirloom/agents/` wins over global, like modes — indexed into the stable
+  // preamble, and resolved by new_task's `agent` parameter at spawn time.
+  const agentLoader = new AgentLoader();
+  const agents = await agentLoader.load(process.cwd());
+
   const orchestrator = new Orchestrator({
-    provider: () => getProvider(),
+    provider: getProvider,
     registry,
     modeLoader,
+    agents: agentLoader,
     permissions,
     // Sub-agents inherit the parent's profile together with the rule engine
     // (permission-profile.md §6) — same object threading as today.
@@ -660,7 +675,7 @@ async function main() {
         const lines: string[] = [];
         const origLog = console.log;
         console.log = (...args) => lines.push(args.map(String).join(" "));
-        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort, resetCompactor, getOverheadTokens); } finally { console.log = origLog; }
+        try { await handleSlashCore(input, getProvider, configResult, modeLoader, permissions, sessionStore, sessionId, checkpoints, memoryStore, memoryInjection, getCompactor, diagnostics, skills, skillLoader, shared, getActiveModelCaps, getCostStr, colorEnabled, reasoningEffort, resetCompactor, getOverheadTokens, agents); } finally { console.log = origLog; }
         return lines;
       },
       getModelEntries: () => listKnownModels(),
@@ -688,7 +703,7 @@ async function main() {
         // the orchestrator before delegating — otherwise sub-agents holding
         // the stale closure would auto-deny every ask-tier action.
         orchestrator.setAskUser(cb.askUser);
-        return runAgentTurnBridge(input, cb, shared, permissions, permissionProfile, getProvider, getCompactor(), diagnostics, skills, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow, hooks);
+        return runAgentTurnBridge(input, cb, shared, permissions, permissionProfile, getProvider, getCompactor(), diagnostics, skills, agents, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow, hooks);
       },
       resumeSession: async (id: string) => {
         try {
@@ -1012,7 +1027,35 @@ async function runAuth(args: string[]): Promise<number> {
   return 0;
 }
 
-async function runDoctor(): Promise<void> {
+export interface SearXngHealth {
+  ok: boolean;
+  ms: number;
+}
+
+/**
+ * GETs `{searxngUrl}/healthz` with a 3 s hard timeout and no retries — doctor
+ * diagnostics, deliberately not the web_search tool path (which has its own
+ * retry/fallback policy). `fetchImpl` and `timeoutMs` injectable for tests
+ * (same pattern as probeSyncOutput).
+ */
+export async function probeSearXngHealth(
+  searxngUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 3000,
+): Promise<SearXngHealth> {
+  const started = Date.now();
+  try {
+    const res = await fetchImpl(`${searxngUrl.replace(/\/+$/, "")}/healthz`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "manual",
+    });
+    return { ok: res.ok, ms: Date.now() - started };
+  } catch {
+    return { ok: false, ms: Date.now() - started };
+  }
+}
+
+export async function runDoctor(): Promise<void> {
   console.log("heirloom doctor\n");
   try { const { execSync } = await import("node:child_process"); console.log(`  git               ${execSync("git --version", { encoding: "utf-8" }).trim()}`); }
   catch { console.log(`  git               NOT FOUND`); }
@@ -1023,6 +1066,11 @@ async function runDoctor(): Promise<void> {
   const configResult = loadConfig();
   const issues = [...configResult.errors, ...configResult.warnings];
   console.log(`  config            ${issues.length === 0 ? "valid" : `${issues.length} issue(s):\n${issues.map(i => `                    - ${i}`).join("\n")}`}`);
+  const searxngUrl = configResult.config.webSearch?.searxngUrl;
+  if (searxngUrl) {
+    const health = await probeSearXngHealth(searxngUrl);
+    console.log(`  SearXNG           ${health.ok ? `ok (${health.ms} ms)` : "unreachable — searches will fall back to Bing."}`);
+  }
   console.log(`  node              ${process.version}`);
   // Surface the repaint cadence, and say plainly when an env value was not
   // understood — resolveRefreshProfile falls back silently so a typo cannot
@@ -1056,6 +1104,7 @@ export async function handleSlashCore(
   getCostStr: () => string | null, colorEnabled: boolean, reasoningEffort: string | undefined,
   resetCompactor: () => void,
   getOverheadTokens?: () => number,
+  agents: AgentDef[] = [],
 ): Promise<void> {
   const cmd = input.trim().split(/\s+/)[0];
   switch (cmd) {
@@ -1161,6 +1210,11 @@ export async function handleSlashCore(
     case "/skills": {
       if (skills.length === 0) console.log("No skills available.");
       else for (const s of skills) console.log(`  ${s.name} — ${s.description || "no description"}`);
+      // Minimal agent surface (§F4): one line naming the defined agents new_task
+      // accepts — no separate view.
+      if (agents.length > 0) {
+        console.log(`Agents: ${agents.map((a) => a.name).sort().join(", ")}`);
+      }
       return;
     }
     case "/skill": {
@@ -1287,7 +1341,7 @@ export async function handleSlashCore(
   }
 }
 
-async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, permissionProfile: ProfileEvaluator | undefined, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number, hooks?: HookRunner): Promise<any> {
+async function runAgentTurnBridge(input: string, cb: any, shared: any, permissions: PermissionEngine, permissionProfile: ProfileEvaluator | undefined, getProvider: any, compactor: Compactor, diagnostics: DiagnosticRunner, skills: SkillDef[], agents: AgentDef[], memoryInjection: string | null | undefined, memoryStore: MemoryStore, sessionStore: SessionStore, sessionId: string, modeLoader: ModeLoader, skillLoader: SkillLoader, imageUrls?: string[], planMode?: boolean, checkpoints?: CheckpointManager, notifyScript?: string, notifyEnv?: Record<string, string | undefined>, errorReflector?: ErrorReflector, errorRecovery?: ErrorRecovery, repomapInjection?: string, thinkingEnabled?: boolean, contextWindow?: number, hooks?: HookRunner): Promise<any> {
   if (checkpoints) {
     const convLen = shared.conversationHistory.length;
     await checkpoints.save(`[convLen:${convLen}] ${input.slice(0, 80)}`);
@@ -1330,7 +1384,7 @@ async function runAgentTurnBridge(input: string, cb: any, shared: any, permissio
   try {
     result = await runAgent(processed, {
     provider: getProvider(),
-    tools, executeTool, permissions, permissionProfile, mode: shared.activeMode, compactor, diagnostics, skills,
+    tools, executeTool, permissions, permissionProfile, mode: shared.activeMode, compactor, diagnostics, skills, agents,
     errorReflector, errorRecovery,
     repomap: repomapInjection,
     research: researchInjection,

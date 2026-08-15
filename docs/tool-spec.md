@@ -158,7 +158,11 @@ Full-file write; creates parent directories.
 - `cwd` defaults to `process.cwd()`.
 - Success: stdout, or `(no output)` when empty.
 - Failure/non-zero exit: `Exit code: N` followed by stdout and stderr — a
-  failing test run is information, not noise.
+  failing test run is information, not noise. Non-zero exits with non-empty
+  stderr set `error: "Exit code: N"` and the content opens with a grepped
+  `<error_analysis>` block (the last 20 stderr lines matching common error
+  signatures, inside the untrusted delimiters); silent non-zero exits (empty
+  stderr) stay content-only.
 - **Timeout → background migration**: when the 120 s cap fires and the
   command does not look interactive, the child process is moved into
   `JobManager` instead of killed, and the result is
@@ -200,7 +204,7 @@ Available regardless of mode unless noted (mode-spec.md).
 |------|-----------|----------|
 | `update_todo_list` | `todos: [{content, status}]` | Replaces the whole plan; statuses `pending \| in_progress \| completed`; CLI renders as a checklist panel; each call persists a session snapshot (restored on resume) |
 | `ask_user_question` | `questions: [{question, multiSelect?, options}]` | Blocks on structured user input via `ToolContext.askQuestion`; returns the answers as tool output |
-| `new_task` | `description, mode?` | Spawns a sub-agent with isolated context (workflow group only); only its summary returns |
+| `new_task` | `description, mode?, agent?` | Spawns a sub-agent with isolated context (workflow group only); only its summary returns; `agent` runs a defined frontmatter agent (feature-plans.md §F4) |
 | `load_skill` | `name` | Returns the skill's SKILL.md body as tool output; unknown name lists available skills |
 | `switch_mode` | `slug, reason?` | Switches the active persona mode; the new tool set applies from the next turn; unknown slug → `UNKNOWN_MODE` |
 | `attempt_completion` | `summary` | Signals the task is done and **ends the turn** (ToolOutput `stop: true`); the summary is the final output |
@@ -215,7 +219,10 @@ their own isolated store for the duration of the sub-run.
 
 `new_task` details (`src/orchestrator/index.ts`): nesting depth ≤ 3,
 sub-turns ≤ 10, mode-scoped tool set, shared permission engine with
-ask-tier prompts surfaced in the parent UI, summary-only return.
+ask-tier prompts surfaced in the parent UI, summary-only return. With
+`agent: <name>`, the run uses the definition's mode/model/instructions
+(`.heirloom/agents/<name>.md`, project > global, feature-plans.md §F4);
+unknown agent names fail with `UNKNOWN_AGENT` listing the available names.
 
 `load_skill` (`src/skills/index.ts:219`): respects `enabledSkills` gating
 and the skill-trust file (untrusted skills are skipped in headless mode);
@@ -244,7 +251,7 @@ handlers may add strings without a spec change):
 | `FILE_MODIFIED` | all edit tools (stale-file detection) |
 | `PARSE_ERROR` | web_search, web_fetch (bad arguments) |
 | `PERMISSION_DENIED` | agent loop, before the handler (permission engine) |
-| `Exit code: N` | run_bash (non-zero exit, as content) |
+| `Exit code: N` | run_bash (non-zero exit with non-empty stderr — sets `error` and carries a grepped `<error_analysis>` block in content; silent non-zero exits stay content-only) |
 | `Missing required argument: …` | handlers with required params |
 
 ## 8. Verified against

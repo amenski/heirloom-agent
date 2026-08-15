@@ -31,13 +31,16 @@ hit provider caches — subsystems.md §4a):
 [5] Project     — .heirloom/instructions.md, or AGENTS.md fallback (§6)
 [6] Project rules — .heirloom/rules/**/*.md, loaded by loadProjectRules (§7)
 [7] Skills      — index of available skills, one line each (skill-spec.md)
-[8] Memory      — memory excerpts, ≤1024-token injection (§8)
-[9] RepoMap     — session-stable symbol-map snapshot, ≤4 KB (§9)
+[8] Agents      — index of defined agents, one line each (§F4)
+[9] Memory      — memory excerpts, ≤1024-token injection (§8)
+[10] RepoMap    — session-stable symbol-map snapshot, ≤4 KB (§9)
 ```
 
-1–9 are stable per session: 1–4 and 7 change only on `/mode`, 5–6 change per
-repo, 9 is a session-stable snapshot (deliberately, so it never breaks
-prefix caching).
+1–10 are stable per session: 1–4, 7, and 8 change only on `/mode` /
+startup, 5–6 change per repo, 10 is a session-stable snapshot (deliberately,
+so it never breaks prefix caching). Agent-definition `instructions` (§F4)
+prepend the preamble ahead of the role definition when a sub-agent runs with
+an `agent`.
 
 **Volatile context** (rebuilt every turn, attached only to the request sent
 to the provider — never to stored `messages`, so it reaches the model each
@@ -205,6 +208,8 @@ offers Implement / Stay / Switch-to-Default
 
 ## Changelog
 
+- 2026-08-15 — agent definitions (§F4): "Available agents" index added after
+  skills; agent `instructions` prepend the preamble for agent-routed sub-runs.
 - 2026-08-13 — rewritten against the shipped split: stable preamble
   (`buildStablePreamble`) vs volatile context (`buildVolatileContext`),
   correct section order incl. project rules, memory, RepoMap (stable), and

@@ -1,5 +1,6 @@
 import type { ModeConfig } from "./modes/loader.js";
 import type { SkillDef } from "./skills/index.js";
+import type { AgentDef } from "./agents/index.js";
 import { RepoMap } from "./repomap/index.js";
 import type { ToolGroup } from "./tools/types.js";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
@@ -12,6 +13,17 @@ export interface PromptContext {
   mode?: ModeConfig;
   workingDir: string;
   skills?: SkillDef[];
+  /**
+   * Loaded agent definitions (.heirloom/agents/*.md, feature-plans.md §F4):
+   * their name+description index joins the stable preamble so the agent
+   * knows which names new_task's `agent` parameter accepts.
+   */
+  agents?: AgentDef[];
+  /**
+   * Agent-definition instructions, prepended verbatim to the stable preamble
+   * (before the role definition) — the sub-agent's persona override.
+   */
+  agentInstructions?: string;
   /**
    * Precomputed repository-map block (already header-less, budget-capped, and
    * truncation-noted — see buildRepoMap). Injected verbatim into the stable
@@ -71,6 +83,10 @@ export function buildStablePreamble(ctx: PromptContext): string {
   const sections: string[] = [];
   const mode = ctx.mode;
 
+  // Agent-definition instructions go first — they are the sub-agent's persona
+  // override, prepended to the whole system prompt (feature-plans.md §F4).
+  if (ctx.agentInstructions) sections.push(ctx.agentInstructions);
+
   if (mode) {
     sections.push(mode.roleDefinition);
   } else {
@@ -97,6 +113,10 @@ export function buildStablePreamble(ctx: PromptContext): string {
 
   if (ctx.skills && ctx.skills.length > 0) {
     sections.push(getSkillsIndex(ctx.skills));
+  }
+
+  if (ctx.agents && ctx.agents.length > 0) {
+    sections.push(getAgentsIndex(ctx.agents));
   }
 
   if (ctx.memory) sections.push(ctx.memory);
@@ -418,4 +438,11 @@ function getSkillsIndex(skills: SkillDef[]): string {
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((s) => `- ${s.name}: ${s.description || "no description"}`);
   return `# Available skills\n${lines.join("\n")}`;
+}
+
+function getAgentsIndex(agents: AgentDef[]): string {
+  const lines = [...agents]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((a) => `- ${a.name}: ${a.description}`);
+  return `# Available agents\n${lines.join("\n")}`;
 }

@@ -7,6 +7,7 @@ import { ErrorRecovery } from "./errorrecovery/index.js";
 import type { Provider, StreamEvent } from "./providers/types.js";
 import type { Message, ToolCall } from "./types.js";
 import { todoStore } from "./tools/todo.js";
+import { runBashTimed } from "./tools/bash.js";
 import { executeTool } from "./tools/index.js";
 
 vi.mock("./prompt.js", () => ({
@@ -865,6 +866,153 @@ describe("runAgent", () => {
       });
 
       expect(onRetry).not.toHaveBeenCalled();
+    });
+
+    describe("F5 delta: run_bash failure → retry loop engagement", () => {
+      const bashFailTurn = (id: string, command: string): TurnScript => [
+        { type: "tool_call_start", id, name: "run_bash" },
+        { type: "tool_call_delta", id, arguments: JSON.stringify({ command }) },
+        { type: "done", finishReason: "tool_calls" },
+      ];
+      // The real bash tool, so the failing-command path is exercised end to
+      // end: non-zero + stderr → error set → the guards engage.
+      const realBash = async (tc: ToolCall) =>
+        runBashTimed(tc.arguments.command as string, process.cwd(), process.cwd(), 5000, true);
+      const failingBash = `printf 'build failed: Cannot find module ./missing\n' >&2; exit 3`;
+
+      it("engages exactly one retry cycle on a failing run_bash (non-zero exit + stderr)", async () => {
+        const { provider } = makeProvider([bashFailTurn("call_1", failingBash), textTurn("fixed")]);
+        const onRetry = vi.fn();
+        const onDiagnostic = vi.fn();
+
+        const result = await runAgent("run the build", {
+          provider,
+          tools: [],
+          executeTool: realBash,
+          errorReflector: new ErrorReflector(),
+          onRetry,
+          onDiagnostic,
+        });
+
+        // Bounded: exactly one fix-retry cycle, then the model gets its turn.
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(onRetry).toHaveBeenCalledWith("retrying");
+        const reflection = result.messages.find(
+          (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("Try a different approach"),
+        );
+        expect(reflection).toBeDefined();
+        expect(reflection?.content).toContain("run_bash");
+        expect(reflection?.content).toContain("Exit code: 3");
+        // Cap not exhausted — no escalation note.
+        expect(onDiagnostic).not.toHaveBeenCalled();
+      });
+
+      it("carries the grepped <error_analysis> block into the retry prompt the model receives", async () => {
+        const { provider } = makeProvider([bashFailTurn("call_1", failingBash), textTurn("fixed")]);
+        const onRetry = vi.fn();
+
+        const result = await runAgent("run the build", {
+          provider,
+          tools: [],
+          executeTool: realBash,
+          errorReflector: new ErrorReflector(),
+          onRetry,
+        });
+
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        const reflection = result.messages.find(
+          (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("Try a different approach"),
+        );
+        expect(reflection).toBeDefined();
+        // The block rides along with the fix-reminder, so the model sees the
+        // matched error lines — not just "Error: Exit code: 3".
+        expect(reflection?.content).toContain("<error_analysis>");
+        expect(reflection?.content).toContain("</error_analysis>");
+        expect(reflection?.content).toContain("build failed: Cannot find module ./missing");
+      });
+
+      it("silent non-zero exit — no <error_analysis> block reaches the model", async () => {
+        const { provider } = makeProvider([bashFailTurn("call_1", "exit 3"), textTurn("ok")]);
+        const onRetry = vi.fn();
+
+        const result = await runAgent("run it", {
+          provider,
+          tools: [],
+          executeTool: realBash,
+          errorReflector: new ErrorReflector(),
+          onRetry,
+        });
+
+        // No retry cycle, and the pass-through tool output carries no block.
+        expect(onRetry).not.toHaveBeenCalled();
+        const withBlock = result.messages.filter(
+          (m) => typeof m.content === "string" && m.content.includes("<error_analysis>"),
+        );
+        expect(withBlock).toHaveLength(0);
+      });
+
+      it("does not retry a silent non-zero exit (empty stderr) — content passes through", async () => {
+        const { provider } = makeProvider([bashFailTurn("call_1", "exit 3"), textTurn("ok")]);
+        const onRetry = vi.fn();
+        const onDiagnostic = vi.fn();
+
+        const result = await runAgent("run it", {
+          provider,
+          tools: [],
+          executeTool: realBash,
+          errorReflector: new ErrorReflector(),
+          onRetry,
+          onDiagnostic,
+        });
+
+        expect(onRetry).not.toHaveBeenCalled();
+        expect(onDiagnostic).not.toHaveBeenCalled();
+        const toolMsg = result.messages.find((m) => m.role === "tool" && m.toolCallId === "call_1");
+        // The failure reached the model as plain tool output, not an Error.
+        expect(toolMsg?.content).toContain("Exit code: 3");
+        expect(toolMsg?.content).not.toContain("Error: Exit code");
+      });
+
+      it("fires the escalation diagnostic when the retry cap is exhausted", async () => {
+        const { provider } = makeProvider([
+          bashFailTurn("call_1", failingBash),
+          bashFailTurn("call_2", failingBash),
+          bashFailTurn("call_3", failingBash),
+          bashFailTurn("call_4", failingBash),
+          textTurn("gave up"),
+        ]);
+        const onRetry = vi.fn();
+        const onDiagnostic = vi.fn();
+
+        await runAgent("run the build", {
+          provider,
+          tools: [],
+          executeTool: realBash,
+          errorReflector: new ErrorReflector(),
+          onRetry,
+          onDiagnostic,
+        });
+
+        // Three bounded retries, then the cap is exhausted and escalation surfaces.
+        expect(onRetry).toHaveBeenCalledTimes(3);
+        expect(onDiagnostic).toHaveBeenCalledTimes(1);
+        expect(onDiagnostic).toHaveBeenCalledWith("retry cap exhausted — escalating");
+      });
+
+      it("does not fire the escalation diagnostic for a permission-denied error (hard no-retry)", async () => {
+        const { provider } = makeProvider([failingToolTurn(), textTurn("done")]);
+        const onDiagnostic = vi.fn();
+
+        await runAgent("read a.txt", {
+          provider,
+          tools: [],
+          executeTool: async () => ({ content: "", error: "Permission denied for read" }),
+          errorReflector: new ErrorReflector(),
+          onDiagnostic,
+        });
+
+        expect(onDiagnostic).not.toHaveBeenCalled();
+      });
     });
   });
 

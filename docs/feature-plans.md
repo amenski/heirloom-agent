@@ -532,6 +532,105 @@ sub-agents get `sessionStore: undefined` → they write nothing to disk.
 
 ---
 
+## Follow-on backlog (planned 2026-08-15)
+
+The wave above shipped in full; these are the remaining code items, planned
+in the same format. Priorities: F1-F3 are one small wave; F4-F5 are
+medium, each its own.
+
+### F1. ansi ×2 theme presets — S
+
+**State:** `BUILTIN_THEMES` carries dark/light/high-contrast/dracula/
+monokai/github-dark/github-light; theme-spec's open item (code-verified
+2026-08-13) is the ansi pair — base-16-only "dumb-terminal" variants of
+dark/light (no 256-color, no truecolor). improvement-roadmap's "shipped
+2026-08-02" claim for these is stale — theme-spec is authoritative.
+
+**Design:** add `ansi-dark`/`ansi-light` in `ThemeDefinition` shape using
+only the 8+8 basic ANSI codes; syntax colors map to base colors (bright
+variants for emphasis). `/theme` picker adopts them automatically
+(existing mechanism).
+
+**Verify:** both resolve; picker lists them; existing ansi-notes tests.
+
+### F2. doctor SearXNG healthz probe — S
+
+**State:** `runDoctor()` (`src/cli.tsx`) prints config diagnostics;
+`webSearch.searxngUrl` is parsed. No runtime view of instance health.
+
+**Design:** when `searxngUrl` is configured, `doctor` GETs `{url}/healthz`
+(3 s timeout, no retries — diagnostics, not the tool path) and prints
+`SearXNG: ok (N ms)` or `SearXNG: unreachable — searches will fall back
+to Bing.`
+
+**Verify:** runDoctor test with a stubbed healthz; unreachable case.
+
+### F3. T14 residual — bash output control-char sanitization — M (security)
+
+**State:** `sanitizeControlChars` strips C0/C1 except `\n`/`\t` and is
+applied to web_fetch/enrichment content only. `run_bash` output is
+unsanitized — terminal-control injection (spoofed UI, cursor games, OSC
+52 clipboard writes) remains open for command output, both in the TUI
+display and headless stdout (security-spec T14 residual).
+
+**Design:** sanitize at the single choke point — the bash tool handler,
+before the T12 untrusted wrapper — so model context AND every display
+path get clean text in one place. Background job output (`check_job`)
+gets the same treatment. Tests: OSC 52 / cursor-movement / spoofed-UI
+escapes stripped, `\n`/`\t` preserved. T14 row → fixed.
+
+**Decisions:** none — security-default, aligned with the existing
+mitigation.
+
+### F4. Agent definitions (frontmatter subagents) — M
+
+**SOTA:** Claude Code subagents = frontmatter files (name, description,
+model, tools) in `.claude/agents/`, discovered and listed; opencode =
+markdown frontmatter in `.opencode/agents/` with mode + tool permissions.
+**State:** heirloom's `new_task` takes a *mode*; sub-agents run the
+target mode's toolset with parent permission/profile inheritance (depth
+3, max 10 sub-turns, tagged audit). No per-subagent definition surface.
+
+**Design:** `.heirloom/agents/<name>.md` with frontmatter
+(`name`, `description`, `mode`, `model?`, `instructions`) resolved
+project > global like modes; `new_task` gains an `agent?: string`
+parameter; startup loads + indexes defs (description lines into the
+orchestrator's system prompt section); a sub-agent run uses the def's
+mode/model/instructions, falling back to the call's mode when `agent` is
+absent. Permission inheritance, depth caps, audit tagging unchanged.
+
+**Decisions (owner, 2026-08-15):** D1 — file-based only. D2 — per-agent
+`model` overrides allowed (absent = inherit parent's model). D3 —
+`.heirloom/agents/`, project > global resolution.
+
+### F5. Auto error-fix loop audit — M (audit-first, no code until verdict)
+
+**State:** `src/errorrecovery/` + `src/selfreflection/` both exist and
+are threaded into the loop (wired 2026-08-08); the roadmap's Phase-4
+borrow is a bounded fix-reminder (≤3 retries) + grepped `<error_analysis>`
+header on failing bash output.
+
+**Design:** read-only audit mapping each Phase-4 component against the
+existing subsystems; verdict = overlap (skip) / partial (build only the
+delta) / gap (build). Deliverable: a short findings doc + a dev-todo
+build-or-reject entry. No code until the verdict is reviewed.
+
+**Audit result (2026-08-15): build-the-delta.** ~70% overlap — the ≤3
+retry cap and the tool-error fix-reminder exist; the gap is that bash
+non-zero exits never set `error` (so the reminder and the loop guards
+never engage for the most common failure class) and no
+`<error_analysis>` header exists. Delta: set `error` on the non-zero
+bash branch (gated on exit code AND non-empty stderr to spare
+`grep -q`/`diff` idioms), prepend a grepped error block, optional
+cap-exhaustion diagnostic. Tracked as dev-todo item 15.
+
+### F6. Housekeeping — no code
+
+Delete the merged `feature/searxng-web-search` branch; SecondBrain
+session log for 2026-08-13 → 15 at wrap-up.
+
+---
+
 ## Sources
 
 Claude Code: code.claude.com/docs (hooks, permissions, interactive-mode,

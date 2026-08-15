@@ -61,6 +61,22 @@ describe("registerJobs", () => {
     expect(out.error).toContain("Working directory escapes the sandbox workspace root");
   });
 
+  it("check_job strips terminal-control escapes from accumulated output (T14), keeping \\n and \\t", async () => {
+    const job = jobManager.start(`printf '\\x1b]52;c;cHJlYWQ\\x07DATA\\n\\tkept'`, process.cwd(), 5000);
+    expect(job.ok).toBe(true);
+    const jobId = job.ok ? job.id : "";
+    await waitFor(() => jobManager.check(jobId)!.status === "done");
+
+    const out = await registry.execute(
+      { id: "1", name: "check_job", arguments: { job_id: jobId } },
+      mockCtx,
+    );
+    expect(out.error).toBeUndefined();
+    expect(out.content).toContain("DATA\n\tkept");
+    expect(out.content).not.toContain("\x1b");
+    expect(out.content).not.toContain("\x07");
+  });
+
   it("check_job wraps accumulated stdout/stderr in the untrusted delimiters, status lines outside (T12)", async () => {
     const okJob = jobManager.start("echo wrapped-check-job", process.cwd(), 5000);
     const failJob = jobManager.start("echo wrapped-check-err >&2; exit 3", process.cwd(), 5000);

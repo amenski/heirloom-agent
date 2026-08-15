@@ -12,6 +12,7 @@ import { fireNotify } from "./notify.js";
 import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
 import { Orchestrator } from "./orchestrator/index.js";
 import { ModeLoader } from "./modes/loader.js";
+import { AgentLoader } from "./agents/index.js";
 
 export interface ExecRunnerOptions {
   prompt: string;
@@ -179,15 +180,32 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       return false;
     };
 
+    // Agent definitions (feature-plans.md §F4): loaded once per headless run,
+    // project > global; new_task's `agent` parameter resolves through this.
+    const agentLoader = new AgentLoader();
+    const agents = await agentLoader.load(options.projectRoot);
+
     // Orchestrator mode (9.3): register once per headless run so `-p` prompts
     // can use new_task too. Sub-agents inherit this run's provider, permission
     // engine (rules + approval posture — no escalation, 24.3), and the
     // fail-closed headless askUser above. getSignal forwards the run's
-    // AbortController so SIGINT/Ctrl+C cancels an in-flight sub-agent.
+    // AbortController so SIGINT/Ctrl+C cancels an in-flight sub-agent. A
+    // defined agent's "provider/model" override creates a provider bound to
+    // that model; the startup key/host stays scoped to this run's provider.
     const orchestrator = new Orchestrator({
-      provider: () => provider,
+      provider: (modelId?: string) => {
+        if (!modelId) return provider;
+        const slash = modelId.indexOf("/");
+        const provName = modelId.slice(0, slash);
+        return createProvider(provName, {
+          modelOverride: modelId.slice(slash + 1),
+          baseUrl: provName === providerName ? resolvedBaseUrl : undefined,
+          apiKey: provName === providerName ? resolvedApiKey : undefined,
+        });
+      },
       registry,
       modeLoader: new ModeLoader(),
+      agents: agentLoader,
       permissions,
       profile: permissionProfile,
       askUser,
@@ -233,6 +251,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         permissions,
         permissionProfile,
         askUser,
+        agents,
         repomap: repomapInjection,
         signal: abortController.signal,
         errorReflector: new ErrorReflector(),

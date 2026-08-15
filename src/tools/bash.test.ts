@@ -95,10 +95,101 @@ describe("runBashTimed (plan §3 timeout→background migration)", () => {
     expect(result.content).not.toContain("moved to background");
   });
 
+  it("strips terminal-control escapes from stdout (T14): OSC 52, cursor moves, spoofed UI", async () => {
+    // OSC 52 clipboard write: ESC + BEL stripped; the base64 payload stays as
+    // inert literal text (control bytes are gone, so nothing reaches the
+    // terminal's clipboard).
+    const osc52 = await runBashTimed(`printf '\\x1b]52;c;cHJlYWQ\\x07CLIP-LEAK'`, process.cwd(), process.cwd(), 5000, true);
+    expect(osc52.content).toContain("CLIP-LEAK");
+    expect(osc52.content).not.toContain("\x1b");
+    expect(osc52.content).not.toContain("\x07");
+
+    // Cursor-movement CSI: ESC stripped; the printable residue ("[2K", "[10;10H")
+    // is inert literal text that cannot move the cursor or clear lines.
+    const cursor = await runBashTimed(`printf 'a\\x1b[2Kb\\x1b[10;10Hc'`, process.cwd(), process.cwd(), 5000, true);
+    expect(cursor.content).toContain("a[2Kb[10;10Hc");
+    expect(cursor.content).not.toContain("\x1b");
+
+    // Spoofed-UI color runs: all ESC bytes stripped; the visible text survives.
+    const spoofed = await runBashTimed(`printf '\\x1b[38;5;0m\\x1b[48;5;0mSPOOFED-UI\\x1b[0m'`, process.cwd(), process.cwd(), 5000, true);
+    expect(spoofed.content).toContain("SPOOFED-UI");
+    expect(spoofed.content).not.toContain("\x1b");
+    // Sanitized output still rides inside the T12 untrusted delimiters.
+    expect(spoofed.content.trim().endsWith("--- END WEB CONTENT ---")).toBe(true);
+  });
+
+  it("strips terminal-control escapes from stderr on the non-zero-exit path (T14)", async () => {
+    const fail = await runBashTimed(`printf '\\x1b[31mERR\\x1b[0m' >&2; exit 3`, process.cwd(), process.cwd(), 5000, true);
+    expect(fail.content).toContain("Exit code: 3");
+    expect(fail.content).toContain("ERR");
+    expect(fail.content).not.toContain("\x1b");
+  });
+
+  it("preserves \\n and \\t in command output (T14 keeps layout)", async () => {
+    const result = await runBashTimed(`printf 'line1\\n\\tindented\\n'`, process.cwd(), process.cwd(), 5000, true);
+    expect(result.content).toContain("line1\n\tindented\n");
+    expect(result.content).not.toContain("\x1b");
+  });
+
   it("resolveTimeoutToBackground defaults ON (decision D)", () => {
     expect(resolveTimeoutToBackground(undefined)).toBe(true);
     expect(resolveTimeoutToBackground(true)).toBe(true);
     expect(resolveTimeoutToBackground(false)).toBe(false);
+  });
+});
+
+describe("non-zero exit error analysis (F5 delta)", () => {
+  it("sets error and prepends a grepped <error_analysis> block when stderr matches", async () => {
+    const fail = await runBashTimed(
+      `printf 'build failed: Cannot find module ./missing\ncontext line\n' >&2; exit 3`,
+      process.cwd(),
+      process.cwd(),
+      5000,
+      true,
+    );
+    expect(fail.error).toBe("Exit code: 3");
+    expect(fail.content).toContain("<error_analysis>");
+    expect(fail.content).toContain("</error_analysis>");
+    // Matched stderr lines ride inside the block, above the full body.
+    const between = fail.content.slice(
+      fail.content.indexOf("<error_analysis>"),
+      fail.content.indexOf("</error_analysis>"),
+    );
+    expect(between).toContain("Exit code: 3");
+    expect(between).toContain("build failed: Cannot find module ./missing");
+    // The full output body (unmatched stderr included) is still present.
+    expect(fail.content).toContain("context line");
+    expect(fail.content.trim().endsWith("--- END WEB CONTENT ---")).toBe(true);
+  });
+
+  it("sets error but omits the block when stderr has no matching lines", async () => {
+    const fail = await runBashTimed("echo wrapped-bash-err >&2; exit 3", process.cwd(), process.cwd(), 5000, true);
+    expect(fail.error).toBe("Exit code: 3");
+    expect(fail.content).not.toContain("<error_analysis>");
+  });
+
+  it("leaves a silent non-zero exit (empty stderr) content-only with no error", async () => {
+    const fail = await runBashTimed("exit 3", process.cwd(), process.cwd(), 5000, true);
+    expect(fail.error).toBeUndefined();
+    expect(fail.content).toContain("Exit code: 3");
+    expect(fail.content).not.toContain("<error_analysis>");
+  });
+
+  it("caps the analysis block at the last 20 matched stderr lines", async () => {
+    const fail = await runBashTimed(
+      `for i in $(seq 1 25); do echo "error line $i" >&2; done; exit 1`,
+      process.cwd(),
+      process.cwd(),
+      5000,
+      true,
+    );
+    const between = fail.content.slice(
+      fail.content.indexOf("<error_analysis>"),
+      fail.content.indexOf("</error_analysis>"),
+    );
+    expect((between.match(/error line \d+/g) || []).length).toBe(20);
+    expect(between).toContain("error line 25");
+    expect(between).not.toContain("error line 1\n");
   });
 });
 

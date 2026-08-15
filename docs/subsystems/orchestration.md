@@ -1,6 +1,6 @@
 ## 7. Orchestration — `new_task` sub-agents
 
-**Status:** current · verified 2026-08-13 · covers `src/orchestrator/index.ts`, decision H (feature-plans.md §10)
+**Status:** current · verified 2026-08-15 · covers `src/orchestrator/index.ts`, decision H (feature-plans.md §10), agent definitions (feature-plans.md §F4)
 
 ### What `new_task` is
 
@@ -46,6 +46,44 @@ A sub-agent inherits from its parent — deliberately, by construction:
 Both are `OrchestratorOptions` fields with those defaults; enforcement
 happens at the handler boundary (`createHandler`), so a nested spawn checks
 its own depth before doing any work.
+
+### Agent definitions (feature-plans.md §F4, shipped 2026-08-15)
+
+Frontmatter agent definitions let a delegation name a *persona* instead of
+just a mode. `.heirloom/agents/<name>.md` (project dir) and
+`~/.heirloom/agents/<name>.md` (global, `HEIRLOOM_HOME`-aware) are scanned by
+`src/agents/index.ts` (`AgentLoader`) at startup — project wins per name,
+exactly like modes. A def carries:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `name` | yes | The identity `new_task`'s `agent` parameter resolves |
+| `description` | yes | One-line prompt index entry |
+| `mode` | yes | The sub-agent's toolset (mode-spec.md) |
+| `model` | no | `provider/model` override, validated against the model catalog at startup (unknown → warning, def still loads; the sub-run then falls back to the parent's model) |
+| `instructions` | no | Prepended to the sub-agent's system prompt (before the role definition) |
+
+Unknown frontmatter fields warn and are ignored; a file missing
+`name`/`description`/`mode` is skipped with a warning. The frontmatter parser
+is the same tiny YAML subset the modes/skills loaders use.
+
+**`new_task`'s `agent?: string` parameter.** With it, the sub-run uses the
+def's mode (toolset), model (a provider created from the `provider/model`
+override via the spawn-time factory; unconfigured/unknown → a clean
+`SUBTASK_PROVIDER` tool error), and instructions. Without it, behavior is
+byte-identical to pre-F4: the call's `mode`, the parent's model. An unknown
+agent name returns `UNKNOWN_AGENT` listing the available names. The tool def
+is rebuilt at `register()` time so its description lists the loaded names.
+
+**Security envelope unchanged.** The def selects persona/toolset/model only.
+Permission inheritance (rules + approval posture + profile), `maxDepth`, and
+`maxSubTurns` are untouched; the sub-run still writes tagged
+`source: "subagent"` audit rows through the same audit-only store view.
+
+**Prompt index.** Loaded defs' `name` + `description` lines join the stable
+preamble as an "Available agents" section (one line per agent, sorted), so
+the top-level agent knows the names `new_task` accepts. The CLI's `/skills`
+slash command prints a one-line agent list; there is no separate view.
 
 ### Isolation model
 

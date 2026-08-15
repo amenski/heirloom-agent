@@ -8,6 +8,7 @@ import type { DiagnosticRunner } from "./diagnostics/index.js";
 import type { ErrorReflector } from "./selfreflection/index.js";
 import type { ErrorRecovery } from "./errorrecovery/index.js";
 import type { SkillDef } from "./skills/index.js";
+import type { AgentDef } from "./agents/index.js";
 import type { MemoryStore } from "./memory/store.js";
 import type { HookRunner } from "./hooks/index.js";
 import type { SessionStore, CompactionSummary, PermissionDecision } from "./sessions/store.js";
@@ -46,7 +47,7 @@ const READ_TOOLS = new Set([
 // object references across turns, only reassigned on explicit mode/skill
 // switches). One CLI process runs one agent loop at a time, so a module-level
 // cache is safe here.
-let stableCache: { mode?: ModeConfig; workingDir: string; skills?: SkillDef[]; memory?: string; repomap?: string; text: string } | undefined;
+let stableCache: { mode?: ModeConfig; workingDir: string; skills?: SkillDef[]; agents?: AgentDef[]; agentInstructions?: string; memory?: string; repomap?: string; text: string } | undefined;
 
 function getStablePreamble(ctx: PromptContext): string {
   if (
@@ -54,13 +55,15 @@ function getStablePreamble(ctx: PromptContext): string {
     stableCache.mode === ctx.mode &&
     stableCache.workingDir === ctx.workingDir &&
     stableCache.skills === ctx.skills &&
+    stableCache.agents === ctx.agents &&
+    stableCache.agentInstructions === ctx.agentInstructions &&
     stableCache.memory === ctx.memory &&
     stableCache.repomap === ctx.repomap
   ) {
     return stableCache.text;
   }
   const text = buildStablePreamble(ctx);
-  stableCache = { mode: ctx.mode, workingDir: ctx.workingDir, skills: ctx.skills, memory: ctx.memory, repomap: ctx.repomap, text };
+  stableCache = { mode: ctx.mode, workingDir: ctx.workingDir, skills: ctx.skills, agents: ctx.agents, agentInstructions: ctx.agentInstructions, memory: ctx.memory, repomap: ctx.repomap, text };
   return text;
 }
 
@@ -90,6 +93,11 @@ export interface AgentOptions {
   /** Context-window ceiling used as budgetMax for per-turn token rows. Defaults to 128000, the codebase-wide fallback. */
   contextWindow?: number;
   skills?: SkillDef[];
+  /** Loaded agent definitions — their name+description index joins the stable
+   *  preamble so the model knows the names new_task accepts (feature-plans.md §F4). */
+  agents?: AgentDef[];
+  /** Agent-definition instructions, prepended to the stable preamble. */
+  agentInstructions?: string;
   /** Precomputed session-stable repository-map snapshot (see buildRepoMap). */
   repomap?: string;
   /** Precomputed research-notes block (see loadProjectResearch). Plan-mode only. */
@@ -176,6 +184,8 @@ export async function runAgent(
     mode: options.mode,
     workingDir: process.cwd(),
     skills: options.skills,
+    agents: options.agents,
+    agentInstructions: options.agentInstructions,
     repomap: options.repomap,
     memory: options.memory,
     research: options.research,
@@ -247,6 +257,8 @@ export async function runAgent(
         mode: options.mode,
         workingDir: process.cwd(),
         skills: options.skills,
+        agents: options.agents,
+        agentInstructions: options.agentInstructions,
         repomap: options.repomap,
         memory: options.memory,
       });
@@ -657,10 +669,16 @@ export async function runAgent(
 
       if (result.error && errorReflector?.canRetry(tc.name, result.error)) {
         messages.push({ role: "tool", toolCallId: tc.id, content: `Error: ${result.error}` });
-        messages.push({ role: "user", content: errorReflector.formatError(tc.name, result.error) });
+        messages.push({ role: "user", content: errorReflector.formatError(tc.name, result.error, result.content) });
         options.onRetry?.("retrying");
         errorReflector.resetTurn();
       } else {
+        // F5 delta: the bounded auto-fix loop is done — retry cap exhausted
+        // (or no reflector / a permission hard-stop, which never retries).
+        // Surface the escalation note so the UI can flag it.
+        if (result.error && errorReflector && !result.error.includes("Permission denied")) {
+          options.onDiagnostic?.("retry cap exhausted — escalating");
+        }
         messages.push({
           role: "tool",
           toolCallId: tc.id,

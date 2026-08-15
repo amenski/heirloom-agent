@@ -5,51 +5,30 @@ import { ToolRegistry } from "../tools/registry.js";
 import { runAgent } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
+import { AgentLoader } from "../agents/index.js";
 import type { PermissionEngine, ProfileEvaluator } from "../permissions/index.js";
 import type { HookRunner } from "../hooks/index.js";
 import { subagentAuditStore } from "../sessions/store.js";
 import { TodoStore } from "../tools/todo.js";
-
-const NEW_TASK_DEF: ToolDef = {
-  name: "new_task",
-  description:
-    "Spawn a sub-agent to handle a discrete, isolated task. The sub-agent runs in a " +
-    "fresh context with its own message history and tool access. When it completes, you " +
-    "receive a summary of what was done — you do not see raw file diffs or tool outputs " +
-    "from the sub-agent.\n\n" +
-    "Use this to delegate implementation work, research, or analysis to a specialized " +
-    "mode. Each sub-agent can itself spawn sub-agents up to a maximum depth of 3.",
-  parameters: {
-    type: "object",
-    properties: {
-      description: {
-        type: "string",
-        description:
-          "A clear, self-contained description of what the sub-agent should accomplish. " +
-          "Include all necessary context since the sub-agent cannot see your conversation.",
-      },
-      mode: {
-        type: "string",
-        description:
-          "The mode to run the sub-agent in. Available: 'code' (implementation), " +
-          "'architect' (planning/design), 'debug' (investigation), 'ask' (research). " +
-          "Defaults to 'code'.",
-      },
-    },
-    required: ["description"],
-  },
-};
 
 export interface OrchestratorOptions {
   /**
    * Provider factory resolved at sub-agent spawn time, so a sub-agent always
    * uses the provider/model the parent session is currently on (including
    * mid-session `/model` switches) instead of the provider captured at
-   * tool-registration time.
+   * tool-registration time. An optional "provider/model" id (a defined
+   * agent's `model` override, feature-plans.md §F4) creates a provider bound
+   * to that model instead; absent = the parent's current provider.
    */
-  provider: () => Provider;
+  provider: (modelId?: string) => Provider;
   registry: ToolRegistry;
   modeLoader: ModeLoader;
+  /**
+   * Frontmatter agent definitions (.heirloom/agents/*.md, feature-plans.md
+   * §F4): `new_task`'s `agent` parameter resolves through this loader. The
+   * def supplies the mode/model/instructions — never the security envelope.
+   */
+  agents?: AgentLoader;
   permissions?: PermissionEngine;
   /**
    * The parent session's capability-boundary gate (permission-profile.md §6):
@@ -80,9 +59,10 @@ export interface OrchestratorOptions {
 
 export class Orchestrator {
   private options: Required<Pick<OrchestratorOptions, "maxDepth" | "maxSubTurns">> & {
-    provider: () => Provider;
+    provider: (modelId?: string) => Provider;
     registry: ToolRegistry;
     modeLoader: ModeLoader;
+    agents?: AgentLoader;
     permissions?: PermissionEngine;
     profile?: ProfileEvaluator;
     getSignal?: () => AbortSignal | undefined;
@@ -111,10 +91,57 @@ export class Orchestrator {
 
   register(registry: ToolRegistry): void {
     registry.register({
-      def: NEW_TASK_DEF,
+      def: this.buildDef(),
       handler: this.createHandler(0),
       groups: ["workflow"],
     });
+  }
+
+  /** The new_task tool def, rebuilt at register time so the `agent` parameter
+   *  description can list the names that were loaded at startup. */
+  private buildDef(): ToolDef {
+    const agentNames = (this.options.agents?.list() ?? [])
+      .map((a) => a.name)
+      .sort();
+    const agentList =
+      agentNames.length > 0 ? ` Available agents: ${agentNames.join(", ")}.` : "";
+    return {
+      name: "new_task",
+      description:
+        "Spawn a sub-agent to handle a discrete, isolated task. The sub-agent runs in a " +
+        "fresh context with its own message history and tool access. When it completes, you " +
+        "receive a summary of what was done — you do not see raw file diffs or tool outputs " +
+        "from the sub-agent.\n\n" +
+        "Use this to delegate implementation work, research, or analysis to a specialized " +
+        "mode or a defined agent. Each sub-agent can itself spawn sub-agents up to a maximum depth of 3.",
+      parameters: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description:
+              "A clear, self-contained description of what the sub-agent should accomplish. " +
+              "Include all necessary context since the sub-agent cannot see your conversation.",
+          },
+          mode: {
+            type: "string",
+            description:
+              "The mode to run the sub-agent in. Available: 'code' (implementation), " +
+              "'architect' (planning/design), 'debug' (investigation), 'ask' (research). " +
+              "Defaults to 'code'.",
+          },
+          agent: {
+            type: "string",
+            description:
+              "Optional: the name of a defined agent (.heirloom/agents/<name>.md) to run " +
+              "this task as. The agent's mode, model, and instructions override the mode " +
+              "parameter and the parent's model." +
+              agentList,
+          },
+        },
+        required: ["description"],
+      },
+    };
   }
 
   private createHandler(depth: number): ToolHandler {
@@ -130,7 +157,32 @@ export class Orchestrator {
       }
 
       const description = args.description as string;
-      const modeSlug = (args.mode as string) || "code";
+      const agentName = args.agent as string | undefined;
+
+      // An `agent` parameter resolves the sub-run's persona/toolset/model from
+      // the definition (feature-plans.md §F4); absent, today's behavior is
+      // unchanged (call-provided mode, parent model).
+      let modeSlug = (args.mode as string) || "code";
+      let agentInstructions: string | undefined;
+      let modelId: string | undefined;
+
+      if (agentName !== undefined) {
+        const agents = this.options.agents;
+        const def = agents?.get(agentName);
+        if (!def) {
+          const available =
+            agents && agents.list().length > 0
+              ? ` Available agents: ${agents.list().map((a) => a.name).sort().join(", ")}`
+              : "";
+          return {
+            content: `Unknown agent: "${agentName}".${available}`,
+            error: "UNKNOWN_AGENT",
+          };
+        }
+        modeSlug = def.mode;
+        agentInstructions = def.instructions;
+        modelId = def.model;
+      }
 
       const subMode = await this.options.modeLoader.load(modeSlug);
       if (!subMode) {
@@ -143,10 +195,21 @@ export class Orchestrator {
       const subModeGroups = subMode.groups || [];
       const subTools: ToolDef[] = [
         ...this.options.registry.getByMode(subModeGroups),
-        NEW_TASK_DEF,
+        this.buildDef(),
       ];
 
-      const provider = this.options.provider();
+      // A defined agent's model override binds the sub-provider to that
+      // "provider/model"; an unknown/unconfigured provider must fail the spawn
+      // cleanly as a tool error, not crash the parent turn.
+      let provider: Provider;
+      try {
+        provider = modelId ? this.options.provider(modelId) : this.options.provider();
+      } catch (err) {
+        return {
+          content: `Cannot spawn sub-task: ${(err as Error).message}`,
+          error: `SUBTASK_PROVIDER: ${(err as Error).message}`,
+        };
+      }
       const subCompactor = new Compactor(provider);
 
       // The sub-agent gets its own todo store: its update_todo_list calls must
@@ -190,6 +253,9 @@ export class Orchestrator {
           askUser: this.askUser,
           maxTurns: this.options.maxSubTurns,
           mode: subMode,
+          // The defined agent's instructions prepend the sub-agent's system
+          // prompt (prompt.ts prepends agentInstructions to the preamble).
+          agentInstructions,
           hooks: this.options.hooks,
           // Parent session identity behind the audit-only view: permission
           // and token rows land in the parent's JSONL tagged "subagent";

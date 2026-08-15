@@ -9,13 +9,31 @@ import {
   validateCwdWithinTrustedRoot,
   type SandboxLevel,
 } from "../sandbox/seatbelt.js";
-import { wrapUntrusted } from "./untrusted-content.js";
+import { wrapUntrusted, sanitizeControlChars } from "./untrusted-content.js";
 
 const RUN_BASH_TIMEOUT_MS = 120_000;
 // run_bash keeps the most recent 512KB of output (the old exec maxBuffer
 // contract); on overflow the tail is kept and a note is added instead of
 // killing the process.
 const MAX_BASH_OUTPUT_CHARS = 512 * 1024;
+
+// F5 delta (2026-08-15): non-zero exits with non-empty stderr set `error`
+// (so the reflector/streak/repeat guards engage) and the content gets a
+// compact grepped <error_analysis> block — the last 20 stderr lines matching
+// common error signatures, plus the exit line. Silent non-zero exits
+// (grep -q / diff / test idioms) keep the old content-only shape.
+const ERROR_LINE_RE = /error|failed|fatal|exception|undefined|no such|unable|cannot/i;
+const MAX_ERROR_ANALYSIS_LINES = 20;
+
+function buildErrorAnalysis(stderr: string, exitCode: number | null): string {
+  const matched = stderr
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && ERROR_LINE_RE.test(line))
+    .slice(-MAX_ERROR_ANALYSIS_LINES);
+  if (matched.length === 0) return "";
+  return `<error_analysis>\nExit code: ${exitCode}\n${matched.join("\n")}\n</error_analysis>\n`;
+}
 
 // Commands that look interactive — editors, pagers, monitors, and stdin-driven
 // CLIs (git credential prompts, psql/mysql/sqlite3, sleep) — are killed on
@@ -112,13 +130,18 @@ export function runBashTimed(
     const truncationNote = () =>
       stdoutTruncated || stderrTruncated ? "\n(output truncated — kept last 512KB)" : "";
 
+    // Terminal-control sanitization (T14) happens here, at the single choke
+    // point where command output enters the buffers — before the T12 wrapper,
+    // so model context and every display path get clean text. Sanitizing per
+    // chunk is safe across chunk boundaries: ESC (0x1b) itself is stripped, so
+    // a sequence split between chunks leaves only inert text fragments.
     proc.stdout?.on("data", (chunk: Buffer) => {
       if (settled) return;
-      stdout = appendCapped(stdout, chunk.toString(), () => { stdoutTruncated = true; }, MAX_BASH_OUTPUT_CHARS);
+      stdout = appendCapped(stdout, sanitizeControlChars(chunk.toString()), () => { stdoutTruncated = true; }, MAX_BASH_OUTPUT_CHARS);
     });
     proc.stderr?.on("data", (chunk: Buffer) => {
       if (settled) return;
-      stderr = appendCapped(stderr, chunk.toString(), () => { stderrTruncated = true; }, MAX_BASH_OUTPUT_CHARS);
+      stderr = appendCapped(stderr, sanitizeControlChars(chunk.toString()), () => { stderrTruncated = true; }, MAX_BASH_OUTPUT_CHARS);
     });
     proc.on("error", (err) => {
       if (settled) return;
@@ -132,7 +155,19 @@ export function runBashTimed(
       clearTimeout(timer);
       if (code === 0) {
         resolve({ content: wrapUntrusted(`${stdout || "(no output)"}${truncationNote()}`) });
+      } else if (stderr.trim() !== "") {
+        // F5 delta: real failure (non-zero + stderr) — set `error` so the
+        // bounded auto-fix loop engages, and prepend the grepped
+        // <error_analysis> block inside the untrusted delimiters (the matched
+        // lines are still command output). The full stdout/stderr body is kept.
+        const analysis = buildErrorAnalysis(stderr, code);
+        resolve({
+          content: wrapUntrusted(`${analysis}Exit code: ${code}\n${stdout}\n${stderr}${truncationNote()}`),
+          error: `Exit code: ${code}`,
+        });
       } else {
+        // Silent non-zero exit (empty stderr) — grep -q / diff / test idioms:
+        // content only, no error, no analysis block.
         resolve({ content: wrapUntrusted(`Exit code: ${code}\n${stdout}\n${stderr}${truncationNote()}`) });
       }
     });
