@@ -1,0 +1,16 @@
+# Optional local SearXNG instance — heirloom's self-hosted search backend.
+#
+# Bing RSS remains the keyless default; this compose is an additive
+# convenience. The instance binds to 127.0.0.1 ONLY (localhost), so it is
+# not reachable from your LAN. See README.md § "Better search (optional)"
+# and docs/web-search-spec.md for the full story.
+services:
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro

@@ -186,6 +186,40 @@ switches color schemes with a live preview. `/doctor` runs diagnostics.
 
 ---
 
+## Better search (optional)
+
+`web_search` works out of the box via keyless Bing RSS — thin, snippet-only
+results. For richer results (and inline content excerpts), run your own
+[SearXNG](https://docs.searxng.org/) instance locally and point heirloom at it:
+
+```bash
+# 1. One-time: give the instance its own secret
+sed -i '' "s/CHANGE_ME_RUN_openssl_rand_hex_32/$(openssl rand -hex 32)/" searxng/settings.yml
+
+# 2. Start it (localhost-only, port 8888)
+docker compose up -d
+
+# 3. Verify
+curl -s http://localhost:8888/healthz    # → OK
+curl -s "http://localhost:8888/search?q=test&format=json" | head -c 120
+```
+
+Then add one line to `~/.heirloom/settings.json`:
+
+```json
+"webSearch": { "searxngUrl": "http://localhost:8888" }
+```
+
+SearXNG becomes the primary backend, Bing stays as the automatic fallback
+when the instance is down, and the top results come back with inline
+content excerpts (`enrich` defaults on). `http://` is accepted only for
+localhost; a remote instance must use `https://`. See
+[`docs/web-search-spec.md`](./docs/web-search-spec.md).
+
+> If you already run a SearXNG container named `searxng` on port 8888,
+> remove it (`docker rm -f searxng`) before `docker compose up` — the
+> compose file manages the same name and port.
+
 ## FAQ
 
 ### Why another AI coding agent?

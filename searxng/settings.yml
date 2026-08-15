@@ -1,0 +1,13 @@
+# Minimal override over SearXNG's image defaults (use_default_settings
+# merges the container's own settings.yml and applies only what's here).
+#
+# IMPORTANT: replace the secret_key before first use — generate one with:
+#   openssl rand -hex 32
+# (The README's quickstart does this for you with sed.)
+use_default_settings: true
+server:
+  secret_key: "CHANGE_ME_RUN_openssl_rand_hex_32"
+search:
+  formats:
+    - html
+    - json

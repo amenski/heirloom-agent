@@ -2,9 +2,9 @@
 
 **Status:** current · verified 2026-08-13 · covers `src/tools/web-search.ts`
 
-> Note: an opt-in SearXNG backend is in progress on the
-> `feature/searxng-web-search` branch (see `docs/handoff-web-search-searxng.md`
-> there); this doc describes what ships on `main`.
+> Note: the opt-in SearXNG backend + inline enrichment **ship on main**
+> (merged 2026-08-14). Quickstart for running an instance: the repo's
+> `docker-compose.yml` + README § "Better search (optional)".
 
 ## 1. Overview
 
