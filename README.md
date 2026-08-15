@@ -193,8 +193,9 @@ results. For richer results (and inline content excerpts), run your own
 [SearXNG](https://docs.searxng.org/) instance locally and point heirloom at it:
 
 ```bash
-# 1. Start it (localhost-only, port 8888). On first boot the compose file
-#    generates a fresh secret_key and persists it into searxng/settings.yml.
+# 1. Start it (localhost-only, port 8888). The compose file renders a fresh
+#    random secret_key container-side on every start — the shipped
+#    searxng/settings.yml stays a read-only template.
 docker compose up -d
 
 # 2. Verify

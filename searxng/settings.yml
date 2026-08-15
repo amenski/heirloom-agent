@@ -1,10 +1,10 @@
 # Minimal override over SearXNG's image defaults (use_default_settings
 # merges the container's own settings.yml and applies only what's here).
 #
-# The placeholder secret_key below is a template marker ONLY: the
-# docker-compose entrypoint guard replaces it with a fresh random value
-# on first boot and persists the result back into this file. The instance
-# never runs with the placeholder.
+# TEMPLATE ONLY — this file is mounted read-only and never mutated. The
+# placeholder secret_key is replaced at container start with a fresh
+# random value rendered into a container-local settings file (see the
+# docker-compose entrypoint). Safe to commit as-is.
 use_default_settings: true
 server:
   secret_key: "CHANGE_ME_RUN_openssl_rand_hex_32"
