@@ -3,7 +3,7 @@ import { opensModal } from "./modal-commands.js";
 
 describe("opensModal", () => {
   it("recognizes UI-only modal commands (bare name)", () => {
-    for (const c of ["model", "theme", "effort", "resume", "continue", "sessions", "skills", "modes", "undo", "mcp", "permissions", "usage", "help"]) {
+    for (const c of ["model", "theme", "effort", "resume", "continue", "sessions", "skills", "modes", "undo", "mcp", "tasks", "permissions", "usage", "help"]) {
       expect(opensModal(c)).toBe(true);
     }
   });

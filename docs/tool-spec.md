@@ -204,7 +204,7 @@ Available regardless of mode unless noted (mode-spec.md).
 |------|-----------|----------|
 | `update_todo_list` | `todos: [{content, status}]` | Replaces the whole plan; statuses `pending \| in_progress \| completed`; CLI renders as a checklist panel; each call persists a session snapshot (restored on resume) |
 | `ask_user_question` | `questions: [{question, multiSelect?, options}]` | Blocks on structured user input via `ToolContext.askQuestion`; returns the answers as tool output |
-| `new_task` | `description, mode?, agent?` | Spawns a sub-agent with isolated context (workflow group only); only its summary returns; `agent` runs a defined frontmatter agent (feature-plans.md §F4) |
+| `new_task` | `description, mode?, agent?` | Spawns a sub-agent with isolated context (workflow group only); returns a task id immediately and the summary arrives as a follow-up message (async-subagents.md); max 3 concurrent (`QUEUE_FULL` beyond); `agent` runs a defined frontmatter agent (feature-plans.md §F4) |
 | `load_skill` | `name` | Returns the skill's SKILL.md body as tool output; unknown name lists available skills |
 | `switch_mode` | `slug, reason?` | Switches the active persona mode; the new tool set applies from the next turn; unknown slug → `UNKNOWN_MODE` |
 | `attempt_completion` | `summary` | Signals the task is done and **ends the turn** (ToolOutput `stop: true`); the summary is the final output |
@@ -219,10 +219,24 @@ their own isolated store for the duration of the sub-run.
 
 `new_task` details (`src/orchestrator/index.ts`): nesting depth ≤ 3,
 sub-turns ≤ 10, mode-scoped tool set, shared permission engine with
-ask-tier prompts surfaced in the parent UI, summary-only return. With
+ask-tier prompts surfaced in the parent UI, summary-only return (the
+parent sees the summary, never raw tool output). With
 `agent: <name>`, the run uses the definition's mode/model/instructions
 (`.heirloom/agents/<name>.md`, project > global, feature-plans.md §F4);
 unknown agent names fail with `UNKNOWN_AGENT` listing the available names.
+
+**Async contract (async-subagents.md, shipped 2026-08-16).** The call
+returns immediately with `task <id> spawned — result will follow (depth N,
+R/3 sub-agents running)`; the sub-run executes in the background (in-memory
+task registry, `src/orchestrator/runner.ts`) and its summary arrives as a
+delivered follow-up message — `Sub-agent result (task <id>): <summary>` —
+that wakes the parent (idle → new turn, active turn → steering mailbox,
+mid-typing → queued behind the submission; headless continues the loop).
+At most 3 sub-agents run concurrently; a spawn beyond the cap errors
+`QUEUE_FULL` ("queue full (3 running)"). Tasks are in-memory only: `/exit`
+kills pending sub-runs and resume does not restore them. The orchestrator
+instructions direct the model to spawn, end its turn, and await results —
+never poll, never re-spawn a running task.
 
 `load_skill` (`src/skills/index.ts:219`): respects `enabledSkills` gating
 and the skill-trust file (untrusted skills are skipped in headless mode);

@@ -47,6 +47,49 @@ Both are `OrchestratorOptions` fields with those defaults; enforcement
 happens at the handler boundary (`createHandler`), so a nested spawn checks
 its own depth before doing any work.
 
+### Async execution (async-subagents.md, shipped 2026-08-16)
+
+`new_task` no longer blocks. The call returns immediately with
+`task <id> spawned — result will follow (depth N, R/3 sub-agents running)`
+and the sub-run executes detached through the in-memory task registry
+(`src/orchestrator/runner.ts`, `TaskRegistry` — status
+running/done/failed/aborted, spawnedAt, depth, agentName, result). On
+completion the registry records the outcome, formats
+`Sub-agent result (task <id>): <summary>`, and hands it to the delivery
+callback (`OrchestratorOptions.onTaskResult`, wired once per session by
+the App via `ctx.setSubagentResultHandler` / by exec-runner into its
+pending-results queue).
+
+**Wake rule (§2, Q1).** The App appends the message like any user message
+(persisted exactly once through the normal turn path) and wakes: idle → a
+new turn starts with the result as its prompt; a turn is active → the
+steering mailbox injects it at the next decision point; mid-typing → it
+queues behind the pending submission. Headless appends and continues the
+loop — waiting on `waitForNextCompletion` between turns — until every
+task has settled.
+
+**Unchanged envelope.** Concurrency cap 3 (`QUEUE_FULL` beyond it, Q2);
+tasks are in-memory only and die on exit (`abortAll()` on the /exit and
+headless teardown paths, Q3); Esc/Ctrl+C during the spawning turn aborts
+sub-runs via the parent signal; `SubagentStart`/`SubagentStop` fire at
+spawn/completion; permission/profile inheritance, the audit-only store
+view, and isolated todo stores are untouched.
+
+**UI surface (async-subagents.md §4, shipped 2026-08-16).** While any task
+runs, the status line shows `● task <id> running` (or `N tasks` when
+several) — `buildTaskSegments` (`src/ui/core/task-status.ts`), fed the live
+registry snapshot by cli.tsx's `buildStatusBar` and refreshed on delivery
+and turn end. `/tasks` opens a bordered view (`src/ui/views/TaskList.tsx`)
+listing id/agent/depth/status/age with a per-task stop (Enter): the
+orchestrator's `abortTask()` fires that task's own abort signal — each run's
+signal is linked to the parent's at spawn, so Esc/Ctrl+C still aborts every
+sub-run — and marks the record aborted, suppressing its late delivery while
+siblings keep running. Streamed sub-run text deltas (`{kind:"text"}` progress
+events, forwarded from the sub-run's `onText`) render as dim `[agent <name>]`
+transcript rows, coalesced at ~200 ms by the App's mount-time sink; cli.tsx's
+`runAgentTurnCore` routes every progress event through both that sink and the
+per-turn callback, so text renders whether or not a turn is active.
+
 ### Agent definitions (feature-plans.md §F4, shipped 2026-08-15)
 
 Frontmatter agent definitions let a delegation name a *persona* instead of

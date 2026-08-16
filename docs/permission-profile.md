@@ -254,11 +254,36 @@ startup notice. This mirrors Codex's backend choice and finally closes the
   does one internally), network denied by default. workspace-write adds
   `(allow file-write* (subpath "<trusted root>"))` for the session
   workspace root fixed at startup — never the per-call `cwd` (SBPL subpath
-  matching is directory-boundary aware) — and `(allow network-outbound)`.
-  `unrestricted` gets no prefix at all. Verified empirically on macOS
-  2026-08-13: `ls`, `git status`, `node -e 'console.log(1)'` run under both
-  sandboxed levels; writes outside the write-set and network connects fail
-  with EPERM-equivalent denials (non-zero exit).
+  matching is directory-boundary aware) — the two write carve-outs below,
+  and `(allow network-outbound)`. `unrestricted` gets no prefix at all.
+  Verified empirically on macOS 2026-08-13: `ls`, `git status`,
+  `node -e 'console.log(1)'` run under both sandboxed levels; writes
+  outside the write-set and network connects fail with EPERM-equivalent
+  denials (non-zero exit).
+- **Write carve-outs (2026-08-15, battery-proven).** workspace-write's
+  write boundary has exactly two deliberate exceptions, both added because
+  a real dev-toolchain battery (every command through the shipped
+  `runBashTimed` under the shipped profile, scratch workspace in `/tmp`)
+  proved the toolchain cannot run without them — the two-layer split is
+  preserved, these are the *level's* defaults, not policy changes:
+  - **Ephemeral temp** — literal `/tmp` (realpath `/private/tmp` on macOS)
+    plus the session `$TMPDIR` (e.g. `/var/folders/…/T`), emitted as
+    realpath'd `(allow file-write* (subpath …))` lines. Battery evidence:
+    `mktemp -d` failed with EPERM on `$TMPDIR`; a raw `echo > /tmp/x` and
+    `env -u TMPDIR mktemp -d` (the `/tmp` fallback) failed too. Compilers,
+    interpreters, `git`, `tar` and package managers stage ephemeral files
+    here; SOTA-aligned (Codex ships the same `:tmpdir` option).
+  - **npm cache** — `~/.npm` (realpath'd). Battery evidence: `npm install
+    is-number` failed with EPERM on `~/.npm/_cacache/tmp/…` (and
+    `~/.npm/_logs`). With the carve-out the same install completes
+    (`node_modules` + `package-lock.json` land in the workspace, cache in
+    `~/.npm`).
+  strict-sandbox gains none of these — read-only stays absolute. The
+  carve-out subpaths are the physical forms, and SBPL matches resolved
+  paths: a symlink planted inside a carve-out dir that points at a secret
+  (`/private/tmp/link → ~/.ssh`) still gets its write denied (verified
+  in the same battery). Control intact: `echo hi > ~/Documents/…` stays
+  denied before and after.
 - **Trusted-root invariant + cwd containment (item 8.6).** The Seatbelt
   write-set root is the trusted workspace root fixed at startup (the tool
   handler's `ctx.workingDir`, realpath-resolved via nearest-existing-
@@ -287,7 +312,14 @@ startup notice. This mirrors Codex's backend choice and finally closes the
   profile's fs `deny` rules (`**/*.env` …) are likewise policy-layer only;
   SBPL expresses the level's defaults, not the rules. (4) macOS-only and
   flag-gated: on other platforms `sandbox.enabled` warns once at startup
-  and runs policy-only.
+  and runs policy-only. (5) The carve-outs are shared writable space: a
+  workspace-write child can read and write anything under `/private/tmp`,
+  its `$TMPDIR` and `~/.npm` (that is their purpose), subject to normal
+  OS permissions — `/tmp`'s sticky bit still blocks deleting others' files,
+  and symlink escape out of the carve-outs is closed (resolved-path
+  matching, verified). Accepted: ephemeral temp and a package-manager
+  cache are low-value targets compared to the workspace-integrity the
+  write-set protects.
 
 ## 9. Migration & back-compat
 
@@ -319,7 +351,11 @@ startup notice. This mirrors Codex's backend choice and finally closes the
   network to non-allowlisted host) fail closed. **Shipped 2026-08-13**:
   `src/sandbox/seatbelt.test.ts` (write-outside fails, local-server
   network tests fail closed under strict-sandbox, pass under
-  workspace-write).
+  workspace-write). **Hardened 2026-08-15 (pre-0.3.0)**: real
+  dev-toolchain battery under the shipped profile proved the temp + npm
+  carve-outs necessary (above); re-verified control (`~/` escape write)
+  still denied, and a real `npm install` under the sandbox is now a
+  regression test in the suite.
 
 ## 11. Owner review — resolved 2026-08-13
 

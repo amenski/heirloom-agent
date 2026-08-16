@@ -2,7 +2,7 @@ import type { Provider } from "../providers/types.js";
 import type { Message, ToolCall, ToolDef, ToolOutput } from "../types.js";
 import type { ToolHandler, ToolContext } from "../tools/types.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { runAgent } from "../agent.js";
+import { runAgent, type AgentResult } from "../agent.js";
 import { Compactor } from "../compaction/compactor.js";
 import { ModeLoader } from "../modes/loader.js";
 import { AgentLoader } from "../agents/index.js";
@@ -10,6 +10,19 @@ import type { PermissionEngine, ProfileEvaluator } from "../permissions/index.js
 import type { HookRunner } from "../hooks/index.js";
 import { subagentAuditStore } from "../sessions/store.js";
 import { TodoStore } from "../tools/todo.js";
+import { TaskRegistry } from "./runner.js";
+
+/**
+ * A progress event from a running sub-agent, surfaced to the parent UI so a
+ * delegation reads as live work instead of a stalled turn. `depth` is the
+ * sub-agent's nesting level (0 = spawned by the top-level agent), letting the
+ * renderer indent nested runs.
+ */
+export type SubagentProgress =
+  | { kind: "start"; task: string; agent?: string; depth: number }
+  | { kind: "tool"; name: string; depth: number }
+  | { kind: "end"; task: string; depth: number }
+  | { kind: "text"; text: string; depth: number; agent?: string };
 
 export interface OrchestratorOptions {
   /**
@@ -46,6 +59,14 @@ export interface OrchestratorOptions {
    */
   askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | "posture">;
   /**
+   * Surfaces a sub-agent's tool activity to the parent UI while it runs.
+   * Without this the parent renders nothing between the `new_task` header and
+   * the final summary — a multi-minute delegation is indistinguishable from a
+   * hang. Re-pointed per turn like askUser, since the UI's callback bundle is
+   * rebuilt each turn. Headless leaves it unset (nothing to render).
+   */
+  onSubagentProgress?: (event: SubagentProgress) => void;
+  /**
    * Resolved at sub-agent spawn time. Lets Esc/Ctrl+C at the top level abort
    * an in-flight sub-agent instead of leaving it running to completion.
    */
@@ -55,6 +76,15 @@ export interface OrchestratorOptions {
   hooks?: HookRunner;
   maxDepth?: number;
   maxSubTurns?: number;
+  /**
+   * Async delivery (async-subagents.md §2): called once per completed sub-run
+   * (done/failed/aborted) with the formatted result message
+   * (`Sub-agent result (task <id>): <summary>`). The App/exec-runner wire this
+   * to their wake path — append + auto-start a turn / continue the headless
+   * loop. Re-pointable via setOnTaskResult for the same per-session reason
+   * setAskUser exists.
+   */
+  onTaskResult?: (taskId: string, message: string) => void;
 }
 
 export class Orchestrator {
@@ -69,6 +99,17 @@ export class Orchestrator {
     hooks?: HookRunner;
   };
   private askUser?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | "posture">;
+  private onSubagentProgress?: (event: SubagentProgress) => void;
+  private onTaskResult?: (taskId: string, message: string) => void;
+
+  /** In-memory task registry for detached sub-runs (async-subagents.md §3).
+   *  Public so the App/exec-runner can kill pending runs on exit, the headless
+   *  loop can wait for completions, and the /tasks view can list + stop them. */
+  readonly tasks = new TaskRegistry();
+  /** Per-task abort controllers (async-subagents.md §3, Q4 — /tasks stop).
+   *  Keyed by task id, created at spawn, fired by abortTask(). Each is linked
+   *  to the parent signal, so Esc/Ctrl+C still aborts every sub-run. */
+  private taskAborts = new Map<string, AbortController>();
 
   constructor(options: OrchestratorOptions) {
     this.options = {
@@ -77,6 +118,8 @@ export class Orchestrator {
       ...options,
     };
     this.askUser = options.askUser;
+    this.onSubagentProgress = options.onSubagentProgress;
+    this.onTaskResult = options.onTaskResult;
   }
 
   /**
@@ -87,6 +130,36 @@ export class Orchestrator {
    */
   setAskUser(askUser: ((toolName: string, args: Record<string, unknown>) => Promise<boolean | "posture">) | undefined): void {
     this.askUser = askUser;
+  }
+
+  /**
+   * Re-point the progress sink, for the same reason setAskUser exists: the
+   * interactive CLI rebuilds its callback bundle every turn, so a closure
+   * captured at startup would render into a dead turn's output stream.
+   */
+  setOnSubagentProgress(onSubagentProgress: ((event: SubagentProgress) => void) | undefined): void {
+    this.onSubagentProgress = onSubagentProgress;
+  }
+
+  /**
+   * Re-point the async result delivery sink. The App/exec-runner register their
+   * wake handler once per session (it touches only refs); headless leaves it
+   * wired to its pending-results queue. Unlike askUser/progress it is NOT
+   * turn-scoped — delivery happens between turns by design.
+   */
+  setOnTaskResult(onTaskResult: ((taskId: string, message: string) => void) | undefined): void {
+    this.onTaskResult = onTaskResult;
+  }
+
+  /**
+   * Abort ONE running sub-run — the /tasks stop action (async-subagents.md
+   * §3, Q4). Fires that task's abort signal so runAgent stops at its next
+   * turn boundary, and marks the record aborted so the late delivery is
+   * suppressed (the same rule abortAll uses on exit). Siblings keep running.
+   */
+  abortTask(taskId: string): void {
+    this.taskAborts.get(taskId)?.abort();
+    this.tasks.abortTask(taskId);
   }
 
   register(registry: ToolRegistry): void {
@@ -109,11 +182,15 @@ export class Orchestrator {
       name: "new_task",
       description:
         "Spawn a sub-agent to handle a discrete, isolated task. The sub-agent runs in a " +
-        "fresh context with its own message history and tool access. When it completes, you " +
-        "receive a summary of what was done — you do not see raw file diffs or tool outputs " +
-        "from the sub-agent.\n\n" +
+        "fresh context with its own message history and tool access. The call returns " +
+        "immediately with a task id; the sub-agent runs in the background and its summary " +
+        "arrives as a separate message ('Sub-agent result (task <id>): …') — you do not see " +
+        "raw file diffs or tool outputs from the sub-agent.\n\n" +
         "Use this to delegate implementation work, research, or analysis to a specialized " +
-        "mode or a defined agent. Each sub-agent can itself spawn sub-agents up to a maximum depth of 3.",
+        "mode or a defined agent. End your turn after spawning and await the results; never " +
+        "poll for a result and never re-spawn a task that is still running. At most 3 " +
+        "sub-agents run concurrently — spawning beyond that returns a queue-full error. " +
+        "Each sub-agent can itself spawn sub-agents up to a maximum depth of 3.",
       parameters: {
         type: "object",
         properties: {
@@ -239,51 +316,126 @@ export class Orchestrator {
         return this.options.registry.execute(call, { ...ctx, todoStore: subStore, sessionStore: subAuditStore });
       };
 
-      // SubagentStart/SubagentStop fire around the actual spawn (hooks-spec.md
-      // §2); depth/mode failures above never spawn anything, so no hooks fire.
-      await this.options.hooks?.dispatch("SubagentStart", { task: description });
-      try {
-        const result = await runAgent(description, {
-          provider,
-          tools: subTools,
-          executeTool: subExecuteTool,
-          compactor: subCompactor,
-          permissions: this.options.permissions,
-          permissionProfile: this.options.profile,
-          askUser: this.askUser,
-          maxTurns: this.options.maxSubTurns,
-          mode: subMode,
-          // The defined agent's instructions prepend the sub-agent's system
-          // prompt (prompt.ts prepends agentInstructions to the preamble).
-          agentInstructions,
-          hooks: this.options.hooks,
-          // Parent session identity behind the audit-only view: permission
-          // and token rows land in the parent's JSONL tagged "subagent";
-          // every other write is blocked by the view (subsystems.md §7).
-          sessionStore: subAuditStore,
-          sessionId: ctx.sessionId,
-          signal: this.options.getSignal?.(),
-          getTodos: () => subStore.getTodos(),
-        });
-
-        const summary = summarizeMessages(result.messages, description);
-        return { content: summary };
-      } catch (err) {
-        return {
-          content: `Sub-task failed after error: ${(err as Error).message}`,
-          error: `SUBTASK_ERROR: ${(err as Error).message}`,
-        };
-      } finally {
-        await this.options.hooks?.dispatch("SubagentStop", { task: description });
+      // Async contract (async-subagents.md §1-3): spawn returns immediately and
+      // the sub-run executes detached through the in-memory task registry. The
+      // run inherits everything today's synchronous run did — provider
+      // resolution, mode/model/instructions, permission/profile inheritance,
+      // audit-only store, isolated todo store — plus the parent signal captured
+      // at spawn (Esc/Ctrl+C aborts, as today).
+      //
+      // Per-task abort (async-subagents.md §3, Q4 — /tasks stop): every spawned
+      // run gets its own controller linked to the parent signal, so abortTask()
+      // can kill exactly one sub-run while Esc/Ctrl+C still kills them all. The
+      // controller is registered under the task id as soon as spawn returns
+      // (the detached run starts asynchronously, so the registration always
+      // lands before it can be aborted).
+      const taskAbort = new AbortController();
+      const parentSignal = this.options.getSignal?.();
+      if (parentSignal) {
+        if (parentSignal.aborted) {
+          taskAbort.abort();
+        } else {
+          parentSignal.addEventListener("abort", () => taskAbort.abort(), { once: true });
+        }
       }
+
+      const spawned = this.tasks.spawn({
+        description,
+        depth,
+        agentName,
+        run: async () => {
+          try {
+            const result = await runAgent(description, {
+              provider,
+              tools: subTools,
+              executeTool: subExecuteTool,
+              compactor: subCompactor,
+              permissions: this.options.permissions,
+              permissionProfile: this.options.profile,
+              askUser: this.askUser,
+              maxTurns: this.options.maxSubTurns,
+              mode: subMode,
+              // The defined agent's instructions prepend the sub-agent's system
+              // prompt (prompt.ts prepends agentInstructions to the preamble).
+              agentInstructions,
+              hooks: this.options.hooks,
+              // Parent session identity behind the audit-only view: permission
+              // and token rows land in the parent's JSONL tagged "subagent";
+              // every other write is blocked by the view (subsystems.md §7).
+              sessionStore: subAuditStore,
+              sessionId: ctx.sessionId,
+              signal: taskAbort.signal,
+              getTodos: () => subStore.getTodos(),
+              // Live tool activity for the parent UI. Only the tool name
+              // travels — args can carry file contents and are already rendered
+              // by the sub-agent's own permission prompts when they matter.
+              // Read at fire time (not captured): the progress sink is
+              // re-pointed per turn, and an async sub-run's tool/end events may
+              // land in a later turn's live stream.
+              onToolStart: (name: string) =>
+                this.onSubagentProgress?.({ kind: "tool", name, depth }),
+              // Live sub-run text (async-subagents.md §4): streamed text deltas
+              // flow to the parent UI as progress events — the App's mount-time
+              // sink renders them as dim `[agent <name>]` transcript rows,
+              // regardless of turn state.
+              onText: (c: string) =>
+                this.onSubagentProgress?.({ kind: "text", text: c, depth, agent: agentName }),
+            });
+            const summary = summarizeMessages(result.messages, description, result.stopReason);
+            return {
+              status: result.stopReason === "aborted" ? "aborted" : "done",
+              summary,
+            };
+          } finally {
+            this.onSubagentProgress?.({ kind: "end", task: description, depth });
+            await this.options.hooks?.dispatch("SubagentStop", { task: description });
+          }
+        },
+        deliver: (taskId, message) => this.onTaskResult?.(taskId, message),
+      });
+      if ("error" in spawned) {
+        return {
+          content: spawned.error,
+          error: "QUEUE_FULL",
+        };
+      }
+      this.taskAborts.set(spawned.taskId, taskAbort);
+
+      // SubagentStart + the live "start" event fire at spawn (hooks-spec.md §2,
+      // async-subagents.md §3); SubagentStop + "end" fire at completion inside
+      // the detached run above. Depth/mode/cap failures never spawn, so no
+      // hooks fire for them.
+      await this.options.hooks?.dispatch("SubagentStart", { task: description });
+      this.onSubagentProgress?.({ kind: "start", task: description, agent: agentName, depth });
+      const running = this.tasks.runningCount();
+      return {
+        content: `task ${spawned.taskId} spawned — result will follow (depth ${depth}, ${running}/${this.tasks.maxConcurrent} sub-agents running)`,
+      };
     };
   }
 }
 
-function summarizeMessages(messages: Message[], task: string): string {
-  const lastAssistant = [...messages]
+function summarizeMessages(
+  messages: Message[],
+  task: string,
+  stopReason?: AgentResult["stopReason"],
+): string {
+  // Three message shapes share role "assistant" but are not the sub-agent's
+  // answer: a tool-calling turn (content is usually null, agent.ts), a
+  // reasoning-only turn (meta.asThinking), and a parse-error correction turn.
+  // Picking the newest assistant message blindly lands on one of those
+  // whenever the run ends on a tool call, reporting "no final message" for a
+  // run that did produce findings. Take the newest *answer* instead.
+  const lastAnswer = [...messages]
     .reverse()
-    .find((m) => m.role === "assistant")?.content;
+    .find(
+      (m) =>
+        m.role === "assistant" &&
+        !m.meta?.asThinking &&
+        !m.toolCalls?.length &&
+        typeof m.content === "string" &&
+        m.content.trim() !== "",
+    )?.content;
 
   const toolCount = messages.filter((m) => m.role === "tool").length;
 
@@ -291,8 +443,17 @@ function summarizeMessages(messages: Message[], task: string): string {
   parts.push(`**Task**: ${task}`);
   parts.push(`**Tools executed**: ${toolCount}`);
 
-  if (lastAssistant) {
-    parts.push(`**Result**: ${lastAssistant.slice(0, 500)}`);
+  if (lastAnswer) {
+    parts.push(`**Result**: ${lastAnswer.slice(0, 500)}`);
+  } else if (stopReason === "max_turns") {
+    // Distinguishable from a silent finish: the parent (and the model) can
+    // tell the sub-agent ran out of turns mid-work rather than choosing to
+    // say nothing, and can re-delegate a narrower slice.
+    parts.push(
+      `**Result**: incomplete — sub-agent hit its turn limit before answering`,
+    );
+  } else if (stopReason === "aborted") {
+    parts.push(`**Result**: aborted before the sub-agent answered`);
   } else {
     parts.push(`**Result**: completed (no final message from sub-agent)`);
   }

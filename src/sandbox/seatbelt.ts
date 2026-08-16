@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ProfileLevel } from "../permissions/index.js";
 
@@ -10,10 +10,13 @@ import type { ProfileLevel } from "../permissions/index.js";
  * The policy layer (ProfileEvaluator, src/permissions/profile.ts) decides
  * allow/deny per call; the Seatbelt layer makes the level's defaults hold in
  * the OS for bash children: strict-sandbox = read-only fs + no network,
- * workspace-write = write only workspace roots + network on. The .git
- * always-denied set is deliberately **not** expressed here — SBPL has no
- * gitignore globs, and the policy layer already enforces it (documented
- * residual, permission-profile.md §8).
+ * workspace-write = write only workspace roots + network on, with two
+ * deliberate, battery-proven carve-outs to the write boundary (ephemeral
+ * temp: literal /tmp + the session $TMPDIR; npm cache: ~/.npm — see
+ * {@link workspaceWriteCarveouts}). The .git always-denied set is
+ * deliberately **not** expressed here — SBPL has no gitignore globs, and the
+ * policy layer already enforces it (documented residual,
+ * permission-profile.md §8).
  *
  * Two-layer network rationale (all-or-nothing): SBPL's
  * `(allow network-outbound (remote ip "*:443"))` matches IPs only — it
@@ -65,6 +68,39 @@ function sbplQuote(path: string): string {
 }
 
 /**
+ * The workspace-write write carve-outs — the only deliberate exceptions to
+ * the write boundary, both proven necessary by the 2026-08-15 dev-toolchain
+ * battery (real `runBashTimed` under this profile; permission-profile.md §8):
+ *
+ * 1. Ephemeral temp — literal `/tmp` (realpath `/private/tmp` on macOS) and
+ *    the session `$TMPDIR` (e.g. `/var/folders/…/T`). Battery evidence:
+ *    `mktemp -d` failed with EPERM on `$TMPDIR`; a raw `echo > /tmp/x` and
+ *    `env -u TMPDIR mktemp -d` (the /tmp fallback) also failed. Compilers,
+ *    interpreters, `git`, `tar` and package managers all stage temp files
+ *    here — SOTA-aligned (Codex ships the same `:tmpdir` option).
+ * 2. The npm cache — `~/.npm`. Battery evidence: `npm install is-number`
+ *    failed with EPERM on `~/.npm/_cacache/tmp/…` (and `~/.npm/_logs`).
+ *
+ * strict-sandbox gains none of these (read-only stays absolute). The
+ * carve-outs are literal realpath'd subpaths, so a symlink planted in a
+ * carve-out dir resolves to its target and the sandbox still denies writes
+ * that land outside the subpath set.
+ */
+function workspaceWriteCarveouts(): string[] {
+  const literalTmp = seatbeltWorkspaceRoot("/tmp");
+  const sessionTmp = seatbeltWorkspaceRoot(tmpdir());
+  const npmCache = seatbeltWorkspaceRoot(join(homedir(), ".npm"));
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const p of [literalTmp, sessionTmp, npmCache]) {
+    if (seen.has(p)) continue; // TMPDIR unset on some hosts ⇒ tmpdir() === /tmp
+    seen.add(p);
+    lines.push(`(allow file-write* (subpath "${sbplQuote(p)}"))`);
+  }
+  return lines;
+}
+
+/**
  * The SBPL profile source for a level, with the session workspace root
  * fixed at startup — never the per-call cwd (item 8.6) — as the
  * workspace-write write-set. `trustedRoot` is expected already
@@ -74,13 +110,15 @@ function sbplQuote(path: string): string {
  * `node -e 'console.log(1)'` all run under the strict profile; writes and
  * network connects fail with EPERM-equivalent denials; the workspace-write
  * subpath is directory-boundary aware (a `(subpath "/a")` rule does not
- * match "/a2/...").
+ * match "/a2/..."). The carve-outs (temp + npm cache) are workspace-write
+ * only, battery-proven 2026-08-15.
  */
 export function buildSeatbeltProfile(level: SandboxLevel, trustedRoot: string): string {
   const lines = ["(version 1)", "(deny default)", ...READ_ONLY_CORE];
   if (level === "workspace-write") {
     lines.push(
       `(allow file-write* (subpath "${sbplQuote(trustedRoot)}"))`,
+      ...workspaceWriteCarveouts(),
       "(allow network-outbound)",
     );
   }

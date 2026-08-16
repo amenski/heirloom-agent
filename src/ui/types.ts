@@ -5,6 +5,8 @@ import type { KeybindingMap, KeybindingConfig, KeybindingAction } from "./keybin
 import type { StatusLineManager } from "./statusline/index.js";
 import type { HookRunner } from "../hooks/index.js";
 import type { ProfileEvaluator } from "../permissions/index.js";
+import type { TaskRecord } from "../orchestrator/runner.js";
+import type { SubagentProgress } from "../orchestrator/index.js";
 
 export interface ModelEntry {
   provider: string;
@@ -176,6 +178,28 @@ export interface AppContext {
    */
   saveProviderKey?: (provider: string, key: string) => Promise<{ ok: boolean; error?: string }>;
   runAgentTurnCore: (input: string, callbacks: AgentBridgeCallbacks, imageUrls?: string[], planMode?: boolean) => Promise<any>;
+  /**
+   * Register the async sub-agent result delivery handler (async-subagents.md
+   * §2): the orchestrator calls it once per completed sub-run with the
+   * formatted result message. The App appends it to the conversation and wakes
+   * the parent (idle → new turn, active turn → steering mailbox, mid-typing →
+   * queued behind the submission).
+   */
+  setSubagentResultHandler?: (handler: (taskId: string, message: string) => void) => void;
+  /** Kill pending sub-runs on exit (async-subagents.md §3, Q3 — in-memory,
+   *  die on exit, where background jobs get killed). */
+  abortRunningTasks?: () => void;
+  /** Live snapshot of the in-memory task registry (async-subagents.md §3-4):
+   *  the /tasks view renders it. */
+  getTasks?: () => TaskRecord[];
+  /** Abort ONE running sub-run (async-subagents.md §3, Q4 — the /tasks stop
+   *  action). Siblings keep running; the aborted run never delivers. */
+  abortTask?: (taskId: string) => void;
+  /** Register the App's mount-time sub-run progress sink (async-subagents.md
+   *  §4): every progress event routes through it AND the per-turn callback,
+   *  so streamed text deltas render into the transcript regardless of turn
+   *  state (the parent turn has ended while sub-runs work). */
+  setSubagentProgress?: (handler: ((event: SubagentProgress) => void) | undefined) => void;
   resumeSession?: (sessionId: string) => Promise<Message[] | null>;
   showResumeOnStart?: boolean;
   /** One-time notice (e.g. "Resumed <id>") shown in the scrollback on mount. */

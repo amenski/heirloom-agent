@@ -62,6 +62,7 @@ import SkillList from "./views/SkillList.js";
 import ModeList from "./views/ModeList.js";
 import UndoSelector from "./views/UndoSelector.js";
 import McpStatusList from "./views/McpStatusList.js";
+import TaskList from "./views/TaskList.js";
 import PermissionHistoryList from "./views/PermissionHistoryList.js";
 import UsageView from "./views/UsageView.js";
 import ResumeChooser from "./views/ResumeChooser.js";
@@ -272,6 +273,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     return () => { live = false; };
   }, [showUndoSelector]);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const [showPermissionHistory, setShowPermissionHistory] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   // Startup resume chooser: null until a resumed session offers the load/compact
@@ -314,6 +316,15 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
   // input becomes interactive mid-turn — the queue must drain on real turn
   // completion, not on that first-token signal.
   const turnActiveRef = useRef(false);
+  // Current text in the input box, mirrored from PromptInput's onDraftChange.
+  // Lets the sub-agent result wake tell "user is mid-typing" apart from "idle"
+  // so the result queues behind the pending submission instead of preempting
+  // it (async-subagents.md §2, Q1). Stable identity so PromptInput's memo
+  // keeps skipping re-renders (the handler touches only the ref).
+  const draftTextRef = useRef("");
+  const onPromptDraftChange = useCallback((text: string) => {
+    draftTextRef.current = text;
+  }, []);
 
   useEffect(() => {
     if (ctx.showResumeOnStart) {
@@ -331,6 +342,37 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setResumeChoice({ count: ctx.initialMessages.length });
     }
   }, []);
+
+  // Async sub-agent delivery (async-subagents.md §2, Q1). Registered once at
+  // mount — the handler touches only refs, so it never goes stale across
+  // turns. Wake rule: a completed sub-run's result is queued like a mid-turn
+  // submission, then
+  //   - idle (no turn, no draft) → the drain starts a turn with the result as
+  //     its prompt right away;
+  //   - a turn is active → the existing steering mailbox (pollSteeringMessage)
+  //     consumes the queue head at the next decision point;
+  //   - the user is mid-typing → it stays queued behind the pending submission
+  //     (submitted first, result drains after — the simplest correct version of
+  //     the race the design leaves to us).
+  // In every case the message runs through the normal turn path, so it is
+  // echoed and persisted exactly once, like any user message.
+  useEffect(() => {
+    ctx.setSubagentResultHandler?.((_taskId, message) => {
+      // The completed run just left the registry — refresh the bar so the
+      // `● task <id> running` segment (or the wake turn's own rebuild) can
+      // drop it without waiting for the next turn to end.
+      setStatusLine(ctx.buildStatusBar());
+      messageQueueRef.current.push({ kind: "message", text: message, at: Date.now() });
+      setQueuedItems(messageQueueRef.current.map((q) => ({ text: q.text, at: q.at })));
+      if (
+        !turnActiveRef.current &&
+        !modalOpenRef.current &&
+        draftTextRef.current.trim() === ""
+      ) {
+        drainQueueRef.current();
+      }
+    });
+  }, [ctx]);
 
   // Lifecycle hooks (hooks-spec.md): SessionStart fires once at session
   // startup, after the TOFU trust check, before the first turn. The App owns
@@ -452,6 +494,62 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       for (const t of timers.values()) clearTimeout(t);
     };
   }, []);
+
+  // Async sub-run live text (async-subagents.md §4): a running sub-agent's
+  // streamed text renders as dim `[agent <name>]` transcript rows — coalesced
+  // per agent at ~200ms exactly like background-job output above. The sink is
+  // registered ONCE at mount: the per-turn progress sink is re-pointed every
+  // turn, but sub-runs work BETWEEN turns, so this subscription must survive
+  // turn boundaries (cli.tsx's runAgentTurnCore routes every progress event
+  // through both). A finishing run ("end") flushes its buffered tail
+  // immediately.
+  useEffect(() => {
+    const coalescers = new Map<string, JobOutputCoalescer>();
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    const flushAgent = (key: string) => {
+      const timer = timers.get(key);
+      if (timer) clearTimeout(timer);
+      timers.delete(key);
+      const coalescer = coalescers.get(key);
+      if (!coalescer) return;
+      coalescer.flush();
+      if (!coalescer.hasPending) coalescers.delete(key);
+    };
+    const appendAgentRows = (label: string, text: string) => {
+      const body = text.replace(/\n$/, "");
+      if (!body) return;
+      const rows = body.split("\n").map((l) => `[${label}] ${l}`);
+      setOutputLines((prev) => [
+        ...prev,
+        ...rows.map((l) => (theme.colorEnabled ? `\x1b[2m${l}\x1b[0m` : l)),
+      ]);
+    };
+    ctx.setSubagentProgress?.((event) => {
+      if (event.kind === "text") {
+        const label = `agent ${event.agent ?? "sub"}`;
+        const key = `${label}:${event.depth}`;
+        let coalescer = coalescers.get(key);
+        if (!coalescer) {
+          coalescer = new JobOutputCoalescer((text) => appendAgentRows(label, text));
+          coalescers.set(key, coalescer);
+        }
+        coalescer.push(event.text);
+        if (!timers.has(key)) {
+          timers.set(key, setTimeout(() => {
+            timers.delete(key);
+            flushAgent(key);
+          }, 200));
+        }
+      } else if (event.kind === "end") {
+        // The run finished: flush every live coalescer so its tail renders
+        // without waiting for the cadence.
+        for (const key of [...coalescers.keys()]) flushAgent(key);
+      }
+    });
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+    };
+  }, [ctx]);
 
   // Mirror the shared todo store into React state. The store pushes a new array
   // per update_todo_list call; event-driven, so no timers repaint the panel.
@@ -770,6 +868,9 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       cancelled.current = false;
       reasoningRef.current = { buffer: "", flushed: false };
       const turnStart = Date.now();
+      // Set on each sub-agent "start" event so the "finished" line can report
+      // that sub-run's own duration rather than the whole turn's.
+      let subagentStart = turnStart;
 
       announceToScreenReader("Heirloom is processing your request", "polite");
 
@@ -937,6 +1038,38 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         onDiagnostic: () => {},
         onRetry: () => {},
         onCompacted: () => {},
+        // Live sub-agent activity. Without these lines the parent renders
+        // nothing between the new_task header and the final summary, so a
+        // long delegation is indistinguishable from a hang. Indented and
+        // dimmed so a sub-agent's tools never read as the parent's own.
+        onSubagentProgress: (event: {
+          kind: "start" | "tool" | "end";
+          task?: string;
+          name?: string;
+          agent?: string;
+          depth: number;
+        }) => {
+          flushReasoning();
+          flushStream();
+          const indent = "  ".repeat(event.depth + 1);
+          // Elapsed time is the liveness signal. A sub-agent goes quiet for a
+          // full model turn between tool calls, and the hint-bar dots are too
+          // subtle to answer "is it still running?" — stamping each line means
+          // the last row on screen always says how long ago it moved.
+          const at = Math.round((Date.now() - turnStart) / 1000);
+          let line: string;
+          if (event.kind === "start") {
+            const who = event.agent ? `${event.agent} agent` : "sub-agent";
+            subagentStart = Date.now();
+            line = `${indent}⌁ ${who} started`;
+          } else if (event.kind === "tool") {
+            line = `${indent}⌁ ${event.name} · ${at}s`;
+          } else {
+            const took = Math.round((Date.now() - subagentStart) / 1000);
+            line = `${indent}⌁ sub-agent finished · ${took}s`;
+          }
+          scheduleOutput(theme.colorEnabled ? `\x1b[2m${line}\x1b[0m` : line);
+        },
         onLoopDetected: (m: string) => {
           scheduleOutput(`[${m}]`);
         },
@@ -1284,6 +1417,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       setShowMcpStatus(true);
       return;
     }
+    if (trimmed === "/tasks") {
+      setShowTasks(true);
+      return;
+    }
     if (trimmed === "/permissions" || trimmed === "/permissions history") {
       setShowPermissionHistory(true);
       return;
@@ -1598,6 +1735,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
+    if (showTasks) {
+      return;
+    }
+
     if (showPermissionHistory) {
       return;
     }
@@ -1689,6 +1830,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     // hangs at a blank prompt. The transcript stays in scrollback untouched —
     // only the interactive frame goes away.
     setExitHint(`Resume: heirloom --resume ${ctx.sessionId}`);
+    // Die on exit (async-subagents.md §3, Q3): kill pending sub-runs where
+    // background jobs get killed. In-memory only — nothing to restore on
+    // resume; the process exit is the actual kill.
+    ctx.abortRunningTasks?.();
     // Stop fires on /exit; SessionEnd immediately after, before teardown
     // (hooks-spec.md §2).
     if (ctx.hooks) {
@@ -1706,7 +1851,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
 
   const modalOpen =
     !!askPrompt || !!askQuestionPrompt || !!hookTrustPrompt || !!skillTrustPrompt || !!planPrompt || showSessionList || showSkillList || showModeList ||
-    showUndoSelector || showMcpStatus || showPermissionHistory || showUsage || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
+    showUndoSelector || showMcpStatus || showTasks || showPermissionHistory || showUsage || showModelDropdown || showThemeDropdown || showEffortSelector || showHelp || showCommandPalette ||
     !!resumeChoice || compactingResume;
   const prevModalOpenRef = useRef(modalOpen);
   modalOpenRef.current = modalOpen;
@@ -1924,6 +2069,20 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
+      {showTasks && (
+        <TaskList
+          getTasks={ctx.getTasks ?? (() => [])}
+          abortTask={(id) => {
+            ctx.abortTask?.(id);
+            // The status bar's task segment derives from registry state —
+            // refresh it so the stop is visible on the row immediately.
+            setStatusLine(ctx.buildStatusBar());
+          }}
+          onClose={() => setShowTasks(false)}
+          width={term.columns}
+        />
+      )}
+
       {showPermissionHistory && (
         <PermissionHistoryList
           sessionStore={ctx.sessionStore}
@@ -2047,7 +2206,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         </Box>
       )}
 
-      {!askPrompt && !askQuestionPrompt && !hookTrustPrompt && !skillTrustPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showPermissionHistory && !showUsage && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
+      {!askPrompt && !askQuestionPrompt && !hookTrustPrompt && !skillTrustPrompt && !planPrompt && !showSessionList && !showSkillList && !showModeList && !showUndoSelector && !showMcpStatus && !showTasks && !showPermissionHistory && !showUsage && !showModelDropdown && !showThemeDropdown && !showEffortSelector && !showHelp && !showCommandPalette && !resumeChoice && !compactingResume && (
         <PromptInput
           screenWidth={term.columns}
           promptHistory={promptHistory}
@@ -2061,6 +2220,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           onCyclePosture={() => cyclePosture()}
           onOpenModePicker={() => setShowModeList(true)}
           completer={ctx.completer}
+          onDraftChange={onPromptDraftChange}
           modelPill={ctx.buildModelPill?.()}
           statusLine={
             <StatusBar

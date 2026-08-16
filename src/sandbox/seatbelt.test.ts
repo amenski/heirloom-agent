@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, existsSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   buildSeatbeltProfile,
   sandboxPrefix,
@@ -85,6 +85,25 @@ describe("buildSeatbeltProfile", () => {
     expect(p).toContain('(allow file-write* (subpath "/private/tmp/ws"))');
     expect(p).toContain("(allow network-outbound)");
     expect(p).toContain("(deny default)");
+  });
+
+  it("workspace-write: carries the battery-proven write carve-outs (literal /tmp, $TMPDIR, ~/.npm)", () => {
+    const p = buildSeatbeltProfile("workspace-write", "/ws");
+    // The 2026-08-15 dev-toolchain battery: mktemp failed on $TMPDIR, a raw
+    // /tmp write failed, env -u TMPDIR mktemp fell back to /tmp and failed,
+    // npm install failed on ~/.npm/_cacache. All three subpaths appear,
+    // realpath'd (the form the kernel matches).
+    expect(p).toContain(`(allow file-write* (subpath "${realpathSync("/tmp")}"))`);
+    expect(p).toContain(`(allow file-write* (subpath "${realpathSync(tmpdir())}"))`);
+    expect(p).toContain(`(allow file-write* (subpath "${seatbeltWorkspaceRoot(join(homedir(), ".npm"))}"))`);
+  });
+
+  it("strict-sandbox: gains none of the carve-outs (read-only stays absolute)", () => {
+    const p = buildSeatbeltProfile("strict-sandbox", "/ws");
+    expect(p).not.toContain("(subpath");
+    expect(p).not.toContain("/private/tmp");
+    expect(p).not.toContain(".npm");
+    expect(p).toContain('(allow file-write* (literal "/dev/null"))');
   });
 
   it("escapes quotes/backslashes in the workspace root for SBPL", () => {
@@ -243,8 +262,11 @@ describe("seatbelt enforcement (macOS)", () => {
 
   itOnDarwin("workspace-write: writes inside the workspace succeed, outside fail", async () => {
     const ws = mkdtempSync(join(tmpdir(), "seatbelt-ws-"));
-    const outsideDir = mkdtempSync(join(tmpdir(), "seatbelt-out-"));
-    const outside = join(outsideDir, "write.txt");
+    // Home root is outside the write-set — and NOT inside the temp/npm
+    // carve-outs, so it is the correct denied target (tmpdir-adjacent paths
+    // became carved 2026-08-15).
+    const outside = join(homedir(), "seatbelt-ws-out.txt");
+    rmSync(outside, { force: true });
     try {
       const inside = await runCommand(`touch "${join(ws, "inside.txt")}"`, ws, "workspace-write");
       expect(inside.exit).toBe(0);
@@ -256,7 +278,24 @@ describe("seatbelt enforcement (macOS)", () => {
       expect(existsSync(outside)).toBe(false);
     } finally {
       rmSync(ws, { recursive: true, force: true });
-      rmSync(outsideDir, { recursive: true, force: true });
+      rmSync(outside, { force: true });
+    }
+  });
+
+  itOnDarwin("workspace-write: battery control — ~/ escape write stays denied", async () => {
+    // Battery #7 (2026-08-15): `echo hi > ~/…` must keep failing after the
+    // carve-outs — home is outside the write-set and not carved.
+    const ws = mkdtempSync(join(tmpdir(), "seatbelt-ctrl-"));
+    const target = join(homedir(), "sbx-battery-escape-test");
+    rmSync(target, { force: true });
+    try {
+      const result = await runCommand("echo hi > ~/sbx-battery-escape-test", ws, "workspace-write");
+      expect(result.exit).not.toBe(0);
+      expect(result.stderr).toMatch(/Operation not permitted|not permitted/i);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(target, { force: true });
     }
   });
 
@@ -326,6 +365,40 @@ describe("sandbox wiring into run_bash and background jobs", () => {
   });
 
   // ── trusted-root containment through the tools layer (item 8.6) ──
+
+  itOnDarwin(
+    "workspace-write: a real npm install works in a scratch workspace (carve-outs in effect)",
+    async (ctx) => {
+      // The 2026-08-15 battery's row 3 reproduced as a regression test: npm
+      // install must succeed under workspace-write now that ~/.npm (cache)
+      // and the temp dirs are carved. 30s budget inside runBashTimed; a
+      // timeout-kill (slow/offline env) skips rather than fails.
+      const ws = mkdtempSync(join(tmpdir(), "seatbelt-npm-"));
+      try {
+        writeFileSync(
+          join(ws, "package.json"),
+          JSON.stringify({ name: "seatbelt-npm-test", version: "1.0.0", private: true }),
+        );
+        const result = await runBashTimed(
+          "npm install is-number --no-audit --no-fund --loglevel=error",
+          ws,
+          ws,
+          30_000,
+          false,
+          "workspace-write",
+        );
+        if (result.content.includes("Exit code: null")) {
+          ctx.skip("npm install exceeded the 30s budget — skipped (slow/offline env)");
+          return;
+        }
+        expect(result.error).toBeUndefined();
+        expect(existsSync(join(ws, "node_modules", "is-number"))).toBe(true);
+      } finally {
+        rmSync(ws, { recursive: true, force: true });
+      }
+    },
+    40_000,
+  );
 
   itOnDarwin("runBashTimed rejects a cwd outside the trusted root — tool error, no spawn", async () => {
     const result = await runBashTimed("echo should-not-run", "/tmp", workspace, 5000, true, "workspace-write");

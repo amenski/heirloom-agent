@@ -73,7 +73,7 @@ heirloom [ask ⚡] >
 | `/undo` | rewind code and/or conversation |
 | `/theme` | switch color theme (live preview) |
 | `/permissions` | this session's permission history |
-| `/skills`, `/mcp` | list skills · inspect MCP servers |
+| `/skills`, `/mcp`, `/tasks` | list skills · inspect MCP servers · inspect/stop sub-agent tasks |
 | `Ctrl+D` twice | quit |
 
 ### CLI flags

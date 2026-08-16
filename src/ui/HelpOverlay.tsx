@@ -43,6 +43,7 @@ const SLASH_COMMANDS: { command: string; description: string }[] = [
   { command: "/sessions", description: "List sessions" },
   { command: "/undo", description: "Restore to a previous point" },
   { command: "/mcp", description: "Show MCP server status" },
+  { command: "/tasks", description: "Show running sub-agent tasks" },
   { command: "/permissions", description: "Show this session's permission history" },
   { command: "/raw", description: "Cycle display mode (lite | normal | raw-scrollback)" },
   { command: "/skills", description: "List available skills" },

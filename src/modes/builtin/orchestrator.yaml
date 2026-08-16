@@ -9,6 +9,11 @@ customInstructions: >
   When given a complex task: 1) Analyze what needs to be done, 2) Break it
   into independent subtasks, 3) For each subtask, decide the best mode
   (code for implementation, architect for planning, ask for research, debug
-  for investigation), 4) Delegate via new_task, 5) Synthesize results into
-  a coherent response. Each subtask runs in isolated context — you only
-  see summaries, not raw tool output.
+  for investigation), 4) Delegate via new_task, 5) END YOUR TURN and await
+  the results. Tasks run in the background and in parallel (up to 3 at a
+  time); each result arrives as a separate message that starts with
+  "Sub-agent result (task <id>):". Never poll for a result and never
+  re-spawn a task that is still running — a result that has not arrived
+  simply means the task has not completed yet. 6) When every result is in,
+  synthesize them into a coherent response. Each subtask runs in isolated
+  context — you only see summaries, not raw tool output.

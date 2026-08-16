@@ -47,6 +47,10 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
   initPresets();
   let interrupted = false;
 
+  // Hoisted so the finally block can kill pending sub-runs on every exit path
+  // (async-subagents.md §3, Q3 — die on exit).
+  let orchestrator: Orchestrator | undefined;
+
   const handleSigint = () => {
     interrupted = true;
   };
@@ -192,7 +196,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // AbortController so SIGINT/Ctrl+C cancels an in-flight sub-agent. A
     // defined agent's "provider/model" override creates a provider bound to
     // that model; the startup key/host stays scoped to this run's provider.
-    const orchestrator = new Orchestrator({
+    orchestrator = new Orchestrator({
       provider: (modelId?: string) => {
         if (!modelId) return provider;
         const slash = modelId.indexOf("/");
@@ -213,6 +217,13 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       hooks,
     });
     orchestrator.register(registry);
+
+    // Async sub-agent delivery (async-subagents.md §2): a completed sub-run's
+    // result lands here and the wake loop below feeds it to the next turn.
+    const pendingResults: string[] = [];
+    orchestrator.setOnTaskResult((_taskId, message) => {
+      pendingResults.push(message);
+    });
 
     // Notify hook fires from this completion boundary (turn outcome is
     // definitively known here) for headless `-x` runs, mirroring the
@@ -244,7 +255,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       // turn exception triggers recovery — so the happy path is unaffected.
       // Constructed once per headless run so the reflector's total-retry
       // budget spans the whole session.
-      const result = await runAgent(finalPrompt, {
+      const agentOptions = {
         provider,
         tools: registry.getAllDefs(),
         executeTool,
@@ -258,7 +269,28 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         errorRecovery: new ErrorRecovery(),
         getTodos: () => todoStore.getTodos(),
         hooks,
-      });
+      };
+      let result = await runAgent(finalPrompt, agentOptions);
+
+      // Async wake loop (async-subagents.md §2): a parent that ended its turn
+      // after spawning keeps going until every sub-run has completed and every
+      // delivered result has been processed. Results arriving while a turn
+      // runs stay queued and feed the NEXT turn (headless has no steering
+      // mailbox — the wake rule is "append + continue"). History threads
+      // across turns, so the parent's context carries into each wake turn.
+      while (true) {
+        if (pendingResults.length > 0) {
+          if (interrupted) return 130;
+          result = await runAgent(pendingResults.shift()!, { ...agentOptions, history: result.messages });
+          continue;
+        }
+        if (orchestrator.tasks.runningCount() > 0) {
+          if (interrupted) return 130;
+          await orchestrator.tasks.waitForNextCompletion();
+          continue;
+        }
+        break;
+      }
 
       if (interrupted) return 130;
 
@@ -304,6 +336,10 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       return 1;
     }
   } finally {
+    // Die on exit (async-subagents.md §3, Q3): pending sub-runs are marked
+    // aborted and never deliver into a dead loop; the process exit is the
+    // actual kill.
+    orchestrator?.tasks.abortAll();
     console.error = originalConsoleError;
     process.off("SIGINT", handleSigint);
   }

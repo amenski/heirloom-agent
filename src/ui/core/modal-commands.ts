@@ -17,6 +17,7 @@ const MODAL_COMMANDS = new Set([
   "modes",
   "undo",
   "mcp",
+  "tasks",
   "permissions",
   "usage",
   "help",

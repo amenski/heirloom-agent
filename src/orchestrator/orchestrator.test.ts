@@ -32,6 +32,43 @@ function makeProvider(turns: TurnScript[]) {
   return { provider, received };
 }
 
+/** Collects the async result deliveries (async-subagents.md §2) and awaits a
+ *  specific count of them — the async replacement for asserting the summary
+ *  directly on the tool output. */
+function trackDeliveries() {
+  const messages: string[] = [];
+  const waiters: Array<() => void> = [];
+  return {
+    messages,
+    onResult: (_taskId: string, message: string) => {
+      messages.push(message);
+      waiters.shift()?.();
+    },
+    async delivered(count = 1): Promise<string> {
+      while (messages.length < count) {
+        await new Promise<void>((resolve) => waiters.push(resolve));
+      }
+      return messages[count - 1];
+    },
+  };
+}
+
+/** A provider whose stream blocks until `release()` — keeps a sub-run
+ *  "running" so the concurrency cap / abort tests can observe it mid-flight. */
+function deferredProvider(): { provider: Provider; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const provider: Provider = {
+    name: "fake",
+    async *streamChat() {
+      await gate;
+      yield { type: "text_delta", content: "released" };
+      yield { type: "done", finishReason: "stop" };
+    },
+  };
+  return { provider, release };
+}
+
 const textTurn = (text: string): TurnScript => [
   { type: "text_delta", content: text },
   { type: "done", finishReason: "stop" },
@@ -78,10 +115,12 @@ describe("Orchestrator", () => {
       toolCallTurn("c1", "read_file", '{"path":"a.txt"}'),
       textTurn("sub-agent done"),
     ]);
+    const deliveries = trackDeliveries();
     const orchestrator = new Orchestrator({
       provider: () => provider,
       registry,
       modeLoader: new ModeLoader(),
+      onTaskResult: deliveries.onResult,
     });
     orchestrator.register(registry);
 
@@ -93,10 +132,17 @@ describe("Orchestrator", () => {
       ctx,
     );
 
+    // Async contract (async-subagents.md §1): the tool returns immediately
+    // with the spawn confirmation, not the sub-agent's summary.
     expect(out.error).toBeUndefined();
-    expect(out.content).toContain("**Task**: read the file");
-    expect(out.content).toContain("**Tools executed**: 1");
-    expect(out.content).toContain("**Result**: sub-agent done");
+    expect(out.content).toMatch(/^task task-\d+ spawned — result will follow \(depth 0, 1\/3 sub-agents running\)$/);
+
+    // The summary arrives as a delivered follow-up message.
+    const delivered = await deliveries.delivered();
+    expect(delivered).toMatch(/^Sub-agent result \(task task-\d+\): /);
+    expect(delivered).toContain("**Task**: read the file");
+    expect(delivered).toContain("**Tools executed**: 1");
+    expect(delivered).toContain("**Result**: sub-agent done");
 
     // The sub-agent ran with code mode's tool groups (read/edit/command) plus
     // new_task for nested delegation, and its system prompt carries the code
@@ -104,6 +150,106 @@ describe("Orchestrator", () => {
     const subTools = received[0].tools.map((t) => t.name);
     expect(subTools).toEqual(expect.arrayContaining(["read_file", "run_bash", "new_task"]));
     expect(String(received[0].messages[0].content)).toContain("senior software engineer");
+  });
+
+  /** A turn that narrates *and* calls a tool — the shape that pushes an
+   *  assistant message carrying both `content` and `toolCalls`. */
+  const narratedToolCallTurn = (text: string, id: string, name: string, args: string): TurnScript => [
+    { type: "text_delta", content: text },
+    { type: "tool_call_start", id, name },
+    { type: "tool_call_delta", id, arguments: args },
+    { type: "done", finishReason: "tool_calls" },
+  ];
+
+  it("does not pass a tool-calling turn's narration off as the sub-agent's result", async () => {
+    // The regression, reproduced: the sub-agent narrates before each tool call
+    // and runs out of turns before answering. The newest assistant message is
+    // then a toolCalls message whose content is mid-work narration — reported
+    // verbatim as "**Result**: narration before last tool" before the fix.
+    const { registry } = makeRegistry();
+    const { provider } = makeProvider([
+      narratedToolCallTurn("let me look", "c1", "read_file", '{"path":"a.txt"}'),
+      narratedToolCallTurn("narration before last tool", "c2", "read_file", '{"path":"b.txt"}'),
+    ]);
+    const deliveries = trackDeliveries();
+    const orchestrator = new Orchestrator({
+      provider: () => provider,
+      registry,
+      modeLoader: new ModeLoader(),
+      maxSubTurns: 2,
+      onTaskResult: deliveries.onResult,
+    });
+    orchestrator.register(registry);
+
+    const out = await registry.execute(
+      { id: "t1", name: "new_task", arguments: { description: "review it", mode: "code" } },
+      ctx,
+    );
+    expect(out.error).toBeUndefined();
+
+    const delivered = await deliveries.delivered();
+    expect(delivered).not.toContain("narration before last tool");
+    // …and the turn-limit stop is named, so the parent can re-delegate
+    // instead of treating silence as a completed review.
+    expect(delivered).toContain("hit its turn limit");
+  });
+
+  it("returns the real answer when a later turn narrates past it", async () => {
+    const { registry } = makeRegistry();
+    const { provider } = makeProvider([
+      narratedToolCallTurn("let me look", "c1", "read_file", '{"path":"a.txt"}'),
+      textTurn("findings: seatbelt.ts looks fine"),
+    ]);
+    const deliveries = trackDeliveries();
+    const orchestrator = new Orchestrator({
+      provider: () => provider,
+      registry,
+      modeLoader: new ModeLoader(),
+      maxSubTurns: 3,
+      onTaskResult: deliveries.onResult,
+    });
+    orchestrator.register(registry);
+
+    const out = await registry.execute(
+      { id: "t1", name: "new_task", arguments: { description: "review it", mode: "code" } },
+      ctx,
+    );
+    expect(out.error).toBeUndefined();
+
+    const delivered = await deliveries.delivered();
+    expect(delivered).toContain("**Result**: findings: seatbelt.ts looks fine");
+    expect(delivered).not.toContain("let me look");
+  });
+
+  it("emits start/tool/end progress events so the parent can render live activity", async () => {
+    const { registry } = makeRegistry();
+    const { provider } = makeProvider([
+      toolCallTurn("c1", "read_file", '{"path":"a.txt"}'),
+      textTurn("done"),
+    ]);
+    const events: any[] = [];
+    const deliveries = trackDeliveries();
+    const orchestrator = new Orchestrator({
+      provider: () => provider,
+      registry,
+      modeLoader: new ModeLoader(),
+      onSubagentProgress: (e) => events.push(e),
+      onTaskResult: deliveries.onResult,
+    });
+    orchestrator.register(registry);
+
+    await registry.execute(
+      { id: "t1", name: "new_task", arguments: { description: "review it", mode: "code" } },
+      ctx,
+    );
+
+    // "start" fires synchronously at spawn, before the tool returns.
+    expect(events[0]).toMatchObject({ kind: "start", task: "review it", depth: 0 });
+    // "tool"/"end" fire during the detached run — wait for the delivery, then
+    // assert the full sequence.
+    await deliveries.delivered();
+    expect(events).toContainEqual(expect.objectContaining({ kind: "tool", name: "read_file" }));
+    expect(events[events.length - 1]).toMatchObject({ kind: "end", depth: 0 });
   });
 
   it("re-points the askUser bridge via setAskUser (the interactive per-turn re-wire)", async () => {
@@ -115,6 +261,7 @@ describe("Orchestrator", () => {
     const permissions = new PermissionEngine(undefined, "/workspace");
     const staleAsk = vi.fn(async () => true);
     const currentAsk = vi.fn(async () => true);
+    const deliveries = trackDeliveries();
 
     const orchestrator = new Orchestrator({
       provider: () => provider,
@@ -122,6 +269,7 @@ describe("Orchestrator", () => {
       modeLoader: new ModeLoader(),
       permissions,
       askUser: staleAsk,
+      onTaskResult: deliveries.onResult,
     });
     // cli.tsx's runAgentTurnCore calls setAskUser with the fresh per-turn bridge.
     orchestrator.setAskUser(currentAsk);
@@ -131,12 +279,13 @@ describe("Orchestrator", () => {
       { id: "t1", name: "new_task", arguments: { description: "run tests", mode: "code" } },
       ctx,
     );
+    expect(out.error).toBeUndefined();
 
     // The sub-agent's ask-tier run_bash surfaced to the CURRENT bridge, not the
     // stale one captured at registration.
+    await deliveries.delivered();
     expect(currentAsk).toHaveBeenCalledWith("run_bash", { command: "npm test" });
     expect(staleAsk).not.toHaveBeenCalled();
-    expect(out.error).toBeUndefined();
   });
 
   it("auto-denies ask-tier calls headlessly when no askUser is set", async () => {
@@ -146,12 +295,14 @@ describe("Orchestrator", () => {
       textTurn("headless done"),
     ]);
     const permissions = new PermissionEngine(undefined, "/workspace");
+    const deliveries = trackDeliveries();
 
     const orchestrator = new Orchestrator({
       provider: () => provider,
       registry,
       modeLoader: new ModeLoader(),
       permissions,
+      onTaskResult: deliveries.onResult,
     });
     orchestrator.register(registry);
 
@@ -161,7 +312,116 @@ describe("Orchestrator", () => {
     );
 
     expect(out.error).toBeUndefined();
+    await deliveries.delivered();
     expect(runBash).not.toHaveBeenCalled();
+  });
+
+  it("caps concurrent sub-agents at 3: a fourth spawn returns a queue-full error", async () => {
+    const { registry } = makeRegistry();
+    const d1 = deferredProvider();
+    const d2 = deferredProvider();
+    const d3 = deferredProvider();
+    const providers = [d1.provider, d2.provider, d3.provider];
+    let pi = 0;
+    const deliveries = trackDeliveries();
+    const orchestrator = new Orchestrator({
+      provider: () => providers[pi++],
+      registry,
+      modeLoader: new ModeLoader(),
+      onTaskResult: deliveries.onResult,
+    });
+    orchestrator.register(registry);
+    const spawn = (d: string) =>
+      registry.execute(
+        { id: `s-${d}`, name: "new_task", arguments: { description: d, mode: "code" } },
+        ctx,
+      );
+
+    // Three sub-runs hold their providers open, so the cap is observable.
+    const o1 = await spawn("a");
+    const o2 = await spawn("b");
+    const o3 = await spawn("c");
+    expect([o1.error, o2.error, o3.error]).toEqual([undefined, undefined, undefined]);
+
+    const o4 = await spawn("d");
+    expect(o4.error).toBe("QUEUE_FULL");
+    expect(o4.content).toContain("queue full (3 running)");
+
+    d1.release(); d2.release(); d3.release();
+    await deliveries.delivered(3);
+  });
+
+  it("aborts a running sub-agent when the parent signal fires (Esc/Ctrl+C)", async () => {
+    const { registry } = makeRegistry();
+    const d = deferredProvider();
+    const controller = new AbortController();
+    const deliveries = trackDeliveries();
+    const orchestrator = new Orchestrator({
+      provider: () => d.provider,
+      registry,
+      modeLoader: new ModeLoader(),
+      getSignal: () => controller.signal,
+      onTaskResult: deliveries.onResult,
+    });
+    orchestrator.register(registry);
+
+    const out = await registry.execute(
+      { id: "t1", name: "new_task", arguments: { description: "long task", mode: "code" } },
+      ctx,
+    );
+    expect(out.error).toBeUndefined();
+
+    // Abort mid-run; the sub-run's runAgent sees the signal on its next turn
+    // boundary and reports "aborted".
+    controller.abort();
+    d.release();
+    const delivered = await deliveries.delivered();
+    expect(delivered).toMatch(/^Sub-agent result \(task task-\d+\): /);
+    expect(orchestrator.tasks.list()[0]).toMatchObject({ status: "aborted" });
+  });
+
+  it("abortTask stops ONE sub-run: signal fires, record flips, no delivery, siblings survive", async () => {
+    const { registry } = makeRegistry();
+    const d1 = deferredProvider();
+    const d2 = deferredProvider();
+    const providers = [d1.provider, d2.provider];
+    let pi = 0;
+    const deliveries = trackDeliveries();
+    const orchestrator = new Orchestrator({
+      provider: () => providers[pi++],
+      registry,
+      modeLoader: new ModeLoader(),
+      onTaskResult: deliveries.onResult,
+    });
+    orchestrator.register(registry);
+    const spawn = (d: string) =>
+      registry.execute(
+        { id: `s-${d}`, name: "new_task", arguments: { description: d, mode: "code" } },
+        ctx,
+      );
+
+    const o1 = await spawn("a");
+    const o2 = await spawn("b");
+    expect(o1.error).toBeUndefined();
+    expect(o2.error).toBeUndefined();
+    const id1 = String(o1.content).match(/task (task-\d+) spawned/)![1];
+    const id2 = String(o2.content).match(/task (task-\d+) spawned/)![1];
+
+    // /tasks stop on one task: its record flips, the sibling stays running.
+    orchestrator.abortTask(id1);
+    expect(orchestrator.tasks.get(id1)?.status).toBe("aborted");
+    expect(orchestrator.tasks.get(id2)?.status).toBe("running");
+
+    // The stopped run finishes (signal or not — the registry must not deliver
+    // a result for a task the user stopped)…
+    d1.release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(deliveries.messages).toHaveLength(0);
+
+    // …and the sibling completes normally and delivers.
+    d2.release();
+    const delivered = await deliveries.delivered();
+    expect(delivered).toContain(`Sub-agent result (task ${id2}):`);
   });
 
   it("gives the sub-agent its own todo store: parent checklist untouched, sub context sees its own plan", async () => {
@@ -177,10 +437,12 @@ describe("Orchestrator", () => {
       })),
       textTurn("sub done"),
     ]);
+    const deliveries = trackDeliveries();
     const orchestrator = new Orchestrator({
       provider: () => subProvider,
       registry: realRegistry,
       modeLoader: new ModeLoader(),
+      onTaskResult: deliveries.onResult,
     });
     orchestrator.register(realRegistry);
 
@@ -190,7 +452,8 @@ describe("Orchestrator", () => {
     );
 
     expect(out.error).toBeUndefined();
-    expect(out.content).toContain("**Result**: sub done");
+    const delivered = await deliveries.delivered();
+    expect(delivered).toContain("**Result**: sub done");
 
     // The sub-agent's update_todo_list wrote to ITS store — the singleton the
     // parent panel subscribes to was never touched.
@@ -223,11 +486,13 @@ describe("Orchestrator", () => {
         textTurn(`level ${depth} done`),
       ]).provider;
     });
+    const deliveries = trackDeliveries();
 
     const orchestrator = new Orchestrator({
       provider: providerFactory,
       registry,
       modeLoader: new ModeLoader(),
+      onTaskResult: deliveries.onResult,
     });
     orchestrator.register(registry);
 
@@ -235,12 +500,16 @@ describe("Orchestrator", () => {
       { id: "t1", name: "new_task", arguments: { description: "level 0", mode: "code" } },
       ctx,
     );
+    expect(out.error).toBeUndefined();
 
     // depth 0, 1, 2 spawn sub-agents; the depth-3 request returns MAX_DEPTH
-    // without a fourth provider call.
-    expect(out.error).toBeUndefined();
+    // without a fourth provider call. Each level's run is detached now, so the
+    // whole chain settles as three deliveries.
+    await deliveries.delivered(3);
     expect(providerFactory).toHaveBeenCalledTimes(3);
-    expect(out.content).toContain("**Result**: level 0 done");
+    expect(deliveries.messages.join("\n")).toContain("**Result**: level 0 done");
+    expect(deliveries.messages.join("\n")).toContain("**Result**: level 1 done");
+    expect(deliveries.messages.join("\n")).toContain("**Result**: level 2 done");
   });
 
   describe("agent definitions (feature-plans.md §F4)", () => {
@@ -276,6 +545,7 @@ describe("Orchestrator", () => {
       const agentLoader = new AgentLoader();
       await agentLoader.load(project);
       const modelIds: (string | undefined)[] = [];
+      const deliveries = trackDeliveries();
       const orchestrator = new Orchestrator({
         provider: (modelId?: string) => {
           modelIds.push(modelId);
@@ -284,6 +554,7 @@ describe("Orchestrator", () => {
         registry,
         modeLoader: new ModeLoader(),
         agents: agentLoader,
+        onTaskResult: deliveries.onResult,
       });
       orchestrator.register(registry);
 
@@ -293,7 +564,8 @@ describe("Orchestrator", () => {
       );
 
       expect(out.error).toBeUndefined();
-      expect(out.content).toContain("**Result**: review done");
+      const delivered = await deliveries.delivered();
+      expect(delivered).toContain("**Result**: review done");
       // The def's model override reached the provider factory as "provider/model".
       expect(modelIds).toEqual(["deepseek/deepseek-v4-flash"]);
       // The sub-agent ran with the def mode's toolset plus new_task.
@@ -348,6 +620,7 @@ describe("Orchestrator", () => {
       const agentLoader = new AgentLoader();
       await agentLoader.load(project);
       const modelIds: (string | undefined)[] = [];
+      const deliveries = trackDeliveries();
       const orchestrator = new Orchestrator({
         provider: (modelId?: string) => {
           modelIds.push(modelId);
@@ -356,6 +629,7 @@ describe("Orchestrator", () => {
         registry,
         modeLoader: new ModeLoader(),
         agents: agentLoader,
+        onTaskResult: deliveries.onResult,
       });
       orchestrator.register(registry);
 
@@ -365,6 +639,7 @@ describe("Orchestrator", () => {
       );
 
       expect(out.error).toBeUndefined();
+      await deliveries.delivered();
       // Parent-model path: factory called with no model id.
       expect(modelIds).toEqual([undefined]);
       // No agent instructions, no agents index in the sub-run preamble — the
@@ -412,11 +687,13 @@ describe("Orchestrator", () => {
         textTurn("sub done"),
       ]);
       const permissions = new PermissionEngine(undefined, "/workspace");
+      const deliveries = trackDeliveries();
       const orchestrator = new Orchestrator({
         provider: () => provider,
         registry,
         modeLoader: new ModeLoader(),
         permissions,
+        onTaskResult: deliveries.onResult,
       });
       orchestrator.register(registry);
 
@@ -424,8 +701,11 @@ describe("Orchestrator", () => {
         { id: "t1", name: "new_task", arguments: { description: "run tests", mode: "code" } },
         { ...ctx, sessionStore: store, sessionId: parentId },
       );
-
       expect(out.error).toBeUndefined();
+
+      // The sub-run is detached now — the audit rows land while it runs, so
+      // wait for the delivery before asserting on them.
+      await deliveries.delivered();
 
       const history = await store.queryPermissionHistory(parentId);
       expect(history).toHaveLength(1);
@@ -447,11 +727,13 @@ describe("Orchestrator", () => {
         textTurn("sub done"),
       ]);
       const permissions = new PermissionEngine(undefined, "/workspace");
+      const deliveries = trackDeliveries();
       const orchestrator = new Orchestrator({
         provider: () => provider,
         registry,
         modeLoader: new ModeLoader(),
         permissions,
+        onTaskResult: deliveries.onResult,
       });
       orchestrator.register(registry);
 
@@ -460,6 +742,7 @@ describe("Orchestrator", () => {
         { ...ctx, sessionStore: store, sessionId: parentId },
       );
       expect(out.error).toBeUndefined();
+      await deliveries.delivered();
 
       const history = await store.queryPermissionHistory(parentId);
       expect(history.map((r) => r.source)).toEqual([undefined, "subagent"]);
@@ -482,10 +765,12 @@ describe("Orchestrator", () => {
         })),
         textTurn("sub done"),
       ]);
+      const deliveries = trackDeliveries();
       const orchestrator = new Orchestrator({
         provider: () => subProvider,
         registry: realRegistry,
         modeLoader: new ModeLoader(),
+        onTaskResult: deliveries.onResult,
       });
       orchestrator.register(realRegistry);
 
@@ -495,6 +780,8 @@ describe("Orchestrator", () => {
       );
 
       expect(out.error).toBeUndefined();
+      // The sub-run is detached — wait for completion before asserting.
+      await deliveries.delivered();
       // The parent's checklist panel store was never touched.
       expect(todoStore.getTodos()).toEqual([]);
 
@@ -503,6 +790,55 @@ describe("Orchestrator", () => {
       const types = parentJsonlTypes();
       expect(types).not.toContain("todo");
       expect(types).not.toContain("message");
+    });
+
+    it("delivers the result as an appendable parent-session message while audit rows stay tagged", async () => {
+      // Persistence honesty (async-subagents.md §4): the delivery callback
+      // (the App appends like any message) must produce a normal message row,
+      // and the sub-run's audit rows must remain tagged `source: "subagent"` —
+      // the security envelope is unchanged by the async contract.
+      const { registry } = makeRegistry();
+      const { provider } = makeProvider([
+        toolCallTurn("c1", "run_bash", '{"command":"npm test"}'),
+        textTurn("sub done"),
+      ]);
+      const permissions = new PermissionEngine(undefined, "/workspace");
+      const deliveries = trackDeliveries();
+      const orchestrator = new Orchestrator({
+        provider: () => provider,
+        registry,
+        modeLoader: new ModeLoader(),
+        permissions,
+        onTaskResult: deliveries.onResult,
+      });
+      orchestrator.register(registry);
+
+      const out = await registry.execute(
+        { id: "t1", name: "new_task", arguments: { description: "run tests", mode: "code" } },
+        { ...ctx, sessionStore: store, sessionId: parentId },
+      );
+      expect(out.error).toBeUndefined();
+
+      // The delivery is the App's append point: persist it like any message,
+      // then the parent's synthesis follows.
+      const delivered = await deliveries.delivered();
+      await store.appendMessage(parentId, { role: "user", content: delivered });
+      await store.appendMessage(parentId, { role: "assistant", content: "synthesis" });
+
+      const loaded = await store.load(parentId);
+      const messages = loaded!.messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ role: "user" });
+      expect(String(messages[0].content)).toMatch(/^Sub-agent result \(task task-\d+\): /);
+      expect(String(messages[0].content)).toContain("**Result**: sub done");
+      expect(messages[1]).toMatchObject({ role: "assistant", content: "synthesis" });
+
+      // The sub-run's permission row stays tagged; only the delivered message
+      // (and the parent's synthesis) entered the transcript.
+      const history = await store.queryPermissionHistory(parentId);
+      expect(history).toHaveLength(1);
+      expect(history[0].source).toBe("subagent");
+      expect(parentJsonlTypes().filter((t) => t === "message")).toHaveLength(2);
     });
   });
 });

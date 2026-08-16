@@ -20,6 +20,7 @@ const ROUTED_KINDS: ReadonlySet<SlashCommandKind> = new Set<SlashCommandKind>([
   "continue",
   "undo",
   "mcp",
+  "tasks",
   "permissions",
   "usage",
   "exit",

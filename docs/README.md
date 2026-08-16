@@ -96,6 +96,7 @@ then follow the reading paths below.
 |-----|--------|
 | [claude-code-parity.md](./claude-code-parity.md) | Gap analysis vs Claude Code (forward-looking) |
 | [permission-profile.md](./permission-profile.md) | PermissionProfile ACL design (draft): schema, evaluation order, Seatbelt phase |
+| [async-subagents.md](./async-subagents.md) | Async sub-agent execution design: spawn-return-immediately, auto-wake, cap 3, /tasks |
 | [feature-plans.md](./feature-plans.md) | Per-feature plans for the remaining roadmap: SOTA research, current state, design, decisions |
 | [improvement-roadmap.md](./improvement-roadmap.md) | Roadmap with shipped/unshipped waves |
 | [agent-memory-that-evolves.md](./agent-memory-that-evolves.md) | Memory-design research essay (context only) |

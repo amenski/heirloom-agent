@@ -26,7 +26,7 @@ import { DiagnosticRunner } from "./diagnostics/index.js";
 import { startStallWatchdog } from "./diagnostics/stall-watchdog.js";
 import { ErrorReflector } from "./selfreflection/index.js";
 import { ErrorRecovery } from "./errorrecovery/index.js";
-import { Orchestrator } from "./orchestrator/index.js";
+import { Orchestrator, type SubagentProgress } from "./orchestrator/index.js";
 import { authWizard, authList, authLogout, authSaveKey } from "./auth/wizard.js";
 import { readHiddenLine } from "./auth/hidden-input.js";
 import { SessionStore, type CompactionSummary } from "./sessions/store.js";
@@ -42,6 +42,7 @@ import type { Message } from "./types.js";
 import type { ModelCapabilities, ProviderBalance } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
 import { chip, meter } from "./ui/core/chips.js";
+import { buildTaskSegments } from "./ui/core/task-status.js";
 import { ANSI_CLEAR_SCREEN } from "./ui/constants.js";
 import { resolveRefreshProfile, REFRESH_PROFILE_NAMES, describeRefreshSource } from "./ui/core/refresh-rates.js";
 import { installResizeRepaintFix } from "./ui/core/resize-repaint.js";
@@ -234,6 +235,13 @@ async function main() {
     hooks,
   });
   orchestrator.register(registry);
+
+  // Async sub-run live text (async-subagents.md §4): the App registers its
+  // mount-time streaming sink here; runAgentTurnCore routes every progress
+  // event through BOTH it and the per-turn callback, so streamed sub-run text
+  // renders regardless of turn state (the parent turn has ended while sub-runs
+  // work).
+  let appSubagentSink: ((event: SubagentProgress) => void) | undefined;
 
   let _compactor: Compactor | undefined;
   function getCompactor(): Compactor {
@@ -529,6 +537,13 @@ async function main() {
       segments.push(dim(nextId(), `$${costStr}`));
     }
 
+    // Async sub-runs (async-subagents.md §4): while any task runs, the bar
+    // reports it (`● task <id> running`, or `N tasks` when several) — the
+    // parent turn has ended, so this is the row's only live "still working"
+    // signal. Derived from the live registry snapshot, so the segment appears
+    // and clears with registry state.
+    segments.push(...buildTaskSegments(orchestrator.tasks.list()));
+
     return segments;
   }
 
@@ -703,8 +718,32 @@ async function main() {
         // the orchestrator before delegating — otherwise sub-agents holding
         // the stale closure would auto-deny every ask-tier action.
         orchestrator.setAskUser(cb.askUser);
+        // Same per-turn re-point reason as askUser: the callback bundle is
+        // rebuilt each turn, so a startup closure would write into a dead
+        // turn's output stream. Every event also reaches the App's mount-time
+        // sink (async-subagents.md §4), which renders streamed text deltas
+        // into the transcript regardless of turn state; the per-turn bundle
+        // keeps rendering the ⌁ start/tool/end lines with the current turn's
+        // elapsed-time context.
+        orchestrator.setOnSubagentProgress((event) => {
+          if (event.kind !== "text") cb.onSubagentProgress?.(event);
+          appSubagentSink?.(event);
+        });
         return runAgentTurnBridge(input, cb, shared, permissions, permissionProfile, getProvider, getCompactor(), diagnostics, skills, agents, memoryInjection, memoryStore, sessionStore, sessionId, modeLoader, skillLoader, imageUrls, planMode, checkpoints, configResult.config.notify, configResult.config.env, errorReflector, errorRecovery, repomapInjection, thinkingEnabled, getActiveModelCaps()?.contextWindow, hooks);
       },
+      // Async sub-agent delivery (async-subagents.md §2): the App registers its
+      // session-scoped wake handler here; the orchestrator calls it once per
+      // completed sub-run with the formatted result message.
+      setSubagentResultHandler: (handler: (taskId: string, message: string) => void) => orchestrator.setOnTaskResult(handler),
+      // Die on exit (async-subagents.md §3, Q3): the App calls this on /exit so
+      // pending sub-runs are marked aborted and never wake a dying app.
+      abortRunningTasks: () => orchestrator.tasks.abortAll(),
+      // Async sub-run surfaces (async-subagents.md §3-4): the /tasks view reads
+      // the live registry snapshot and stops one task at a time; the App's
+      // mount-time text sink registers here.
+      getTasks: () => orchestrator.tasks.list(),
+      abortTask: (taskId: string) => orchestrator.abortTask(taskId),
+      setSubagentProgress: (handler: ((event: SubagentProgress) => void) | undefined) => { appSubagentSink = handler; },
       resumeSession: async (id: string) => {
         try {
           const loaded = await sessionStore.loadEffective(id);

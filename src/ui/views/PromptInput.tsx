@@ -65,16 +65,27 @@ interface Props {
    * replace with the chosen hit.
    */
   completer?: (line: string) => [string[], string];
+  /**
+   * Fires with the buffer text on every change (async-subagents.md §2): App
+   * tracks whether the user is mid-typing so a sub-agent result queues behind
+   * the submission instead of preempting it with an auto-started turn.
+   */
+  onDraftChange?: (text: string) => void;
 }
 
 const PromptInput = React.memo(function PromptInput({
   screenWidth, promptHistory, busy, placeholder, statusLine, modelPill,
-  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture, onOpenModePicker, completer,
+  promptDraft, onSubmit, onInterrupt, onExitShortcut, onModelPickerOpen, onCyclePosture, onOpenModePicker, completer, onDraftChange,
 }: Props): React.ReactElement {
   const theme = useTheme();
   const undoRedoRef = useRef(createPromptUndoRedoState());
   const wasBusyRef = useRef(busy);
   const appliedDraftNonceRef = useRef<number | null>(null);
+  // Latest onDraftChange for the observer effect below — App re-creates the
+  // prop every render, and the effect must not refire on its identity.
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  const prevDraftTextRef = useRef("");
 
   const [buffer, setBuffer] = useState<PromptBufferState>(EMPTY_BUFFER);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -186,6 +197,15 @@ const PromptInput = React.memo(function PromptInput({
 
   useEffect(() => { exitHistoryBrowsing(); }, [promptHistoryKey, exitHistoryBrowsing]);
 
+  // Report draft changes upward. One observer covers every mutation path
+  // (typing, paste, history recall, @-mention insert, promptDraft restore,
+  // clear) — they all flow through setBuffer.
+  useEffect(() => {
+    if (buffer.text === prevDraftTextRef.current) return;
+    prevDraftTextRef.current = buffer.text;
+    onDraftChangeRef.current?.(buffer.text);
+  }, [buffer.text]);
+
   function updateBuffer(updater: (state: PromptBufferState) => PromptBufferState): void {
     exitHistoryBrowsing();
     // bufferRef is the synchronous source of truth: a single stdin chunk can
@@ -214,6 +234,7 @@ const PromptInput = React.memo(function PromptInput({
     if (item.kind === "continue") { onSubmit({ text: "/continue", command: "continue" }); resetInput(); return; }
     if (item.kind === "undo") { onSubmit({ text: "/undo", command: "undo" }); resetInput(); return; }
     if (item.kind === "mcp") { onSubmit({ text: "/mcp", command: "mcp" }); resetInput(); return; }
+    if (item.kind === "tasks") { onSubmit({ text: "/tasks" }); resetInput(); return; }
     if (item.kind === "theme") { onSubmit({ text: "/theme" }); resetInput(); return; }
     if (item.kind === "permissions") { onSubmit({ text: "/permissions" }); resetInput(); return; }
     if (item.kind === "usage") { onSubmit({ text: "/usage", command: "usage" }); resetInput(); return; }
