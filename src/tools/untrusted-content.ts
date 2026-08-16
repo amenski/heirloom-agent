@@ -36,6 +36,19 @@ export function wrapUntrusted(text: string): string {
   return [BEGIN_MARKER, text, END_MARKER].join("\n");
 }
 
+/**
+ * Removes the delimiter lines from a wrapped payload for human-facing
+ * rendering. The markers exist for the model (T12); the transcript preview
+ * shows the payload, not the security plumbing. Only exact marker lines are
+ * dropped, so labels and status text interleaved around the blocks survive.
+ */
+export function stripUntrustedMarkers(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => line !== BEGIN_MARKER && line !== END_MARKER)
+    .join("\n");
+}
+
 const TAB = 0x09;
 const LF = 0x0a;
 const DEL = 0x7f;

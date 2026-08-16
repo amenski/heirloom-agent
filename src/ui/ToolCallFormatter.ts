@@ -1,3 +1,5 @@
+import { stripUntrustedMarkers } from "../tools/untrusted-content.js";
+
 /** Escape regex special characters. */
 export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -41,7 +43,9 @@ export function formatToolCallHeader(name: string, args: Record<string, unknown>
  *      … +N lines
  */
 export function formatToolResultPreview(content: string, maxLines = 3): string[] {
-  const allLines = content.replace(/\s+$/, "").split("\n");
+  // Model-facing untrusted-content delimiters (security-spec T12) stay in the
+  // context; the human preview shows the payload only.
+  const allLines = stripUntrustedMarkers(content).replace(/\s+$/, "").split("\n");
   const shown = allLines.slice(0, maxLines);
   const out: string[] = [];
   shown.forEach((line, i) => {
