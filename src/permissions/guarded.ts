@@ -55,6 +55,14 @@ export const BUILTIN_GUARDED_RULES: PermissionRule[] = [
   // directory-itself variants are needed in addition.
   { tool: "search", kind: "glob", pattern: "**/.ssh", action: "ask", origin: "builtin-guarded" },
   { tool: "search", kind: "glob", pattern: "**/.aws", action: "ask", origin: "builtin-guarded" },
+  // glob's `cwd` gets the same secret-path treatment. It discloses filenames
+  // rather than contents, so this is milder than search — but enumerating
+  // ~/.ssh still tells a caller which keys exist, and the asymmetry of
+  // guarding one dir-scoped tool and not the other is its own hazard. Only
+  // the directory-itself patterns apply: `cwd` is always a directory, so the
+  // file-level globs (**/id_rsa*, **/*.pem) could never match it.
+  { tool: "glob", kind: "glob", pattern: "**/.ssh", action: "ask", origin: "builtin-guarded" },
+  { tool: "glob", kind: "glob", pattern: "**/.aws", action: "ask", origin: "builtin-guarded" },
   // node_modules: the directory itself (list_files on the package root) and
   // anything under it. `**/node_modules` alone can't match `./node_modules/ink`,
   // and `**/node_modules/**` alone can't match `./node_modules` — both are needed.

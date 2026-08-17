@@ -81,6 +81,16 @@ describe("BUILTIN_GUARDED_RULES: search secret-path dir globs", () => {
     }
   });
 
+  it("matches a glob cwd pointing at .ssh/.aws, and leaves an ordinary cwd alone", () => {
+    const sshRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "glob" && r.pattern === "**/.ssh")!;
+    const awsRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "glob" && r.pattern === "**/.aws")!;
+    expect(patternMatches(sshRule, { tool: "glob", text: "/home/user/.ssh", resolvedPath: "/home/user/.ssh" })).toBe(true);
+    expect(patternMatches(awsRule, { tool: "glob", text: "/home/user/.aws", resolvedPath: "/home/user/.aws" })).toBe(true);
+    for (const rule of BUILTIN_GUARDED_RULES.filter((r) => r.tool === "glob")) {
+      expect(patternMatches(rule, { tool: "glob", text: "./src", resolvedPath: "./src" })).toBe(false);
+    }
+  });
+
   it("a search guarded rule does not match a read_file call to the same path (tool-scoped)", () => {
     const searchSshRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.ssh/*")!;
     expect(patternMatches(searchSshRule, { tool: "read_file", text: "/home/user/.ssh/id_rsa", resolvedPath: "/home/user/.ssh/id_rsa" })).toBe(false);
