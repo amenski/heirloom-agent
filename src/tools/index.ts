@@ -2,6 +2,7 @@ import { ToolRegistry } from "./registry.js";
 import type { ToolCall, ToolOutput } from "../types.js";
 import type { ToolContext } from "./types.js";
 import type { SandboxLevel } from "../sandbox/seatbelt.js";
+import type { WebSearchConfig } from "../config/loader.js";
 import type { CheckpointManager } from "../checkpoints/index.js";
 import type { SessionStore } from "../sessions/store.js";
 import { registerFiles } from "./files.js";
@@ -82,6 +83,17 @@ export function setTimeoutToBackground(v: boolean): void {
  */
 export function setSandboxLevel(v: SandboxLevel | undefined): void {
   ctx.sandboxLevel = v;
+}
+
+/**
+ * Set the effective web_search backend config (config.webSearch), resolved
+ * once at startup from the POST-TOFU-strip config — see ToolContext.webSearch.
+ * web-search.ts reads this instead of calling loadConfig() per call, which
+ * would silently re-read the raw, unstripped searxngUrl on every search
+ * regardless of the startup trust decision.
+ */
+export function setWebSearchConfig(v: WebSearchConfig | undefined): void {
+  ctx.webSearch = v;
 }
 
 export async function executeTool(call: ToolCall): Promise<ToolOutput> {

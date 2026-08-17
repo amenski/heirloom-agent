@@ -4,24 +4,13 @@ import type { ToolContext } from "./types.js";
 import { registerWebSearch, parseBingRss, looksLikeRssFeed, clearWebSearchCache, formatResults } from "./web-search.js";
 import { isBlockedAddress } from "./web-fetch-guard.js";
 
-// web-search.ts reads webSearch.searxngUrl / webSearch.enrich via loadConfig()
-// on every call — mocked so tests are isolated from whatever the developer's
-// real ~/.heirloom/settings.json happens to contain, and so the backend and
-// enrichment tests can control the config precisely.
+// web-search.ts reads webSearch.searxngUrl / webSearch.enrich from
+// ctx.webSearch (set once at startup via setWebSearchConfig from the
+// effective, post-TOFU-strip config) rather than loadConfig() per call — see
+// makeCtx() below, which builds ctx.webSearch from these same variables so
+// the backend and enrichment tests can still control the config precisely.
 let mockSearxngUrl: string | undefined;
 let mockEnrich: boolean | undefined;
-vi.mock("../config/loader.js", () => ({
-  loadConfig: () => ({
-    config: {
-      webSearch: {
-        ...(mockSearxngUrl !== undefined ? { searxngUrl: mockSearxngUrl } : {}),
-        ...(mockEnrich !== undefined ? { enrich: mockEnrich } : {}),
-      },
-    },
-    warnings: [],
-    errors: [],
-  }),
-}));
 
 // Phase 2 enrichment reuses web_fetch's fetchAndProcess per result — mocked
 // here so tests stay hermetic (no real DNS/fetch per result) and failures can
@@ -68,6 +57,10 @@ function makeCtx(): ToolContext {
     workingDir: "/tmp",
     sessionId: "test",
     signal: new AbortController().signal,
+    webSearch: {
+      ...(mockSearxngUrl !== undefined ? { searxngUrl: mockSearxngUrl } : {}),
+      ...(mockEnrich !== undefined ? { enrich: mockEnrich } : {}),
+    },
   };
 }
 

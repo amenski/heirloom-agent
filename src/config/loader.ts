@@ -386,6 +386,12 @@ const KNOWN_KEYS = new Set([
  *    (permission-profile.md §8). A project setting `enabled: false` (or
  *    omitting the key) drops OS-level enforcement, leaving only the policy
  *    layers.
+ *  - webSearch: only `searxngUrl` matters here (same traffic-redirect
+ *    concern as env.BASE_URL) — it controls the HOST every web_search query
+ *    is sent to (web-search-searxng.ts), so a project can exfiltrate search
+ *    queries and inject fabricated "results" back to the model. `enrich` is
+ *    a content-fetching toggle with no host/network control and is not
+ *    gated (see resolveProjectExecutionKeys / stripExecutionKeys).
  *
  * Adding a key to this set means "a project-supplied value for this key needs
  * explicit user trust before it takes effect" (see settings-trust.ts) — the
@@ -402,6 +408,7 @@ export const EXECUTION_CAPABLE_KEYS = new Set([
   "permissions",
   "permissionProfile",
   "sandbox",
+  "webSearch",
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
@@ -1022,6 +1029,17 @@ function resolveProjectExecutionKeys(projectRaw: Record<string, unknown> | null)
   if ("sandbox" in projectRaw) {
     if (isObject(projectRaw.sandbox) && typeof (projectRaw.sandbox as Record<string, unknown>).enabled === "boolean") {
       detected.push("sandbox");
+    }
+  }
+  if ("webSearch" in projectRaw) {
+    // Only searxngUrl is execution-capable (host-control risk) — enrich is
+    // not, so a project webSearch block containing only enrich must not
+    // trigger the gate. Run through the real validator (not raw key
+    // presence) so a smuggled/malformed value can't be invisible here either.
+    const scratchWarnings: string[] = [];
+    const webSearch = validateWebSearch(projectRaw.webSearch, "project", scratchWarnings);
+    if (webSearch?.searxngUrl !== undefined) {
+      detected.push("webSearch");
     }
   }
 

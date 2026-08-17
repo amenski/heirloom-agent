@@ -2,7 +2,7 @@ import { APICallError, RetryError } from "ai";
 import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap } from "./prompt.js";
-import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground, setSandboxLevel } from "./tools/index.js";
+import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground, setSandboxLevel, setWebSearchConfig } from "./tools/index.js";
 import { todoStore } from "./tools/todo.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine, ProfileEvaluator } from "./permissions/index.js";
@@ -113,6 +113,12 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         ? effectiveConfig.permissionProfile.level
         : undefined,
     );
+
+    // web_search backend config (webSearch.searxngUrl) — resolved from the
+    // EFFECTIVE (post-TOFU-strip) config, same as sandbox/permissions above.
+    // web-search.ts reads this via ToolContext instead of calling
+    // loadConfig() itself, which would bypass this gate.
+    setWebSearchConfig(effectiveConfig.webSearch);
 
     const resolvedApiKey = configEnv?.API_KEY || undefined;
     const resolvedBaseUrl = configEnv?.BASE_URL || undefined;

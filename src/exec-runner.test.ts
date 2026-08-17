@@ -65,6 +65,7 @@ vi.mock("./tools/index.js", () => ({
   setSignal: () => {},
   setTimeoutToBackground: () => {},
   setSandboxLevel: () => {},
+  setWebSearchConfig: () => {},
 }));
 
 // The notify hook is mocked so the completion-site tests below can assert

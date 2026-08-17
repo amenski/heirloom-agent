@@ -14,7 +14,7 @@ import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
 import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
-import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground, setSandboxLevel } from "./tools/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground, setSandboxLevel, setWebSearchConfig } from "./tools/index.js";
 import { jobManager } from "./tools/jobs.js";
 import { todoStore } from "./tools/todo.js";
 import { PermissionEngine, ProfileEvaluator, authorize } from "./permissions/index.js";
@@ -414,6 +414,13 @@ async function main() {
       ? configResult.config.permissionProfile.level
       : undefined,
   );
+
+  // web_search backend config (webSearch.searxngUrl): configResult was
+  // reassigned above (the TOFU strip on decline) if the project declared any
+  // execution-capable keys, so this read already sees the stripped value.
+  // web-search.ts reads this via ToolContext instead of calling loadConfig()
+  // itself, which would bypass the gate.
+  setWebSearchConfig(configResult.config.webSearch);
 
   // Background-job completion → notify hook (plan §3): a job finishing is a
   // completion boundary like a turn ending, so the same notify script fires

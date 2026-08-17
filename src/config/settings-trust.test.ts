@@ -191,6 +191,7 @@ describe("EXECUTION_CAPABLE_KEYS / loadConfig.projectExecutionKeys attribution",
       "sandbox",
       "statusline",
       "strictMcpConfig",
+      "webSearch",
     ]);
   });
 });
@@ -439,6 +440,130 @@ describe("permissions / permissionProfile / sandbox — gated unconditionally", 
     // Trusted: caller does not strip, so config carries the project's values.
     expect(result.config.permissionProfile?.level).toBe("unrestricted");
     expect(result.config.sandbox?.enabled).toBe(false);
+  });
+});
+
+describe("webSearch.searxngUrl — gated like env.BASE_URL", () => {
+  it("a project file setting searxngUrl is detected as execution-capable", () => {
+    writeGlobalSettings({ model: "x" });
+    writeProjectSettings(projectDir, { webSearch: { searxngUrl: "https://attacker.example" } });
+
+    const result = loadConfig(projectDir);
+    expect(result.projectExecutionKeys).toEqual(["webSearch"]);
+    expect(result.config.webSearch?.searxngUrl).toBe("https://attacker.example");
+  });
+
+  it("a project file setting only enrich is NOT detected as execution-capable (no host/network control)", () => {
+    writeGlobalSettings({ model: "x" });
+    writeProjectSettings(projectDir, { webSearch: { enrich: false } });
+
+    const result = loadConfig(projectDir);
+    expect(result.projectExecutionKeys).toEqual([]);
+    expect(result.config.webSearch?.enrich).toBe(false);
+  });
+
+  it("stripping webSearch removes only searxngUrl and preserves enrich", () => {
+    const config = { model: "x", webSearch: { searxngUrl: "https://attacker.example", enrich: false } };
+    const stripped = stripExecutionKeys(config, ["webSearch"]);
+    expect(stripped.webSearch?.searxngUrl).toBeUndefined();
+    expect(stripped.webSearch?.enrich).toBe(false);
+  });
+
+  it("drops webSearch entirely when searxngUrl was its only key", () => {
+    const config = { model: "x", webSearch: { searxngUrl: "https://attacker.example" } };
+    const stripped = stripExecutionKeys(config, ["webSearch"]);
+    expect(stripped.webSearch).toBeUndefined();
+  });
+
+  it("full untrusted round trip: hostile searxngUrl never reaches the effective config", () => {
+    writeGlobalSettings({ model: "x" });
+    const settingsPath = writeProjectSettings(projectDir, {
+      webSearch: { searxngUrl: "https://attacker.example", enrich: false },
+    });
+
+    const result = loadConfig(projectDir);
+    expect(result.projectExecutionKeys).toEqual(["webSearch"]);
+    expect(checkSettingsTrust(settingsPath).status).toBe("new");
+
+    const effective = stripExecutionKeys(result.config, result.projectExecutionKeys);
+    expect(effective.webSearch?.searxngUrl).toBeUndefined();
+    // enrich survives the strip — it carries no host/network control.
+    expect(effective.webSearch?.enrich).toBe(false);
+  });
+
+  it("full trusted round trip: the approved searxngUrl applies as-is", () => {
+    const settingsPath = writeProjectSettings(projectDir, {
+      webSearch: { searxngUrl: "https://trusted.example" },
+    });
+    trustSettings(settingsPath);
+
+    const result = loadConfig(projectDir);
+    expect(checkSettingsTrust(settingsPath).status).toBe("trusted");
+    expect(result.config.webSearch?.searxngUrl).toBe("https://trusted.example");
+  });
+
+  it("tool-level proof: an untrusted searxngUrl set via setWebSearchConfig from the STRIPPED config never reaches the web_search handler's resolved URL", async () => {
+    // Reproduces the structural hazard from the task doc: web-search.ts used
+    // to call loadConfig() fresh per invocation, bypassing whatever strip the
+    // entry point did at startup. This proves the fix by driving the exact
+    // production entry point (executeTool, from tools/index.ts, the same
+    // function cli.tsx/exec-runner.ts call) after setWebSearchConfig is
+    // primed from the EFFECTIVE (post-strip) config — not a hand-built ctx.
+    const { executeTool, setWebSearchConfig, setSignal } = await import("../tools/index.js");
+
+    writeGlobalSettings({ model: "x" });
+    const settingsPath = writeProjectSettings(projectDir, {
+      webSearch: { searxngUrl: "https://attacker.example" },
+    });
+    const result = loadConfig(projectDir);
+    expect(checkSettingsTrust(settingsPath).status).toBe("new");
+    const effective = stripExecutionKeys(result.config, result.projectExecutionKeys);
+    expect(effective.webSearch).toBeUndefined();
+
+    // Simulate the entry point's startup wiring with the stripped config.
+    setWebSearchConfig(effective.webSearch);
+    setSignal(new AbortController().signal);
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("<rss><channel></channel></rss>", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await executeTool({ id: "1", name: "web_search", arguments: { query: "canary" } });
+      // The attacker host must never have been contacted — only Bing (the
+      // secure fallback path, since searxngUrl resolved to undefined).
+      const hostsHit = fetchMock.mock.calls.map((c) => new URL(c[0] as string).host);
+      expect(hostsHit.every((h) => h === "www.bing.com")).toBe(true);
+      expect(hostsHit).not.toContain("attacker.example");
+    } finally {
+      vi.unstubAllGlobals();
+      setWebSearchConfig(undefined);
+    }
+  });
+
+  it("tool-level proof: a TRUSTED searxngUrl set via setWebSearchConfig IS used by the web_search handler", async () => {
+    const { executeTool, setWebSearchConfig, setSignal } = await import("../tools/index.js");
+
+    const settingsPath = writeProjectSettings(projectDir, {
+      webSearch: { searxngUrl: "https://trusted.example" },
+    });
+    trustSettings(settingsPath);
+    const result = loadConfig(projectDir);
+    expect(checkSettingsTrust(settingsPath).status).toBe("trusted");
+    // Trusted: no strip — the entry point passes the config through as-is.
+    setWebSearchConfig(result.config.webSearch);
+    setSignal(new AbortController().signal);
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await executeTool({ id: "1", name: "web_search", arguments: { query: "canary" } });
+      const hostsHit = fetchMock.mock.calls.map((c) => new URL(c[0] as string).host);
+      expect(hostsHit).toContain("trusted.example");
+    } finally {
+      vi.unstubAllGlobals();
+      setWebSearchConfig(undefined);
+    }
   });
 });
 

@@ -3,6 +3,7 @@ import type { CheckpointManager } from "../checkpoints/index.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { TodoStore } from "./todo.js";
 import type { SandboxLevel } from "../sandbox/seatbelt.js";
+import type { WebSearchConfig } from "../config/loader.js";
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutput>;
 
@@ -47,6 +48,11 @@ export interface ToolContext {
    *  other platforms the loader emits a startup notice and spawns stay
    *  policy-only. */
   sandboxLevel?: SandboxLevel;
+  /** web_search backend config (config.webSearch), resolved once at startup
+   *  from the EFFECTIVE (post-TOFU-strip) config — never read via a fresh
+   *  loadConfig() per call, which would bypass the trust gate for
+   *  webSearch.searxngUrl. Absent = Bing-only (today's default). */
+  webSearch?: WebSearchConfig;
 }
 
 export interface ToolRegistration {

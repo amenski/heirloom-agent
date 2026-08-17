@@ -2,7 +2,6 @@ import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler, ToolContext } from "./types.js";
 import { ToolRegistry } from "./registry.js";
 import { pkg } from "../version.js";
-import { loadConfig } from "../config/loader.js";
 import { searchSearxng, SearxngConfigError } from "./web-search-searxng.js";
 import { fetchAndProcess } from "./web-fetch.js";
 import { sanitizeControlChars } from "./web-fetch-guard.js";
@@ -313,14 +312,20 @@ export function formatResults(results: WebResult[], status: string): string {
   return status ? `${wrapUntrusted(out)}\n${status}` : wrapUntrusted(out);
 }
 
-/** Reads webSearch.searxngUrl from config, if set. Loaded fresh per call — cheap sync file read, same pattern as cli.tsx/exec-runner.ts. */
-function resolveSearxngUrl(): string | undefined {
-  return loadConfig().config.webSearch?.searxngUrl;
+/**
+ * Reads webSearch.searxngUrl from the per-run ToolContext (set once at
+ * startup via setWebSearchConfig, from the EFFECTIVE post-TOFU-strip
+ * config) — NOT a fresh loadConfig() call, which would re-read the raw,
+ * unstripped project settings.json on every search and silently bypass the
+ * trust gate for searxngUrl regardless of the startup trust decision.
+ */
+function resolveSearxngUrl(ctx: ToolContext): string | undefined {
+  return ctx.webSearch?.searxngUrl;
 }
 
-/** Reads webSearch.enrich (default true when absent) — loaded fresh per call like resolveSearxngUrl. */
-function resolveEnrich(): boolean {
-  return loadConfig().config.webSearch?.enrich !== false;
+/** Reads webSearch.enrich (default true when absent) from the same per-run ToolContext as resolveSearxngUrl. */
+function resolveEnrich(ctx: ToolContext): boolean {
+  return ctx.webSearch?.enrich !== false;
 }
 
 /**
@@ -351,8 +356,8 @@ const webSearchHandler: ToolHandler = async (args, ctx) => {
     return { content: "", error: "PARSE_ERROR: provide allowed_domains or blocked_domains, not both" };
   }
 
-  const searxngUrl = resolveSearxngUrl();
-  const enrich = resolveEnrich();
+  const searxngUrl = resolveSearxngUrl(ctx);
+  const enrich = resolveEnrich(ctx);
 
   // ── No SearXNG configured: exactly today's Bing-only behavior. ──
   if (!searxngUrl) {

@@ -195,7 +195,7 @@ sub-runs specifically.
 
 ## Task 3 — decide `webSearch` gating (analysis only)
 
-**Status:** `[x]` — recommendation delivered (see below), no code
+**Status:** `[x]` — implemented and verified
 **Severity:** Low — pre-existing
 
 `webSearch.searxngUrl` lets a project control the **host** every `web_search`
@@ -262,6 +262,72 @@ already reach tool handlers) instead of calling `loadConfig()` directly.**
 This is a general pattern hazard worth a comment at the `loadConfig()` call
 site now, even before `webSearch` is gated, so the next person adding a key
 here doesn't reintroduce the same bypass.
+
+**Implementation notes (this session):**
+- `EXECUTION_CAPABLE_KEYS` (loader.ts): added `"webSearch"`.
+- `resolveProjectExecutionKeys` (loader.ts): runs the real `validateWebSearch`
+  validator against `projectRaw.webSearch` alone and detects `webSearch` as
+  project-execution-capable only when the resolved value has a defined
+  `searxngUrl` — a project block containing only `enrich` is correctly NOT
+  detected (verified with a dedicated test), matching the "derived from
+  resolved values, never raw key names" rule from `30fdd67`.
+- `stripExecutionKeys` (settings-trust.ts): `webSearch` is special-cased like
+  `env` — only `searxngUrl` is deleted, `enrich` is preserved, and the whole
+  `webSearch` object is dropped if empty after stripping (mirrors the `env`/
+  `BASE_URL` branch exactly). Confirmed the fallback direction is secure: an
+  absent `searxngUrl` makes `resolveSearxngUrl()` return `undefined`, and
+  `web-search.ts`'s handler takes the unchanged `if (!searxngUrl) { ... }`
+  Bing-only branch — the existing default and strictest available option —
+  so a plain delete (not a forced value, unlike `permissionProfile`/
+  `sandbox`) is correct here, same direction as `permissions`.
+- **Structural hazard fixed** (the real point of this task): `web-search.ts`
+  no longer calls `loadConfig()` per invocation. Chosen approach: a
+  module-level setter, matching the existing `setSandboxLevel`/
+  `setTimeoutToBackground` idiom in `tools/index.ts` exactly — added
+  `webSearch?: WebSearchConfig` to `ToolContext` (tools/types.ts) and a
+  `setWebSearchConfig()` setter (tools/index.ts) that writes into the same
+  module-singleton `ctx` object those setters already use.
+  `cli.tsx`/`exec-runner.ts` call it once at startup with the EFFECTIVE
+  (post-TOFU-strip) config, right next to their existing `setSandboxLevel`
+  calls. `web-search.ts`'s `resolveSearxngUrl`/`resolveEnrich` now read
+  `ctx.webSearch` (the per-call `ToolContext` the handler already receives)
+  instead of calling `loadConfig()`. This was preferred over threading the
+  config through `ToolRegistry`/tool-def signatures because the setter
+  pattern already exists in this exact file for this exact purpose (sandbox
+  level, timeout-to-background) — adding a third followed established
+  precedent instead of introducing a new wiring shape.
+- **Audit for other per-call `loadConfig()` gated-key readers:** grepped
+  every `loadConfig(` call site outside tests. Only two exist:
+  `exec-runner.ts:74` (the legitimate once-per-run startup load, already
+  gated correctly) and the two `web-search.ts` call sites fixed above. No
+  other tool or module reads a gated key via a fresh per-call `loadConfig()`.
+- **Both-direction tool-level proof** (not just the resolved config object):
+  a standalone script (run via `tsx`, isolated `HEIRLOOM_HOME`/`HOME`, real
+  `fetch` mocked) drove the actual production entry point
+  (`executeTool` from `tools/index.ts` — the same function `cli.tsx`/
+  `exec-runner.ts` call) end-to-end: `loadConfig` → `checkSettingsTrust` →
+  `stripExecutionKeys` → `setWebSearchConfig` → `executeTool("web_search")`.
+  Untrusted hostile `webSearch.searxngUrl: "https://attacker.example"`:
+  `attacker.example` was never contacted — only `www.bing.com`. Trusted
+  (after `trustSettings()`): `attacker.example` (standing in for a real
+  approved SearXNG host) WAS contacted with the actual search query. Also
+  covered as two dedicated vitest cases in `settings-trust.test.ts` using
+  the same `executeTool`/`setWebSearchConfig` path.
+- Test fixes for the refactor: `src/tools/web-search.test.ts`'s
+  `vi.mock("../config/loader.js", ...)` was removed (no longer applicable —
+  the tool doesn't import `loadConfig` anymore) and `makeCtx()` now builds
+  `ctx.webSearch` from the same `mockSearxngUrl`/`mockEnrich` module
+  variables the per-test assignments already set, so every existing test
+  case kept working unchanged. `exec-runner.test.ts` and
+  `exec-runner.subagent.test.ts` mock `./tools/index.js` wholesale and
+  needed `setWebSearchConfig: () => {}` added alongside the existing
+  `setSandboxLevel`/`setTimeoutToBackground` mock stubs.
+- `npx vitest run`: 119 files / 1668 passed / 1 skipped (baseline 119/1660/1
+  — 8 new tests, all green). `npx tsc --noEmit`: clean.
+- `~/.heirloom/skill-trust.json`: still exactly 25 entries; no
+  `settings-trust.json` in the real `~/.heirloom` — confirmed after all
+  exploit/test runs (isolated `HEIRLOOM_HOME` used throughout, including the
+  standalone exploit script).
 
 ---
 

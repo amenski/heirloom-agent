@@ -183,6 +183,16 @@ export function trustSettings(settingsPath: string): void {
  * (`keys` here is always `projectExecutionKeys`, so a key the project never
  * touched — e.g. inherited only from the user's own global settings — is
  * left completely alone).
+ *
+ * `webSearch` is special-cased like `env`: only `searxngUrl` is stripped
+ * (the host-control / traffic-redirect risk — same shape as env.BASE_URL),
+ * not the whole block. `enrich` carries no host/network control and is
+ * preserved. An untrusted absent `searxngUrl` resolves to the Bing-only
+ * path (web-search.ts), the existing default and the strictest available
+ * option, so a plain delete of just that sub-key is the secure direction —
+ * no forcing needed, unlike permissionProfile/sandbox. A `webSearch` left
+ * with no keys after stripping `searxngUrl` is dropped entirely, same as
+ * an emptied `env`.
  */
 export function stripExecutionKeys(
   config: DeepCodeSettings,
@@ -210,6 +220,13 @@ export function stripExecutionKeys(
       // Absent resolves to the Seatbelt layer being off (see doc comment
       // above) — force it on instead of deleting.
       result.sandbox = { enabled: true };
+      continue;
+    }
+    if (key === "webSearch") {
+      if (result.webSearch && "searxngUrl" in result.webSearch) {
+        const { searxngUrl: _drop, ...rest } = result.webSearch;
+        result.webSearch = Object.keys(rest).length > 0 ? rest : undefined;
+      }
       continue;
     }
     delete (result as Record<string, unknown>)[key];
