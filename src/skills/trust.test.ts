@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, readdirSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { checkSkillTrust, trustSkill, loadSkillTrust } from "./trust.js";
+import { checkSkillTrust, trustSkill, loadSkillTrust, saveSkillTrust, skillContentHash } from "./trust.js";
 import { SkillLoader } from "./index.js";
 
 // TOFU trust model (skill-spec.md §6, security-spec T4): global user skills
@@ -117,6 +118,97 @@ describe("trust store hygiene", () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+});
+
+describe("legacy 16-char hash migration (pre-204f856 truncated digests)", () => {
+  function legacyHash(path: string): string {
+    return createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 16);
+  }
+
+  function writeLegacyEntry(key: string, hash: string, overrides: Partial<Record<string, unknown>> = {}) {
+    const store = loadSkillTrust();
+    store.skills[key] = {
+      path: key,
+      hash,
+      firstSeen: 1000,
+      trusted: true,
+      ...overrides,
+    };
+    saveSkillTrust(store);
+  }
+
+  it("a matching legacy hash reports trusted and rewrites the entry with the full 64-char hash", () => {
+    const path = writeSkill(projectDir, "alpha");
+    const key = real(path);
+    writeLegacyEntry(key, legacyHash(path));
+
+    expect(checkSkillTrust(path, "alpha")).toEqual({ status: "trusted" });
+
+    const entry = loadSkillTrust().skills[key]!;
+    expect(entry.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(entry.hash.startsWith(legacyHash(path))).toBe(true);
+  });
+
+  it("a non-matching legacy hash still reports changed (real content edit, not just a format break)", () => {
+    const path = writeSkill(projectDir, "alpha");
+    const key = real(path);
+    // A legacy hash that does not match the current content's prefix at all.
+    writeLegacyEntry(key, "0000000000000000");
+
+    expect(checkSkillTrust(path, "alpha")).toEqual({ status: "changed", name: "alpha", sourcePath: key });
+
+    // Not silently rewritten: the stale legacy hash is left as-is.
+    expect(loadSkillTrust().skills[key]!.hash).toBe("0000000000000000");
+  });
+
+  it("a full-length 64-char entry with matching content reports trusted (unchanged behavior)", () => {
+    const path = writeSkill(projectDir, "alpha");
+    trustSkill(path, "alpha");
+    expect(checkSkillTrust(path, "alpha")).toEqual({ status: "trusted" });
+  });
+
+  it("a full-length entry is never compared by prefix: an edit still reports changed even though the legacy-length prefix would match", () => {
+    const path = writeSkill(projectDir, "alpha");
+    const key = real(path);
+    const fullHash = skillContentHash(path);
+    writeLegacyEntry(key, fullHash); // full 64-char hash, current content
+
+    writeFileSync(path, `---\nname: alpha\ndescription: test alpha\n---\nEDITED BODY`);
+    expect(checkSkillTrust(path, "alpha")).toEqual({ status: "changed", name: "alpha", sourcePath: key });
+  });
+
+  it("prunes unreachable entries (missing files) on a migration save, while live entries survive", () => {
+    const alphaPath = writeSkill(projectDir, "alpha");
+    const alphaKey = real(alphaPath);
+    const betaPath = writeSkill(projectDir, "beta");
+    const betaKey = real(betaPath);
+
+    // A gone entry: key points at a file that no longer exists on disk.
+    const goneKey = join(projectDir, ".heirloom", "skills", "gone", "SKILL.md");
+    writeLegacyEntry(goneKey, "1111111111111111");
+    // A live, already-migrated (full-length) entry that should survive untouched.
+    trustSkill(betaPath, "beta");
+    // The legacy entry that triggers the migration save.
+    writeLegacyEntry(alphaKey, legacyHash(alphaPath));
+
+    expect(checkSkillTrust(alphaPath, "alpha")).toEqual({ status: "trusted" });
+
+    const skills = loadSkillTrust().skills;
+    expect(skills[goneKey]).toBeUndefined();
+    expect(skills[alphaKey]).toBeDefined();
+    expect(skills[betaKey]).toBeDefined();
+    expect(skills[betaKey]!.hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("preserves firstSeen across the migration rewrite", () => {
+    const path = writeSkill(projectDir, "alpha");
+    const key = real(path);
+    writeLegacyEntry(key, legacyHash(path), { firstSeen: 12345 });
+
+    checkSkillTrust(path, "alpha");
+
+    expect(loadSkillTrust().skills[key]!.firstSeen).toBe(12345);
   });
 });
 

@@ -96,11 +96,39 @@ export type SkillTrustResult =
   | { status: "changed"; name: string; sourcePath: string };
 
 /**
+ * Length of the truncated hash format written by a pre-204f856 build
+ * (`sha256(...).slice(0, 16)`). Entries this short predate the switch to
+ * full-length digests and are migrated in place by `checkSkillTrust` below
+ * rather than treated as a genuine content change.
+ */
+const LEGACY_HASH_LENGTH = 16;
+
+/**
+ * Drop store entries whose key (a realpath) no longer exists on disk. Called
+ * only from the migration save path in `checkSkillTrust` — never as a
+ * separate startup sweep — so pruning piggybacks on a save that is already
+ * happening.
+ */
+function pruneUnreachable(store: SkillTrustStore): void {
+  for (const key of Object.keys(store.skills)) {
+    if (!existsSync(key)) delete store.skills[key];
+  }
+}
+
+/**
  * Classify a skill's current content against the trust store WITHOUT
  * persisting anything: the trust decision is recorded only when the user
  * explicitly confirms (trustSkill), so an unseen or edited project skill can
  * be withheld from the session until the ask-tier confirmation. A hash
  * mismatch (content edit) re-classifies as `changed` — the tamper signal.
+ *
+ * Legacy migration: a build prior to 204f856 stored truncated 16-char
+ * hashes. If the stored hash is that legacy length and matches the prefix of
+ * the freshly computed full digest, the content hasn't changed — treat it as
+ * trusted, rewrite the entry with the full-length hash, prune unreachable
+ * entries, and save. A legacy hash that does NOT match the prefix is a real
+ * content change and still reports "changed". A full-length stored hash is
+ * always compared by exact equality, never by prefix.
  */
 export function checkSkillTrust(skillPath: string, skillName: string): SkillTrustResult {
   const key = realSkillPath(skillPath);
@@ -108,6 +136,15 @@ export function checkSkillTrust(skillPath: string, skillName: string): SkillTrus
   const store = loadSkillTrust();
   const entry = store.skills[key];
   if (!entry) return { status: "new", name: skillName, sourcePath: key };
+  if (entry.hash.length === LEGACY_HASH_LENGTH) {
+    if (hash.slice(0, LEGACY_HASH_LENGTH) !== entry.hash) {
+      return { status: "changed", name: skillName, sourcePath: key };
+    }
+    store.skills[key] = { ...entry, hash };
+    pruneUnreachable(store);
+    saveSkillTrust(store);
+    return { status: "trusted" };
+  }
   if (entry.hash !== hash) return { status: "changed", name: skillName, sourcePath: key };
   return { status: "trusted" };
 }
