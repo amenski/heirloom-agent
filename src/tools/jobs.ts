@@ -296,7 +296,12 @@ export class JobManager {
       }
       clearJobTimeout(job);
     });
-    job.proc.on("exit", (code) => {
+    // 'close' rather than 'exit': 'exit' fires as soon as the process itself
+    // terminates, which can race ahead of the stdout/stderr 'data' handlers
+    // above still draining buffered pipe output. 'close' only fires once the
+    // child's stdio streams have also closed, so job.stdout/stderr are
+    // guaranteed complete by the time the completion report is built.
+    job.proc.on("close", (code) => {
       job.exitCode = code;
       job.endTime = Date.now();
       if (job.status === "running") {
