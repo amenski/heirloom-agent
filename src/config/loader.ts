@@ -115,7 +115,8 @@ export interface DeepCodeSettings {
   debugLogEnabled?: boolean;
 
   // ── MCP hardening ──
-  /** When true, only allowlisted MCP server commands may be spawned (default false) */
+  /** When true (or unset — the default), only allowlisted MCP server commands
+   *  may be spawned. Set explicitly to false to disable the allowlist. */
   strictMcpConfig?: boolean;
 
   /** When true, show the client-side estimated cost (status bar segment +
@@ -202,6 +203,16 @@ export interface LoadResult {
   config: DeepCodeSettings;
   warnings: string[];
   errors: string[];
+  /**
+   * Execution-capable top-level keys (see EXECUTION_CAPABLE_KEYS) that were
+   * present in the PROJECT settings file specifically — determined from
+   * `projectRaw` before the global/project merge, so a key present in both
+   * files is still correctly attributed to the project. Empty when there is
+   * no project settings file, or it declares none of these keys. Consumers
+   * (settings-trust.ts callers) use this list to decide what needs an
+   * explicit trust confirmation before it takes effect this session.
+   */
+  projectExecutionKeys: string[];
 }
 
 // ── Helpers ──
@@ -295,6 +306,32 @@ const KNOWN_KEYS = new Set([
   "statusline",
   "favoriteModels",
   "recentModels",
+]);
+
+/**
+ * Top-level settings keys that can cause code execution or network-traffic
+ * redirection when their VALUE comes from a project's `.heirloom/settings.json`
+ * rather than the user's own global `~/.heirloom/settings.json`:
+ *  - statusline: providers[].command runs a shell command (manager.ts); a
+ *    module provider does `import()` of a project-relative path.
+ *  - mcpServers: each entry spawns a subprocess at connect time.
+ *  - notify: spawns a script (argv-only, no shell — still an attacker-chosen
+ *    executable).
+ *  - env: only the BASE_URL redirect matters here (API traffic destination);
+ *    the rest of `env` is never splatted into process.env, so it carries no
+ *    execution risk beyond that one field.
+ *
+ * Adding a key to this set means "a project-supplied value for this key needs
+ * explicit user trust before it takes effect" (see settings-trust.ts) — the
+ * same TOFU gate hooks and skills apply to project-declared content. Global
+ * settings are the user's own and stay implicitly trusted, matching the
+ * hooks/skills global-vs-project split.
+ */
+export const EXECUTION_CAPABLE_KEYS = new Set([
+  "statusline",
+  "mcpServers",
+  "notify",
+  "env",
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
@@ -865,6 +902,14 @@ export function loadConfig(projectDir?: string): LoadResult {
   const globalRaw = loadJsonFile(globalPath);
   const projectRaw = loadJsonFile(projectPath);
 
+  // Determined from projectRaw directly, independent of the merge below, so a
+  // key present in both the global and project files is still attributed to
+  // the project — the merge alone can't tell where a key "came from" once
+  // deepMerge has combined the two objects.
+  const projectExecutionKeys = projectRaw
+    ? Object.keys(projectRaw).filter((k) => EXECUTION_CAPABLE_KEYS.has(k))
+    : [];
+
   let merged: Record<string, unknown> = {};
   if (globalRaw && projectRaw) {
     merged = deepMerge(globalRaw, projectRaw);
@@ -1238,5 +1283,5 @@ export function loadConfig(projectDir?: string): LoadResult {
     }
   }
 
-  return { config, warnings, errors };
+  return { config, warnings, errors, projectExecutionKeys };
 }

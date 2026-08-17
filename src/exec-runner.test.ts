@@ -446,11 +446,16 @@ describe("runExecMode honors config BASE_URL / API_KEY (B2)", () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it("passes env.BASE_URL and env.API_KEY from settings.json into createProvider", async () => {
+  it("passes env.BASE_URL and env.API_KEY from settings.json into createProvider (trusted project settings)", async () => {
     writeSettings({
       provider: "deepseek",
       env: { BASE_URL: "http://127.0.0.1:9", API_KEY: "sk-from-config" },
     });
+    // env.BASE_URL is an execution-capable key (settings-trust.ts) — headless
+    // fails closed on an untrusted project settings file, so this test trusts
+    // it first to observe the value actually reaching createProvider.
+    const { trustSettings } = await import("./config/settings-trust.js");
+    trustSettings(join(PROJECT_DIR, ".heirloom", "settings.json"));
 
     const { code } = await run();
 
@@ -459,6 +464,23 @@ describe("runExecMode honors config BASE_URL / API_KEY (B2)", () => {
       "deepseek",
       expect.objectContaining({ baseUrl: "http://127.0.0.1:9", apiKey: "sk-from-config" }),
     );
+  });
+
+  it("strips env.BASE_URL from an untrusted project settings file, with a stderr warning", async () => {
+    writeSettings({
+      provider: "deepseek",
+      env: { BASE_URL: "http://127.0.0.1:9", API_KEY: "sk-from-config" },
+    });
+
+    const { code, stderr } = await run();
+
+    expect(code).toBe(0);
+    expect(createProviderSpy).toHaveBeenCalledWith(
+      "deepseek",
+      expect.objectContaining({ baseUrl: undefined }),
+    );
+    expect(stderr).toContain("[warn]");
+    expect(stderr).toContain("env");
   });
 });
 
@@ -469,7 +491,7 @@ describe("runExecMode fires the notify hook at the completion boundary", () => {
   beforeEach(() => {
     mkdirSync(PROJECT_DIR, { recursive: true });
     mkdirSync(HOME_DIR, { recursive: true });
-    process.env.DEEPCODE_HOME = HOME_DIR;
+    process.env.HEIRLOOM_HOME = HOME_DIR;
     createProviderSpy.mockClear();
     fireNotifySpy.mockClear();
     providerFactory = () => scriptedProvider();
@@ -477,7 +499,7 @@ describe("runExecMode fires the notify hook at the completion boundary", () => {
   });
 
   afterEach(() => {
-    delete process.env.DEEPCODE_HOME;
+    delete process.env.HEIRLOOM_HOME;
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
@@ -500,6 +522,10 @@ describe("runExecMode fires the notify hook at the completion boundary", () => {
       notify: "/tmp/notify.sh",
       env: { SLACK_WEBHOOK_URL: "https://hooks.example/x" },
     });
+    // notify and env are execution-capable keys — trust the project settings
+    // file so the configured script path/env actually reach fireNotify.
+    const { trustSettings } = await import("./config/settings-trust.js");
+    trustSettings(join(PROJECT_DIR, ".heirloom", "settings.json"));
 
     const { code } = await run();
 
@@ -515,6 +541,8 @@ describe("runExecMode fires the notify hook at the completion boundary", () => {
 
   it("fires with status 'failed' and a FAIL_REASON when the provider throws", async () => {
     writeSettings({ provider: "deepseek", notify: "/tmp/notify.sh" });
+    const { trustSettings } = await import("./config/settings-trust.js");
+    trustSettings(join(PROJECT_DIR, ".heirloom", "settings.json"));
     providerFactory = () => ({
       name: "fake",
       // eslint-disable-next-line require-yield

@@ -1,6 +1,6 @@
 import { render } from "ink";
 import { readdirSync, realpathSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { pkg } from "./version.js";
@@ -34,10 +34,13 @@ import { MemoryStore } from "./memory/store.js";
 import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.js";
 import { AgentLoader, type AgentDef } from "./agents/index.js";
 import { loadConfig } from "./config/loader.js";
+import { checkSettingsTrust, trustSettings, stripExecutionKeys } from "./config/settings-trust.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers, disconnectAllMCPServers } from "./mcp/connector.js";
 import App from "./ui/App.js";
+import { ThemeProvider } from "./ui/contexts.js";
+import SettingsTrustPrompt from "./ui/views/SettingsTrustPrompt.js";
 import type { Message } from "./types.js";
 import type { ModelCapabilities, ProviderBalance } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
@@ -84,6 +87,36 @@ if (isMainModule()) {
   void main();
 }
 
+/**
+ * Pre-mount ask-tier TOFU confirmation for a project settings file that
+ * declares execution-capable keys (config/settings-trust.ts). Runs as its
+ * own short-lived Ink render — the main App hasn't mounted yet at this point
+ * in startup (statusline/mcpServers/env.BASE_URL are all resolved before the
+ * real render() call), so this asks the same question via a second, throwaway
+ * Ink instance instead of deferring the ask past the point the answer is
+ * needed. Resolves true = trust forever (persisted), false = skip this
+ * session (caller strips the keys).
+ */
+async function promptSettingsTrust(
+  keys: string[],
+  settingsPath: string,
+  status: "new" | "changed",
+  themeConfig: { mode?: "dark" | "light" | "auto"; name?: string; overrides?: Record<string, unknown> },
+): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const handleResolve = (trusted: boolean) => {
+      inkInstance.unmount();
+      resolvePromise(trusted);
+    };
+    const inkInstance = render(
+      <ThemeProvider config={themeConfig}>
+        <SettingsTrustPrompt keys={keys} settingsPath={settingsPath} status={status} resolve={handleResolve} />
+      </ThemeProvider>,
+      { exitOnCtrlC: false },
+    );
+  });
+}
+
 async function main() {
   initPresets();
 
@@ -100,23 +133,22 @@ async function main() {
   const parsed = await parseArguments();
   if (parsed.version || parsed.help) process.exit(0);
 
-  const configResult = loadConfig();
+  let configResult = loadConfig();
   if (configResult.errors.length > 0) {
     for (const e of configResult.errors) process.stderr.write(`Error: ${e}\n`);
     process.exit(1);
   }
   for (const w of configResult.warnings) process.stderr.write(`Warning: ${w}\n`);
 
-  const configEnv = configResult.config.env;
-
-  if (configResult.config.mcpServers) {
-    await connectMCPServers(configResult.config.mcpServers, { strictMcpConfig: configResult.config.strictMcpConfig });
-    process.on("exit", () => disconnectAllMCPServers());
-  }
-
   let initialPrompt = parsed.prompt;
   let resumeSessionId: string | true | undefined = parsed.resume;
 
+  // Headless (-p) delegates entirely to runExecMode, which does its own
+  // loadConfig + settings-trust check (exec-runner.ts) and fails closed with
+  // a stderr warning — same posture as untrusted project hooks/skills
+  // headless. Nothing execution-capable (statusline/mcpServers/notify/
+  // env.BASE_URL) is read or connected from THIS loadConfig call for the
+  // headless path; it exists here only for the earlier error/warning surface.
   if (parsed.print) {
     process.exitCode = await runExecMode({
       prompt: parsed.prompt!,
@@ -131,6 +163,40 @@ async function main() {
   if (!process.stdin.isTTY) {
     process.stderr.write("heirloom requires an interactive terminal (TTY). Re-run from a real terminal session.\n");
     process.exit(1);
+  }
+
+  // Execution-capable project settings (statusline/mcpServers/notify/
+  // env.BASE_URL) require explicit trust before they take effect (TOFU, same
+  // gate as hooks/skills). The main App hasn't mounted yet, so the ask uses a
+  // short-lived standalone Ink render (promptSettingsTrust) rather than
+  // deferring past the point these values are captured below. A "no" strips
+  // the keys from the effective config for the rest of this session.
+  if (configResult.projectExecutionKeys.length > 0) {
+    const projectSettingsPath = join(process.cwd(), ".heirloom", "settings.json");
+    const trust = checkSettingsTrust(projectSettingsPath);
+    if (trust.status !== "trusted") {
+      const trusted = await promptSettingsTrust(
+        configResult.projectExecutionKeys,
+        projectSettingsPath,
+        trust.status,
+        { mode: configResult.config.theme?.mode, name: configResult.config.theme?.name, overrides: configResult.config.theme?.overrides },
+      );
+      if (trusted) {
+        trustSettings(projectSettingsPath);
+      } else {
+        configResult = {
+          ...configResult,
+          config: stripExecutionKeys(configResult.config, configResult.projectExecutionKeys),
+        };
+      }
+    }
+  }
+
+  const configEnv = configResult.config.env;
+
+  if (configResult.config.mcpServers) {
+    await connectMCPServers(configResult.config.mcpServers, { strictMcpConfig: configResult.config.strictMcpConfig });
+    process.on("exit", () => disconnectAllMCPServers());
   }
 
   const resolvedApiKey = configEnv?.API_KEY || undefined;

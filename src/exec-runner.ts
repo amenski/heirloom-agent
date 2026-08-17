@@ -13,6 +13,8 @@ import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
 import { Orchestrator } from "./orchestrator/index.js";
 import { ModeLoader } from "./modes/loader.js";
 import { AgentLoader } from "./agents/index.js";
+import { join } from "node:path";
+import { checkSettingsTrust, stripExecutionKeys } from "./config/settings-trust.js";
 
 export interface ExecRunnerOptions {
   prompt: string;
@@ -77,8 +79,27 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       for (const e of configResult.errors) writeErr(`Error: ${e}`);
       return 1;
     }
-    const configEnv = configResult.config.env;
-    const notifyScript = configResult.config.notify;
+
+    // Execution-capable project settings (statusline/mcpServers/notify/
+    // env.BASE_URL) require explicit trust before they take effect — same
+    // TOFU gate as hooks/skills. Headless has no one to ask, so an unseen or
+    // changed project settings file fails closed: the keys are stripped and a
+    // single stderr warning names them, mirroring skills/index.ts's headless
+    // untrusted-skill skip.
+    let effectiveConfig = configResult.config;
+    if (configResult.projectExecutionKeys.length > 0) {
+      const projectSettingsPath = join(options.projectRoot, ".heirloom", "settings.json");
+      const trust = checkSettingsTrust(projectSettingsPath);
+      if (trust.status !== "trusted") {
+        writeErr(
+          `[warn] Untrusted project settings (${trust.status}) — skipping execution-capable keys: ${configResult.projectExecutionKeys.join(", ")} (${projectSettingsPath})`,
+        );
+        effectiveConfig = stripExecutionKeys(configResult.config, configResult.projectExecutionKeys);
+      }
+    }
+
+    const configEnv = effectiveConfig.env;
+    const notifyScript = effectiveConfig.notify;
     // commands.timeoutToBackground (plan §3, default ON) — same default
     // resolution the TUI uses; run_bash migration works identically headless.
     setTimeoutToBackground(configResult.config.commands?.timeoutToBackground ?? true);
@@ -153,7 +174,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     const permissions = new PermissionEngine(
       configResult.config.permissions,
       options.projectRoot,
-      Object.keys(configResult.config.mcpServers ?? {}).length > 0,
+      Object.keys(effectiveConfig.mcpServers ?? {}).length > 0,
     );
     // Same construction the TUI uses (cli.tsx): a configured permissionProfile
     // adds the layer-1 capability gate — a profile deny fails closed exactly

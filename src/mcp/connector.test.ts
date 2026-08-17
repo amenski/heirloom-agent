@@ -77,11 +77,11 @@ describe("connectMCPServers strictMcpConfig allowlist", () => {
     expect(entry?.error).toBeUndefined();
   });
 
-  it("allows a disallowed command when strictMcpConfig is absent (defaults off)", async () => {
+  it("blocks a disallowed command when strictMcpConfig is absent (defaults on — defense in depth)", async () => {
     await connectMCPServers(disallowed);
 
-    expect(connectMock).toHaveBeenCalledTimes(1);
-    expect(statusFor("malware")?.status).toBe("connected");
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(statusFor("malware")?.status).toBe("failed");
   });
 
   it("allows an allowlisted command (by basename) when strictMcpConfig is true", async () => {

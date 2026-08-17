@@ -179,7 +179,11 @@ export async function connectMCPServers(
   servers: Record<string, McpServerConfig>,
   options?: { strictMcpConfig?: boolean },
 ): Promise<void> {
-  strictMcpConfig = options?.strictMcpConfig ?? false;
+  // Defaults to true (defense in depth): an MCP server command not in
+  // ALLOWED_MCP_COMMANDS is blocked unless the config explicitly opts out
+  // with `"strictMcpConfig": false`. Previously defaulted to false, which
+  // left the allowlist off for anyone who never set the flag.
+  strictMcpConfig = options?.strictMcpConfig ?? true;
   for (const [name, config] of Object.entries(servers)) {
     serverConfigsMap.set(name, config);
     statusMap.set(name, "starting");
