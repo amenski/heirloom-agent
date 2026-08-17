@@ -149,7 +149,12 @@ export function runBashTimed(
       clearTimeout(timer);
       resolve({ content: `Exit code: -1\nFailed to start: ${(err as Error).message}` });
     });
-    proc.on("exit", (code) => {
+    // 'close' rather than 'exit', same reasoning as jobs.ts (d864909): 'exit'
+    // fires when the process terminates, before the stdout/stderr 'data'
+    // handlers above have necessarily drained the pipes — so resolving there
+    // can hand back an exit code with truncated or empty output. 'close' waits
+    // for the stdio streams to close, so the buffers are complete.
+    proc.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
