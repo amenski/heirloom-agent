@@ -43,6 +43,17 @@ settings, agent definitions — now passes a trust gate first.
   carve-outs for temp dirs and the npm cache.
 - Added skill and MCP tool-definition trust prompts; SearXNG secret handling fixes;
   registry-host pre-commit hook and CI guard.
+- **Fixed command injection in the `search` tool.** `search` built a shell string by
+  interpolating the model-supplied pattern into `grep -rn "<pattern>" "<dir>"`, so a
+  pattern containing `$(...)` executed. It sits in the `read` tool group — the
+  low-friction tier users are most likely to auto-allow — and the model is steerable by
+  repo content, web results, and MCP output, so reaching it did not require a hostile
+  user. Now uses an argv array with no shell.
+- **Fixed unsanitized tool and MCP output reaching the terminal.** MCP server responses,
+  `search` results, `read_file` contents, and web-search titles/snippets were returned
+  without stripping control characters, so a hostile file or server could emit OSC 52
+  (clipboard write) or cursor-repositioning sequences — the latter matters most
+  immediately before a permission prompt.
 - Fixed a test-isolation leak that wrote ~1786 junk entries into the real trust store.
 
 ### Added
@@ -88,12 +99,18 @@ settings, agent definitions — now passes a trust gate first.
 
 ### Known limitations
 
-- The **MCP response path** and **tool-level input handling** have not been audited. A
-  malicious MCP server's responses reach the model without passing the gates added in
-  this release.
-- The settings gate shipped in this cycle was bypassable on its first attempt and
-  needed a follow-up fix. Treat "project config is no longer trusted by default" as
-  the accurate claim — not "safe to run in untrusted repos".
+- **`search`'s `dir` argument is not constrained to the workspace** — it can read
+  outside it. The only path-containment prior art is Seatbelt-gated and not wired into
+  that handler, so this is left as an open decision rather than an invented scheme.
+- Two controls in this release needed follow-up fixes before they held: the settings
+  gate was bypassable on its first attempt, and `search` shipped with a shell-string
+  sink no one had classified as dangerous. Both are fixed here, but treat "project
+  config is no longer trusted by default" as the accurate claim — not "safe to run in
+  untrusted repos".
+
+The MCP response path and tool-level input handling were audited before this tag; the
+issues found are listed above. A sweep of all twelve subprocess spawn sites found no
+further injection sinks.
 
 ## [0.2.1] — 2026-08-10
 
