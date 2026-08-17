@@ -350,4 +350,127 @@ here doesn't reintroduce the same bypass.
   literal JSON text in fixtures. See the helper comment in
   `src/config/settings-trust.test.ts`.
 - **Do not commit. Do not push.** The user reviews before publishing.
-- **Do not implement folder-level trust** — still an open design question.
+- ~~Do not implement folder-level trust — still an open design question.~~
+  Implemented, see "Folder-level trust (fast path)" below.
+
+---
+
+## Folder-level trust (fast path)
+
+**Status:** `[x]` — implemented and verified
+**Files:** `src/config/folder-trust.ts` (+ `folder-trust.test.ts`),
+`src/ui/views/FolderTrustPrompt.tsx`, wiring in `src/cli.tsx`.
+`src/exec-runner.ts` is deliberately **unmodified** (see below).
+
+### What it is
+
+A single bulk-approval question — "Do you trust the files in this folder?" —
+asked once per project directory, layered in front of the three existing
+independent per-artifact TOFU gates (skills: `src/skills/trust.ts`, hooks:
+`src/hooks/trust.ts`, settings: `src/config/settings-trust.ts`). It is a
+convenience, not a fourth trust mechanism: answering "yes" does nothing more
+than bulk-write into the exact same three trust stores those gates already
+read (`skill-trust.json`, `settings-trust.json`, `hooks-trust.json`), for
+exactly the artifacts present in the project **right now** — using each
+gate's own key derivation (realpath + full sha256 for skills/settings, the
+content-hashed `hookTrustKey` for hooks). A "yes" is fully equivalent to
+answering "yes" to every pending per-artifact prompt individually.
+
+### Deliberate limits (do not "fix" these)
+
+- **Not a blanket grant.** Folder trust's own store
+  (`<HEIRLOOM_HOME>/folder-trust.json`) records the content hash of every
+  artifact that was present at trust time. If anything is **added** or
+  **edited** afterward, `checkFolderTrust` reclassifies the folder as
+  `changed` — but more importantly, the artifact itself has no matching entry
+  (or a stale one) in its own gate's store, so the underlying gate
+  (`checkSkillTrust` / `checkSettingsTrust` / a hook's `hookTrustKey`)
+  independently re-classifies as `new`/`changed` and re-prompts, completely
+  unaware folder trust exists. This is the tamper signal that caught a
+  hostile `permissionProfile: "unrestricted"` during testing, and it survives
+  folder trust by construction — folder trust never *shortcuts* a gate's own
+  classification logic, it only *pre-seeds* the gate's store with a decision
+  equivalent to a manual "yes".
+- **Headless never auto-trusts.** `src/exec-runner.ts` has **no folder-trust
+  code at all** — it doesn't import `checkFolderTrust`/`trustFolder`/the
+  prompt. This is intentional, not an oversight: headless has no one to ask,
+  so it must never itself decide "yes" for a folder. It doesn't need to,
+  either — a folder trusted in a *prior interactive* session already
+  bulk-wrote into `skill-trust.json`/`settings-trust.json`/`hooks-trust.json`,
+  and headless's existing per-artifact gates (`checkSettingsTrust`,
+  `SkillLoader`'s headless skip, `HookRunner.verifyTrust()`) read those exact
+  same stores unchanged. So a prior interactive "yes" is honored transparently,
+  per-artifact, while anything unseen/edited/added still fails closed with the
+  same stderr warnings as before folder trust existed. Proven end-to-end by
+  driving the real `runExecMode`: untrusted → `[warn] Untrusted project
+  settings...` fires; after a prior `trustFolder()` call → no warning, the key
+  takes effect.
+
+### Hook approach and why
+
+Hooks are checked **lazily at fire time**
+(`HookRunner.ensureTrusted`/`trustKeyFor`, `hooks/runner.ts`), not at startup,
+so a naive "mark everything trusted at startup" sweep can't cover them — at
+folder-trust time you don't even know which hooks will fire this session.
+
+Chosen approach: **at folder-trust time, enumerate the project's parsed hook
+entries (`configResult.config.hooks.entries`, already resolved by
+`parseHooksConfig` before `HookRunner` is even constructed) and pre-record a
+trust entry into `hooks-trust.json` for each, using the exact same key
+derivation `HookRunner.trustKeyFor` computes lazily** —
+`hookContentHash(command, projectDir, cache)` then
+`hookTrustKey(event, matcher, command, contentHash, projectDir)`.
+
+This was preferred over the alternative (having the lazy check consult
+folder trust as a fallback) because it requires **zero changes to
+`hooks/runner.ts` or `hooks/trust.ts`**: `HookRunner` stays completely
+unaware folder trust exists. `verifyTrust()`/`ensureTrusted()` already call
+`isHookTrusted(loadHookTrust(), key)` — they simply find the pre-recorded
+entry already there and treat it exactly as if the user had answered the
+`HookTrustPrompt` directly. Because the trust key already **encodes** the
+hook's content hash (command string, or — for a file command — the script's
+own file content, mtime-gated), an edited command or script produces a
+different key with no matching pre-recorded entry, and the lazy check falls
+through to a normal ask with no special-casing anywhere. Change detection for
+hooks was therefore free — it's the same mechanism the per-hook gate already
+had, not a new one folder-trust had to invent.
+
+### Wiring
+
+`src/cli.tsx`: a new `promptFolderTrust()` (same throwaway pre-mount Ink
+render pattern as the existing `promptSettingsTrust()`) runs in `main()`
+immediately after the TTY check, **before** the settings-trust gate (which
+itself runs before skills load / hooks' `verifyTrust()`). `buildFolderContentSummary()`
+assembles what's gated right now from `configResult` (settings keys, project
+hook entries) plus a dedicated lightweight skill scan
+(`discoverProjectSkills` — skills aren't loaded by `SkillLoader` yet at this
+point in startup, so folder trust can't reuse it). If nothing is gated
+(`hasGatedContent` false), no prompt fires at all — matching a project with
+no untrusted gated content never being asked. A "no" falls through with zero
+side effects; the three gates below run exactly as before, unaware anything
+happened.
+
+`src/exec-runner.ts`: intentionally untouched (see "Headless never
+auto-trusts" above) — a comment at the settings-trust gate documents why.
+
+### Verification
+
+- `npx vitest run`: 120 files / 1682 passed / 1 skipped (baseline
+  119/1668/1 — 14 new tests in `src/config/folder-trust.test.ts`, all green,
+  no regressions). `npx tsc --noEmit`: clean.
+- Real-run proof (isolated `HEIRLOOM_HOME`, driving the actual production
+  functions, not mocks): (a) a project with a skill + `mcpServers` settings
+  key — `checkFolderTrust` starts `new`, `trustFolder()` flips it (and the
+  real `checkSkillTrust`/`checkSettingsTrust`) to `trusted`; (b) editing the
+  settings file afterward flips both `checkSettingsTrust` and
+  `checkFolderTrust` back to `changed`; (c) adding a new skill afterward
+  reports it as `new` via `checkSkillTrust` (never silently granted trust by
+  the earlier folder decision) and `checkFolderTrust` as `changed`. A second
+  script drove the real `runExecMode` end-to-end and confirmed the headless
+  stderr warning fires when untrusted and is silent (gate passes) after a
+  simulated prior interactive `trustFolder()` call, with no folder-trust code
+  present in `exec-runner.ts` at all.
+- `~/.heirloom/skill-trust.json`: still exactly 25 entries; no stray
+  `folder-trust.json`/`settings-trust.json` in the real `~/.heirloom` —
+  confirmed after all test/exploit runs (isolated `HEIRLOOM_HOME`/`HOME`
+  throughout).

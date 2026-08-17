@@ -35,12 +35,14 @@ import { SkillLoader, createLoadSkillTool, type SkillDef } from "./skills/index.
 import { AgentLoader, type AgentDef } from "./agents/index.js";
 import { loadConfig } from "./config/loader.js";
 import { checkSettingsTrust, trustSettings, stripExecutionKeys } from "./config/settings-trust.js";
+import { checkFolderTrust, trustFolder, buildFolderContentSummary, hasGatedContent } from "./config/folder-trust.js";
 import { readCredentialsFile } from "./config/credentials.js";
 import { enableDebug } from "./debug/logger.js";
 import { connectMCPServers, disconnectAllMCPServers } from "./mcp/connector.js";
 import App from "./ui/App.js";
 import { ThemeProvider } from "./ui/contexts.js";
 import SettingsTrustPrompt from "./ui/views/SettingsTrustPrompt.js";
+import FolderTrustPrompt from "./ui/views/FolderTrustPrompt.js";
 import type { Message } from "./types.js";
 import type { ModelCapabilities, ProviderBalance } from "./providers/types.js";
 import { resolveTheme, ThemeContextValue, ANSI, ansiFg, ANSI_RESET } from "./ui/theme.js";
@@ -117,6 +119,32 @@ async function promptSettingsTrust(
   });
 }
 
+/**
+ * Pre-mount folder-level "fast path" confirmation (config/folder-trust.ts),
+ * shown BEFORE the three existing per-artifact gates. Same throwaway-Ink-render
+ * pattern as promptSettingsTrust, for the same reason: the main App hasn't
+ * mounted yet at this point in startup.
+ */
+async function promptFolderTrust(
+  projectDir: string,
+  summary: import("./config/folder-trust.js").FolderContentSummary,
+  status: "new" | "changed",
+  themeConfig: { mode?: "dark" | "light" | "auto"; name?: string; overrides?: Record<string, unknown> },
+): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const handleResolve = (trusted: boolean) => {
+      inkInstance.unmount();
+      resolvePromise(trusted);
+    };
+    const inkInstance = render(
+      <ThemeProvider config={themeConfig}>
+        <FolderTrustPrompt projectDir={projectDir} summary={summary} status={status} resolve={handleResolve} />
+      </ThemeProvider>,
+      { exitOnCtrlC: false },
+    );
+  });
+}
+
 async function main() {
   initPresets();
 
@@ -163,6 +191,34 @@ async function main() {
   if (!process.stdin.isTTY) {
     process.stderr.write("heirloom requires an interactive terminal (TTY). Re-run from a real terminal session.\n");
     process.exit(1);
+  }
+
+  // Folder-level "fast path" trust (config/folder-trust.ts): runs BEFORE the
+  // three per-artifact gates below. A "yes" bulk-applies to the skill/
+  // settings/hooks trust stores for exactly what's present right now, so none
+  // of the three gates below prompt for it; a "no" (or nothing gated at all)
+  // falls through to exactly today's per-artifact behavior. The theme config
+  // isn't resolved yet at this point (it comes from configResult.config,
+  // which is what's being asked about), so this uses the same default the
+  // pre-mount settings prompt falls back to before that value exists.
+  const projectDirForTrust = process.cwd();
+  const folderSummary = buildFolderContentSummary(projectDirForTrust, configResult);
+  if (hasGatedContent(folderSummary)) {
+    const folderTrust = checkFolderTrust(projectDirForTrust, folderSummary);
+    if (folderTrust.status !== "trusted") {
+      const trusted = await promptFolderTrust(
+        projectDirForTrust,
+        folderSummary,
+        folderTrust.status,
+        { mode: configResult.config.theme?.mode, name: configResult.config.theme?.name, overrides: configResult.config.theme?.overrides },
+      );
+      if (trusted) {
+        trustFolder(projectDirForTrust, folderSummary);
+      }
+      // "no" falls through — the three gates below run their normal
+      // per-artifact prompts/strip/skip logic, completely unaware this ask
+      // ever happened.
+    }
   }
 
   // Execution-capable project settings (statusline/mcpServers/notify/

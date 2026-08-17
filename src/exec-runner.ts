@@ -80,6 +80,17 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       return 1;
     }
 
+    // Folder-level "fast path" trust (config/folder-trust.ts) is
+    // INTENTIONALLY not wired here: headless must never auto-trust a folder
+    // (there's no one to ask), so it never calls checkFolderTrust/
+    // trustFolder/the prompt. It does NOT need to — a folder previously
+    // trusted in an interactive session already bulk-wrote into
+    // skill-trust.json / settings-trust.json / hooks-trust.json, the exact
+    // same stores the three gates below (and SkillLoader / HookRunner) read
+    // independently of folder trust. So a prior interactive "yes" is honored
+    // here transparently, per-artifact, while an unseen/edited/added artifact
+    // still fails closed exactly as it did before folder trust existed.
+
     // Execution-capable project settings (statusline/mcpServers/notify/
     // env.BASE_URL) require explicit trust before they take effect — same
     // TOFU gate as hooks/skills. Headless has no one to ask, so an unseen or
