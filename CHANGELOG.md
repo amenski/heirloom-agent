@@ -54,6 +54,14 @@ settings, agent definitions — now passes a trust gate first.
   without stripping control characters, so a hostile file or server could emit OSC 52
   (clipboard write) or cursor-repositioning sequences — the latter matters most
   immediately before a permission prompt.
+- **Fixed unconstrained directory arguments in `search` and `glob`.** Both took a
+  directory from the model with no validation and carried an unconditional builtin
+  allow, so a search of `~/.ssh` returned matching lines from private keys with no
+  prompt — while `read_file` on the same file has always asked. The underlying cause
+  was that neither argument was ever extracted into the permission subject, so no path
+  rule could match them even in principle. Both now participate in rule matching, carry
+  the same secret-path guards `read_file` has, and prompt when the directory resolves
+  (via realpath, so symlinks cannot escape) outside the workspace.
 - Fixed a test-isolation leak that wrote ~1786 junk entries into the real trust store.
 
 ### Added
@@ -99,9 +107,6 @@ settings, agent definitions — now passes a trust gate first.
 
 ### Known limitations
 
-- **`search`'s `dir` argument is not constrained to the workspace** — it can read
-  outside it. The only path-containment prior art is Seatbelt-gated and not wired into
-  that handler, so this is left as an open decision rather than an invented scheme.
 - Two controls in this release needed follow-up fixes before they held: the settings
   gate was bypassable on its first attempt, and `search` shipped with a shell-string
   sink no one had classified as dangerous. Both are fixed here, but treat "project
