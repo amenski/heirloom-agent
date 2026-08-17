@@ -12,9 +12,9 @@ import { resolveHome } from "../config/loader.js";
  * Global-settings hooks never consult this store — they are trusted
  * implicitly.
  *
- * Unlike skills (which auto-trust on first sight and only *notify*), an unseen
- * project hook requires an explicit ask-tier confirmation before it ever runs:
- * y = trust forever (persisted), n = skip this session.
+ * Like skills, an unseen project hook requires an explicit ask-tier
+ * confirmation before it ever runs: y = trust forever (persisted), n = skip
+ * this session.
  */
 
 export interface TrustEntry {
