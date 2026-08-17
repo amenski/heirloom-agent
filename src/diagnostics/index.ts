@@ -5,6 +5,15 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
+/**
+ * The returned command MUST stay a hardcoded literal. package.json comes from
+ * the working directory — a cloned repo is untrusted input — and the result
+ * goes to runLinter, which runs it through a shell. Reading the command from
+ * the file (`pkg.scripts.lint`, a `lintCommand` field, …) would turn cloning a
+ * repo into arbitrary code execution, which is exactly the shape that made
+ * `search` injectable before 16ddaaf. The file may decide only WHETHER a
+ * linter runs, never WHAT runs.
+ */
 function detectLinter(workingDir: string): string | null {
   const pkgPath = join(workingDir, "package.json");
   if (!existsSync(pkgPath)) return null;
@@ -20,6 +29,7 @@ function detectLinter(workingDir: string): string | null {
   return null;
 }
 
+/** Shell execution — safe only because `cmd` is a literal from detectLinter. */
 async function runLinter(cmd: string, cwd: string): Promise<string> {
   try {
     await execAsync(cmd, { cwd, encoding: "utf-8", timeout: 30000 });
