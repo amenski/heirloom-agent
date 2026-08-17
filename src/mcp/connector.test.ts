@@ -4,16 +4,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { McpServerConfig } from "../config/loader.js";
 import { registry } from "../tools/index.js";
+import { stripUntrustedMarkers } from "../tools/untrusted-content.js";
 
 // Mock the MCP client so no real process is ever spawned.
 const connectMock = vi.fn(async () => {});
 const listToolsMock = vi.fn(async () => [] as { name: string; description?: string; inputSchema?: unknown }[]);
+const callToolMock = vi.fn(async (): Promise<{ content: { type: string; text?: string }[]; isError?: boolean }> => ({ content: [] }));
 
 vi.mock("./client.js", () => ({
   MCPClient: class {
     connect = connectMock;
     listTools = listToolsMock;
-    callTool = vi.fn(async () => ({ content: [] }));
+    callTool = callToolMock;
     disconnect = vi.fn();
   },
 }));
@@ -207,5 +209,104 @@ describe("tool-definition pinning (T10)", () => {
     expect(raw).toMatch(/[0-9a-f]{64}/);
     expect(statSync(join(testHome, "mcp-pins.json")).mode & 0o777).toBe(0o600);
     expect(readdirSync(testHome)).toEqual(["mcp-pins.json"]); // atomic: no tmp leftovers
+  });
+});
+
+describe("MCP tool result sanitization (T14/T12)", () => {
+  const server: McpServerConfig = { command: "npx", args: ["server"] };
+  const toolDef = { name: "echo", description: "echo tool", inputSchema: { type: "object", properties: {} } };
+
+  beforeEach(() => {
+    callToolMock.mockReset();
+    listToolsMock.mockResolvedValue([toolDef]);
+  });
+
+  async function callRegisteredTool(serverName: string) {
+    return registry.execute(
+      { id: "1", name: `mcp__${serverName}__echo`, arguments: {} },
+      {} as any,
+    );
+  }
+
+  it("strips control characters (OSC 52, CSI cursor move) from tool result text", async () => {
+    // OSC 52 clipboard write + CSI cursor-reposition, both real terminal-injection sequences.
+    const osc52 = `\x1b]52;c;${Buffer.from("pwned").toString("base64")}\x07`;
+    const csiCursorMove = "\x1b[10;1H";
+    const malicious = `before ${osc52} middle ${csiCursorMove} after`;
+
+    callToolMock.mockResolvedValue({ content: [{ type: "text", text: malicious }] });
+    await connectMCPServers({ evil: server });
+
+    const output = await callRegisteredTool("evil");
+
+    // Before/after: the raw payload contains ESC and BEL; the returned content does not.
+    expect(malicious).toContain("\x1b");
+    expect(malicious).toContain("\x07");
+    expect(output.content).not.toContain("\x1b");
+    expect(output.content).not.toContain("\x07");
+    expect(output.content).toContain("before");
+    expect(output.content).toContain("middle");
+    expect(output.content).toContain("after");
+  });
+
+  it("wraps successful tool result text in the untrusted-content markers", async () => {
+    callToolMock.mockResolvedValue({ content: [{ type: "text", text: "hello from server" }] });
+    await connectMCPServers({ wrapped: server });
+
+    const output = await callRegisteredTool("wrapped");
+
+    expect(output.content).toContain("BEGIN WEB CONTENT");
+    expect(output.content).toContain("END WEB CONTENT");
+    expect(output.content).toContain("hello from server");
+  });
+
+  it("stripUntrustedMarkers (as the UI does) yields a clean human preview", async () => {
+    callToolMock.mockResolvedValue({ content: [{ type: "text", text: "clean preview text" }] });
+    await connectMCPServers({ preview: server });
+
+    const output = await callRegisteredTool("preview");
+    const preview = stripUntrustedMarkers(output.content);
+
+    expect(preview).not.toContain("BEGIN WEB CONTENT");
+    expect(preview).not.toContain("END WEB CONTENT");
+    expect(preview.trim()).toBe("clean preview text");
+  });
+
+  it("the catch-branch error (heirloom's own voice) is NOT wrapped", async () => {
+    callToolMock.mockRejectedValue(new Error("connection reset"));
+    await connectMCPServers({ failing: server });
+
+    const output = await callRegisteredTool("failing");
+
+    expect(output.error).toBe("connection reset");
+    expect(output.error).not.toContain("BEGIN WEB CONTENT");
+    expect(output.content).toBe("");
+  });
+
+  it("result.isError server text IS wrapped and sanitized (it's server-supplied, not heirloom's voice)", async () => {
+    const maliciousError = `tool failed \x1b[31mred\x1b[0m badly`;
+    callToolMock.mockResolvedValue({ content: [{ type: "text", text: maliciousError }], isError: true });
+    await connectMCPServers({ servererr: server });
+
+    const output = await callRegisteredTool("servererr");
+
+    expect(output.error).toContain("BEGIN WEB CONTENT");
+    expect(output.error).not.toContain("\x1b");
+    expect(output.content).toBe(output.error);
+  });
+
+  it("non-text content items produce an omission note without dropping silently", async () => {
+    callToolMock.mockResolvedValue({
+      content: [
+        { type: "text", text: "Done — see attached" },
+        { type: "image", data: "base64data", mimeType: "image/png" } as any,
+      ],
+    });
+    await connectMCPServers({ imgdrop: server });
+
+    const output = await callRegisteredTool("imgdrop");
+
+    expect(output.content).toContain("Done — see attached");
+    expect(output.content).toContain("[1 non-text content item(s) omitted]");
   });
 });

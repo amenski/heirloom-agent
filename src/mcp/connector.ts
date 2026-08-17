@@ -3,6 +3,7 @@ import { registry } from "../tools/index.js";
 import type { ToolGroup } from "../tools/types.js";
 import type { McpServerConfig } from "../config/loader.js";
 import { loadMcpPins, mcpPinsChanged, pinMcpServer } from "./pins.js";
+import { wrapUntrusted, sanitizeControlChars } from "../tools/untrusted-content.js";
 
 export type McpServerStatus = "connected" | "failed" | "reconnecting" | "starting";
 
@@ -143,14 +144,22 @@ export async function reconnectMCPServer(
         handler: async (args) => {
           try {
             const result = await client.callTool(tool.name, args);
-            const content = result.content
-              .filter((c) => c.type === "text")
-              .map((c) => c.text)
-              .join("\n");
+            const textItems = result.content.filter((c) => c.type === "text");
+            const omitted = result.content.length - textItems.length;
+            const text = textItems.map((c) => c.text).join("\n");
+            // MCP server output is external content — same treatment as
+            // web-fetch/web-search/bash (T14 sanitize, T12 wrap). Applies to
+            // the isError branch too: `text` there is still server-supplied,
+            // not heirloom's own voice, so it's just as untrusted.
+            const sanitized = sanitizeControlChars(text);
+            const note = omitted > 0 ? `\n[${omitted} non-text content item(s) omitted]` : "";
+            const content = wrapUntrusted(sanitized) + note;
             return result.isError
               ? { content, error: content }
               : { content };
           } catch (err) {
+            // heirloom's own transport-layer error (timeout, disconnect, etc.)
+            // — its own voice, so it stays unwrapped.
             return { content: "", error: (err as Error).message };
           }
         },
