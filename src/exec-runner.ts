@@ -107,10 +107,10 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // sandbox (permission-profile.md §8, phase (e)) — same resolution the
     // TUI uses; Seatbelt enforcement is identical headless.
     setSandboxLevel(
-      configResult.config.sandbox?.enabled &&
-      configResult.config.permissionProfile &&
-      configResult.config.permissionProfile.level !== "unrestricted"
-        ? configResult.config.permissionProfile.level
+      effectiveConfig.sandbox?.enabled &&
+      effectiveConfig.permissionProfile &&
+      effectiveConfig.permissionProfile.level !== "unrestricted"
+        ? effectiveConfig.permissionProfile.level
         : undefined,
     );
 
@@ -172,7 +172,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // it denies and prints one stderr line so a scripted user knows why a run
     // did less than expected. See docs/permission-spec.md § Headless Interaction.
     const permissions = new PermissionEngine(
-      configResult.config.permissions,
+      effectiveConfig.permissions,
       options.projectRoot,
       Object.keys(effectiveConfig.mcpServers ?? {}).length > 0,
     );
@@ -180,8 +180,8 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // adds the layer-1 capability gate — a profile deny fails closed exactly
     // like a rule deny (no prompt; the headless askUser below is never
     // reached). Absent → layer 1 does not exist (permission-profile.md §9).
-    const permissionProfile = configResult.config.permissionProfile
-      ? new ProfileEvaluator(configResult.config.permissionProfile, options.projectRoot)
+    const permissionProfile = effectiveConfig.permissionProfile
+      ? new ProfileEvaluator(effectiveConfig.permissionProfile, options.projectRoot)
       : undefined;
 
     // Lifecycle hooks (hooks-spec.md): headless mode skips untrusted project

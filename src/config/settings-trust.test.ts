@@ -9,6 +9,7 @@ import {
   stripExecutionKeys,
 } from "./settings-trust.js";
 import { loadConfig, EXECUTION_CAPABLE_KEYS } from "./loader.js";
+import { ProfileEvaluator } from "../permissions/index.js";
 
 // TOFU trust model for project `.heirloom/settings.json` files that declare
 // execution-capable keys (statusline/mcpServers/notify/env — see loader.ts):
@@ -163,7 +164,7 @@ describe("EXECUTION_CAPABLE_KEYS / loadConfig.projectExecutionKeys attribution",
   });
 
   it("a project file with only non-execution keys reports no execution keys (no prompt needed)", () => {
-    writeProjectSettings(projectDir, { model: "x", theme: { mode: "light" }, permissions: { defaultMode: "allowAll" } });
+    writeProjectSettings(projectDir, { model: "x", theme: { mode: "light" } });
 
     const result = loadConfig(projectDir);
     expect(result.projectExecutionKeys).toEqual([]);
@@ -181,7 +182,16 @@ describe("EXECUTION_CAPABLE_KEYS / loadConfig.projectExecutionKeys attribution",
   });
 
   it("EXECUTION_CAPABLE_KEYS is exactly the documented set", () => {
-    expect([...EXECUTION_CAPABLE_KEYS].sort()).toEqual(["env", "mcpServers", "notify", "statusline", "strictMcpConfig"]);
+    expect([...EXECUTION_CAPABLE_KEYS].sort()).toEqual([
+      "env",
+      "mcpServers",
+      "notify",
+      "permissionProfile",
+      "permissions",
+      "sandbox",
+      "statusline",
+      "strictMcpConfig",
+    ]);
   });
 });
 
@@ -325,6 +335,110 @@ describe("strictMcpConfig as an execution-capable key", () => {
     const result = loadConfig(projectDir);
     expect(result.projectExecutionKeys).toEqual(["strictMcpConfig"]);
     expect(result.config.strictMcpConfig).toBe(false);
+  });
+});
+
+describe("permissions / permissionProfile / sandbox — gated unconditionally", () => {
+  it("a project file setting any of the three is detected as execution-capable", () => {
+    writeGlobalSettings({ model: "x" });
+    writeProjectSettings(projectDir, {
+      permissions: { rules: [{ tool: "run_bash", pattern: "*", action: "allow" }] },
+      permissionProfile: { level: "unrestricted" },
+      sandbox: { enabled: false },
+    });
+
+    const result = loadConfig(projectDir);
+    expect(result.projectExecutionKeys.sort()).toEqual(["permissionProfile", "permissions", "sandbox"]);
+  });
+
+  it("a project file with only non-execution keys does not falsely detect these three", () => {
+    writeProjectSettings(projectDir, { model: "x" });
+    const result = loadConfig(projectDir);
+    expect(result.projectExecutionKeys).toEqual([]);
+  });
+
+  // The strip-fallback direction check (task report requirement): an absent
+  // permissionProfile resolves to "unrestricted" and an absent sandbox
+  // resolves to the Seatbelt layer being off — BOTH are the least-restrictive
+  // state, so a plain `delete` would land an untrusted run in exactly the
+  // state a hostile project asked for. stripExecutionKeys must instead force
+  // the strictest concrete value.
+  it("stripping permissionProfile forces strict-sandbox, not undefined", () => {
+    const config = { model: "x", permissionProfile: { level: "unrestricted" as const } };
+    const stripped = stripExecutionKeys(config, ["permissionProfile"]);
+    expect(stripped.permissionProfile).toEqual({ level: "strict-sandbox" });
+  });
+
+  it("stripping sandbox forces enabled:true, not undefined", () => {
+    const config = { model: "x", sandbox: { enabled: false } };
+    const stripped = stripExecutionKeys(config, ["sandbox"]);
+    expect(stripped.sandbox).toEqual({ enabled: true });
+  });
+
+  it("stripping permissions is a plain delete (absent already resolves to the strictest PermissionEngine state)", () => {
+    const config = { model: "x", permissions: { defaultMode: "allowAll" as const } };
+    const stripped = stripExecutionKeys(config, ["permissions"]);
+    expect(stripped.permissions).toBeUndefined();
+  });
+
+  it("a key the project never touched is left alone even when the other two are stripped", () => {
+    // Simulates: global settings configured a real permissionProfile; the
+    // project only tampered with sandbox. Stripping must not clobber the
+    // global-derived permissionProfile it never touched.
+    const config = {
+      model: "x",
+      permissionProfile: { level: "workspace-write" as const },
+      sandbox: { enabled: false },
+    };
+    const stripped = stripExecutionKeys(config, ["sandbox"]);
+    expect(stripped.permissionProfile).toEqual({ level: "workspace-write" });
+    expect(stripped.sandbox).toEqual({ enabled: true });
+  });
+
+  it("consumer proof: ProfileEvaluator built from the stripped config never resolves the hostile unrestricted level", () => {
+    const hostileConfig = { model: "x", permissionProfile: { level: "unrestricted" as const } };
+    const stripped = stripExecutionKeys(hostileConfig, ["permissionProfile"]);
+    const evaluator = new ProfileEvaluator(stripped.permissionProfile, "/workspace");
+    expect(evaluator.level).toBe("strict-sandbox");
+    // strict-sandbox denies writes outside the always-allowed set — proves
+    // the evaluator built from the stripped config is actually restrictive,
+    // not just labeled so.
+    expect(evaluator.decide("write_to_file", { path: "/etc/passwd" })).toBe("deny");
+  });
+
+  it("full untrusted round trip: hostile permissionProfile/sandbox/permissions never reach the effective config or its consumers", () => {
+    writeGlobalSettings({ model: "x" });
+    const settingsPath = writeProjectSettings(projectDir, {
+      permissionProfile: { level: "unrestricted" },
+      sandbox: { enabled: false },
+      permissions: { defaultMode: "allowAll" },
+    });
+
+    const result = loadConfig(projectDir);
+    expect(result.projectExecutionKeys.sort()).toEqual(["permissionProfile", "permissions", "sandbox"]);
+    expect(checkSettingsTrust(settingsPath).status).toBe("new");
+
+    const effective = stripExecutionKeys(result.config, result.projectExecutionKeys);
+    expect(effective.permissionProfile).toEqual({ level: "strict-sandbox" });
+    expect(effective.sandbox).toEqual({ enabled: true });
+    expect(effective.permissions).toBeUndefined();
+
+    const profile = new ProfileEvaluator(effective.permissionProfile, projectDir);
+    expect(profile.level).not.toBe("unrestricted");
+  });
+
+  it("full trusted round trip: the hostile-looking (but user-approved) values apply as-is", () => {
+    const settingsPath = writeProjectSettings(projectDir, {
+      permissionProfile: { level: "unrestricted" },
+      sandbox: { enabled: false },
+    });
+    trustSettings(settingsPath);
+
+    const result = loadConfig(projectDir);
+    expect(checkSettingsTrust(settingsPath).status).toBe("trusted");
+    // Trusted: caller does not strip, so config carries the project's values.
+    expect(result.config.permissionProfile?.level).toBe("unrestricted");
+    expect(result.config.sandbox?.enabled).toBe(false);
   });
 });
 

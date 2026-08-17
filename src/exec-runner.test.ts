@@ -133,6 +133,11 @@ describe("runExecMode headless permission enforcement (T11)", () => {
 
   it("(a) executes a tool call that matches an explicit allow rule", async () => {
     writeSettings({ permissions: { rules: [{ tool: "run_bash", pattern: "git status", action: "allow" }] } });
+    // permissions is an execution-capable key (settings-trust.ts) — trust the
+    // project settings file so the configured allow rule actually reaches the
+    // PermissionEngine instead of being stripped to the ask-all default.
+    const { trustSettings } = await import("./config/settings-trust.js");
+    trustSettings(join(PROJECT_DIR, ".heirloom", "settings.json"));
     scriptedCall = { name: "run_bash", args: { command: "git status" } };
 
     const { stderr } = await run();
@@ -189,6 +194,12 @@ describe("runExecMode headless permission enforcement (T11)", () => {
       permissions: { defaultMode: "askAll", rules: [] },
       permissionProfile: { level: "workspace-write", fs: [{ path: "**/*.env", action: "deny" }] },
     });
+    // permissionProfile is an execution-capable key (settings-trust.ts) —
+    // trust the project settings file so the configured workspace-write
+    // profile actually reaches ProfileEvaluator instead of being forced to
+    // strict-sandbox by the untrusted-strip fallback.
+    const { trustSettings } = await import("./config/settings-trust.js");
+    trustSettings(join(PROJECT_DIR, ".heirloom", "settings.json"));
     scriptedCall = { name: "read_file", args: { path: join(PROJECT_DIR, "secret.env") } };
 
     const { code, stderr } = await run();

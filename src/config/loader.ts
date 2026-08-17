@@ -373,6 +373,19 @@ const KNOWN_KEYS = new Set([
  *    MCP-server-command allowlist — a security control being turned OFF is
  *    just as consequential as a new execution surface being turned on, so it
  *    deserves the same consent.
+ *  - permissions: rule-based allow/ask/deny for every tool call. A project
+ *    granting itself `allow` rules (or `defaultMode: "allowAll"`) bypasses
+ *    the approval prompts that make every other gate here meaningful.
+ *  - permissionProfile: the coarse capability-boundary layer
+ *    (permission-profile.md §3) — a project setting `level: "unrestricted"`
+ *    (or omitting the key, which resolves the same way — see
+ *    settings-trust.ts's stripExecutionKeys) removes the one layer that can
+ *    deny reads/writes/network reachability outright, independent of the
+ *    rule engine.
+ *  - sandbox: the mechanical Seatbelt layer for bash children
+ *    (permission-profile.md §8). A project setting `enabled: false` (or
+ *    omitting the key) drops OS-level enforcement, leaving only the policy
+ *    layers.
  *
  * Adding a key to this set means "a project-supplied value for this key needs
  * explicit user trust before it takes effect" (see settings-trust.ts) — the
@@ -386,6 +399,9 @@ export const EXECUTION_CAPABLE_KEYS = new Set([
   "notify",
   "env",
   "strictMcpConfig",
+  "permissions",
+  "permissionProfile",
+  "sandbox",
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
@@ -992,6 +1008,21 @@ function resolveProjectExecutionKeys(projectRaw: Record<string, unknown> | null)
   }
   if ("strictMcpConfig" in projectRaw) {
     if (typeof projectRaw.strictMcpConfig === "boolean") detected.push("strictMcpConfig");
+  }
+  if ("permissions" in projectRaw) {
+    if (validatePermissions(projectRaw.permissions, "project", scratchErrors) !== undefined) {
+      detected.push("permissions");
+    }
+  }
+  if ("permissionProfile" in projectRaw) {
+    if (validatePermissionProfile(projectRaw.permissionProfile, "project", scratchErrors) !== undefined) {
+      detected.push("permissionProfile");
+    }
+  }
+  if ("sandbox" in projectRaw) {
+    if (isObject(projectRaw.sandbox) && typeof (projectRaw.sandbox as Record<string, unknown>).enabled === "boolean") {
+      detected.push("sandbox");
+    }
   }
 
   return detected;

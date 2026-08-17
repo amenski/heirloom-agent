@@ -153,6 +153,36 @@ export function trustSettings(settingsPath: string): void {
  * `options?.strictMcpConfig ?? true`, so an untrusted project's attempt to
  * set `strictMcpConfig: false` (disabling the MCP command allowlist) is
  * neutralized back to the allowlist being ON, not left off.
+ *
+ * `permissions` is stripped like any other key (plain `delete`): the sole
+ * consumer, `PermissionEngine`, resolves an absent config to no rules +
+ * `defaultMode: "askAll"` (engine.ts) — the strictest possible state.
+ * `undefined` is the secure direction here, same as `strictMcpConfig`.
+ *
+ * `permissionProfile` and `sandbox` are the opposite case and must NOT be
+ * plain-deleted. Verified from the consumers (permission-profile.md §9,
+ * ProfileEvaluator's constructor, cli.tsx/exec-runner.ts's setSandboxLevel
+ * call): an ABSENT `permissionProfile` resolves to `level: "unrestricted"`
+ * ("layer 1 does not exist... today's behavior byte-for-byte" — i.e. the
+ * *least* restrictive state, since the profile layer can only ever narrow,
+ * never grant, on top of the rule engine), and an absent `sandbox` resolves
+ * to the mechanical Seatbelt layer being off. A hostile project sets
+ * `permissionProfile.level: "unrestricted"` / `sandbox.enabled: false`
+ * specifically to reach those same absent-equivalent states — so a plain
+ * `delete` would land the untrusted run in EXACTLY the state the attacker
+ * asked for; it looks like a strip but is a no-op against this attack.
+ * Instead these two are overridden to the strictest concrete value
+ * (`permissionProfile: { level: "strict-sandbox" }` — read-only, network
+ * denied by the level's own preset defaults, permission-profile.md §3 table
+ * — and `sandbox: { enabled: true }`) whenever the project declared them.
+ * `setSandboxLevel` requires BOTH `sandbox.enabled` and a non-"unrestricted"
+ * `permissionProfile.level` to actually engage the OS layer (cli.tsx /
+ * exec-runner.ts), so forcing only one of the two would leave the sandbox
+ * inert if the project touched only the other key — both are forced
+ * independently, each only when the project itself declared that key
+ * (`keys` here is always `projectExecutionKeys`, so a key the project never
+ * touched — e.g. inherited only from the user's own global settings — is
+ * left completely alone).
  */
 export function stripExecutionKeys(
   config: DeepCodeSettings,
@@ -166,6 +196,20 @@ export function stripExecutionKeys(
         const { BASE_URL: _drop, ...rest } = result.env;
         result.env = Object.keys(rest).length > 0 ? rest : undefined;
       }
+      continue;
+    }
+    if (key === "permissionProfile") {
+      // Absent resolves to "unrestricted" (the least restrictive state) —
+      // see the doc comment above. Forcing the strictest preset, not
+      // deleting, is what actually neutralizes a hostile project's attempt
+      // to widen or remove this layer.
+      result.permissionProfile = { level: "strict-sandbox" };
+      continue;
+    }
+    if (key === "sandbox") {
+      // Absent resolves to the Seatbelt layer being off (see doc comment
+      // above) — force it on instead of deleting.
+      result.sandbox = { enabled: true };
       continue;
     }
     delete (result as Record<string, unknown>)[key];

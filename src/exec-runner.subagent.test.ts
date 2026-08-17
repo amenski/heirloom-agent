@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import type { StreamEvent } from "./providers/types.js";
 import type { Message, ToolCall } from "./types.js";
 import type { ExecInputStream } from "./exec-input.js";
+import { trustSettings } from "./config/settings-trust.js";
 
 // Headless async sub-agent continuation (async-subagents.md §2): a `-p` run
 // whose parent spawns sub-agents and ends its turn must keep going until every
@@ -173,6 +174,10 @@ describe("runExecMode async sub-agent continuation (async-subagents.md §2)", ()
         rules: [{ tool: "new_task", pattern: "any", action: "allow" }],
       },
     });
+    // permissions is an execution-capable key (settings-trust.ts) — trust the
+    // project settings file so the configured allow rule actually reaches the
+    // PermissionEngine instead of being stripped to the ask-all default.
+    trustSettings(join(PROJECT_DIR, ".heirloom", "settings.json"));
   });
 
   afterEach(() => {
