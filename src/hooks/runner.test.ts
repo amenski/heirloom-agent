@@ -200,23 +200,46 @@ describe("HookRunner dispatch", () => {
     expect(payload.tool_input).toEqual({ path: "a.txt" });
   });
 
-  it("passes a minimal env (PATH/HOME/TERM, plus shell-injected PWD/SHLVL)", async () => {
+  it("passes a minimal env (PATH/HOME always, TERM iff set in the parent), plus shell-injected PWD/SHLVL", async () => {
     const runner = makeRunner(makeConfig({
       PreToolUse: [{ command: "env | sort" }],
     }));
 
-    const result = await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+    async function envNames(): Promise<string[]> {
+      const result = await runner.dispatch("PreToolUse", { tool_name: "run_bash", tool_input: {} });
+      const envLines = result.stdout.split("\n").filter(Boolean);
+      return envLines.map((l) => l.split("=")[0]);
+    }
 
-    const envLines = result.stdout.split("\n").filter(Boolean);
-    const names = envLines.map((l) => l.split("=")[0]);
-    // The spawn env carries exactly PATH/HOME/TERM; /bin/sh (bash) injects
-    // PWD/SHLVL itself on startup. Nothing else — session context travels in
-    // the JSON payload, never the environment.
-    expect(names).toContain("PATH");
-    expect(names).toContain("HOME");
-    expect(names).toContain("TERM");
-    for (const name of names) {
-      expect(["PATH", "HOME", "TERM", "PWD", "SHLVL", "_"]).toContain(name);
+    // The spawn env carries PATH/HOME always, plus TERM iff it's set in the
+    // parent process; /bin/sh (bash) injects PWD/SHLVL itself on startup.
+    // Nothing else — session context travels in the JSON payload, never the
+    // environment. Control TERM explicitly so the assertion is deterministic
+    // rather than dependent on whether the ambient environment has a TTY
+    // (e.g. CI runners typically have no TERM set).
+    const hadTerm = Object.hasOwn(process.env, "TERM");
+    const originalTerm = process.env.TERM;
+    try {
+      process.env.TERM = "xterm-256color";
+      const withTerm = await envNames();
+      expect(withTerm).toContain("PATH");
+      expect(withTerm).toContain("HOME");
+      expect(withTerm).toContain("TERM");
+      for (const name of withTerm) {
+        expect(["PATH", "HOME", "TERM", "PWD", "SHLVL", "_"]).toContain(name);
+      }
+
+      delete process.env.TERM;
+      const withoutTerm = await envNames();
+      expect(withoutTerm).toContain("PATH");
+      expect(withoutTerm).toContain("HOME");
+      expect(withoutTerm).not.toContain("TERM");
+      for (const name of withoutTerm) {
+        expect(["PATH", "HOME", "PWD", "SHLVL", "_"]).toContain(name);
+      }
+    } finally {
+      if (hadTerm) process.env.TERM = originalTerm;
+      else delete process.env.TERM;
     }
   });
 

@@ -96,22 +96,29 @@ describe("runBashTimed (plan §3 timeout→background migration)", () => {
   });
 
   it("strips terminal-control escapes from stdout (T14): OSC 52, cursor moves, spoofed UI", async () => {
+    // Octal escapes (\033, \007), not \xNN hex: /bin/sh's printf must produce
+    // real ESC/BEL bytes portably. \0NNN octal is POSIX printf and behaves
+    // identically under bash and dash; \xHH hex is a bash extension that
+    // dash's printf does NOT interpret (dash is /bin/sh on Debian/Ubuntu,
+    // including GitHub Actions' ubuntu runners), so it would leave the
+    // literal text "\x1b" in the output instead of emitting ESC.
+
     // OSC 52 clipboard write: ESC + BEL stripped; the base64 payload stays as
     // inert literal text (control bytes are gone, so nothing reaches the
     // terminal's clipboard).
-    const osc52 = await runBashTimed(`printf '\\x1b]52;c;cHJlYWQ\\x07CLIP-LEAK'`, process.cwd(), process.cwd(), 5000, true);
+    const osc52 = await runBashTimed(`printf '\\033]52;c;cHJlYWQ\\007CLIP-LEAK'`, process.cwd(), process.cwd(), 5000, true);
     expect(osc52.content).toContain("CLIP-LEAK");
     expect(osc52.content).not.toContain("\x1b");
     expect(osc52.content).not.toContain("\x07");
 
     // Cursor-movement CSI: ESC stripped; the printable residue ("[2K", "[10;10H")
     // is inert literal text that cannot move the cursor or clear lines.
-    const cursor = await runBashTimed(`printf 'a\\x1b[2Kb\\x1b[10;10Hc'`, process.cwd(), process.cwd(), 5000, true);
+    const cursor = await runBashTimed(`printf 'a\\033[2Kb\\033[10;10Hc'`, process.cwd(), process.cwd(), 5000, true);
     expect(cursor.content).toContain("a[2Kb[10;10Hc");
     expect(cursor.content).not.toContain("\x1b");
 
     // Spoofed-UI color runs: all ESC bytes stripped; the visible text survives.
-    const spoofed = await runBashTimed(`printf '\\x1b[38;5;0m\\x1b[48;5;0mSPOOFED-UI\\x1b[0m'`, process.cwd(), process.cwd(), 5000, true);
+    const spoofed = await runBashTimed(`printf '\\033[38;5;0m\\033[48;5;0mSPOOFED-UI\\033[0m'`, process.cwd(), process.cwd(), 5000, true);
     expect(spoofed.content).toContain("SPOOFED-UI");
     expect(spoofed.content).not.toContain("\x1b");
     // Sanitized output still rides inside the T12 untrusted delimiters.
@@ -119,7 +126,7 @@ describe("runBashTimed (plan §3 timeout→background migration)", () => {
   });
 
   it("strips terminal-control escapes from stderr on the non-zero-exit path (T14)", async () => {
-    const fail = await runBashTimed(`printf '\\x1b[31mERR\\x1b[0m' >&2; exit 3`, process.cwd(), process.cwd(), 5000, true);
+    const fail = await runBashTimed(`printf '\\033[31mERR\\033[0m' >&2; exit 3`, process.cwd(), process.cwd(), 5000, true);
     expect(fail.content).toContain("Exit code: 3");
     expect(fail.content).toContain("ERR");
     expect(fail.content).not.toContain("\x1b");

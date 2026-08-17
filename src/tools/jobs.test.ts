@@ -62,7 +62,11 @@ describe("registerJobs", () => {
   });
 
   it("check_job strips terminal-control escapes from accumulated output (T14), keeping \\n and \\t", async () => {
-    const job = jobManager.start(`printf '\\x1b]52;c;cHJlYWQ\\x07DATA\\n\\tkept'`, process.cwd(), 5000);
+    // Octal \033/\007, not \xNN hex: dash's printf (the /bin/sh on GitHub
+    // Actions' ubuntu runners) doesn't interpret \xHH, which would leave the
+    // literal text in the output instead of emitting real ESC/BEL bytes.
+    // \0NNN octal is POSIX printf and behaves identically under bash and dash.
+    const job = jobManager.start(`printf '\\033]52;c;cHJlYWQ\\007DATA\\n\\tkept'`, process.cwd(), 5000);
     expect(job.ok).toBe(true);
     const jobId = job.ok ? job.id : "";
     await waitFor(() => jobManager.check(jobId)!.status === "done");
