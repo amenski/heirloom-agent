@@ -145,6 +145,14 @@ export function trustSettings(settingsPath: string): void {
  * risk of their own (config `env` is never splatted into process.env).
  * An `env` left with no keys after stripping BASE_URL is dropped entirely so
  * callers don't have to special-case an empty object.
+ *
+ * `strictMcpConfig` is stripped like any other key (plain `delete`), which
+ * leaves it `undefined` rather than forcing `false` — that matters, because
+ * `undefined` is the SECURE direction here. The sole consumer
+ * (connectMCPServers in mcp/connector.ts) resolves it as
+ * `options?.strictMcpConfig ?? true`, so an untrusted project's attempt to
+ * set `strictMcpConfig: false` (disabling the MCP command allowlist) is
+ * neutralized back to the allowlist being ON, not left off.
  */
 export function stripExecutionKeys(
   config: DeepCodeSettings,

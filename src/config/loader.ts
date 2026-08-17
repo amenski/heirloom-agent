@@ -225,20 +225,29 @@ function deepMerge<T extends Record<string, unknown>>(
   a: T,
   b: Record<string, unknown>,
 ): T {
-  const result = { ...a };
+  // Defense in depth: loadJsonFile already strips DANGEROUS_KEYS recursively
+  // from anything parsed off disk, but deepMerge's `result[key] = bv` is a
+  // plain assignment — if a `__proto__`/`constructor`/`prototype` key ever
+  // reached here some other way, that assignment would silently repoint
+  // `result`'s prototype via the Object.prototype setter. Skipping those keys
+  // here, plus building `result` with a null prototype, means this function
+  // is safe even if called on unsanitized input.
+  const result: Record<string, unknown> = Object.create(null);
+  for (const key of Object.keys(a)) {
+    if (DANGEROUS_KEYS.has(key)) continue;
+    result[key] = a[key];
+  }
   for (const key of Object.keys(b)) {
+    if (DANGEROUS_KEYS.has(key)) continue;
     const bv = b[key];
     const av = result[key] as unknown;
     if (isObject(av) && isObject(bv)) {
-      (result as Record<string, unknown>)[key] = deepMerge(
-        av as Record<string, unknown>,
-        bv,
-      );
+      result[key] = deepMerge(av as Record<string, unknown>, bv);
     } else {
-      (result as Record<string, unknown>)[key] = bv;
+      result[key] = bv;
     }
   }
-  return result;
+  return result as T;
 }
 
 export function resolveHome(): string {
@@ -256,7 +265,47 @@ export function sandboxSupportedOnPlatform(platform: NodeJS.Platform = process.p
   return platform === "darwin";
 }
 
-function loadJsonFile(path: string): Record<string, unknown> | null {
+/**
+ * Object keys that must never be accepted from a parsed settings file.
+ * `JSON.parse('{"__proto__": ...}')` creates `__proto__` as a real own
+ * enumerable property (unlike an object literal, where it invokes the
+ * Object.prototype setter) — so a hostile file can smuggle a payload under a
+ * key that `Object.keys` still reports, but that a later plain assignment
+ * (`obj[key] = value`, as deepMerge does) resolves through the setter,
+ * silently repointing the object's prototype. Rejecting these three names
+ * recursively at the single JSON parse point protects every downstream
+ * consumer, not just deepMerge.
+ */
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Recursively strips DANGEROUS_KEYS from a parsed JSON value, reporting each
+ * rejected key via `warnings` (path-qualified) rather than staying silent —
+ * silently dropping a key can mask a legitimate misconfiguration, and the
+ * same warnings array already reports other config problems (e.g. unknown
+ * fields). Rebuilds plain objects with `Object.create(null)` so even a key
+ * that slips past the filter can't reach a real Object.prototype through
+ * this object's own prototype slot.
+ */
+function sanitizeParsedJson(value: unknown, path: string, warnings: string[]): unknown {
+  if (Array.isArray(value)) {
+    return value.map((v, i) => sanitizeParsedJson(v, `${path}[${i}]`, warnings));
+  }
+  if (isObject(value)) {
+    const out: Record<string, unknown> = Object.create(null);
+    for (const key of Object.keys(value)) {
+      if (DANGEROUS_KEYS.has(key)) {
+        warnings.push(`${path}: key "${key}" is not allowed and was rejected`);
+        continue;
+      }
+      out[key] = sanitizeParsedJson(value[key], `${path}.${key}`, warnings);
+    }
+    return out;
+  }
+  return value;
+}
+
+function loadJsonFile(path: string, warnings: string[]): Record<string, unknown> | null {
   try {
     const content = readFileSync(path, "utf-8");
     const parsed = JSON.parse(content);
@@ -266,7 +315,7 @@ function loadJsonFile(path: string): Record<string, unknown> | null {
         `config file "${path}" must be a JSON object, got ${typeof parsed}`,
       );
     }
-    return parsed;
+    return sanitizeParsedJson(parsed, path, warnings) as Record<string, unknown>;
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
@@ -320,6 +369,10 @@ const KNOWN_KEYS = new Set([
  *  - env: only the BASE_URL redirect matters here (API traffic destination);
  *    the rest of `env` is never splatted into process.env, so it carries no
  *    execution risk beyond that one field.
+ *  - strictMcpConfig: a project setting this to `false` disables the
+ *    MCP-server-command allowlist — a security control being turned OFF is
+ *    just as consequential as a new execution surface being turned on, so it
+ *    deserves the same consent.
  *
  * Adding a key to this set means "a project-supplied value for this key needs
  * explicit user trust before it takes effect" (see settings-trust.ts) — the
@@ -332,6 +385,7 @@ export const EXECUTION_CAPABLE_KEYS = new Set([
   "mcpServers",
   "notify",
   "env",
+  "strictMcpConfig",
 ]);
 
 const VALID_ACTIONS = new Set(["allow", "ask", "deny"]);
@@ -889,6 +943,60 @@ function validateWebSearch(
   return result;
 }
 
+/**
+ * Determines which EXECUTION_CAPABLE_KEYS the PROJECT settings file actually
+ * resolves to, independent of the global/project merge (so a key present in
+ * both files is still attributed to the project — the merge alone can't tell
+ * where a key "came from" once deepMerge has combined the two objects).
+ *
+ * Deliberately NOT `Object.keys(projectRaw).filter(...)`: matching on raw key
+ * names is exactly the flaw that let prototype pollution bypass this gate
+ * (`JSON.parse('{"__proto__":{...}}')` makes `__proto__` a real own
+ * enumerable property, so `Object.keys` doesn't see it as a match for any of
+ * these names, yet a later plain assignment in deepMerge still resolves the
+ * smuggled value onto the merged object's prototype chain). Sanitization in
+ * loadJsonFile now closes that specific hole, but name-based detection would
+ * still be one future parser or merge quirk away from failing silently again.
+ * Instead, each execution-capable key is run through its real validator
+ * against `projectRaw` ALONE (as if no global settings file existed) and a
+ * key counts as project-execution-capable only if that produces an actual
+ * resolved value — the same shape the consumers below (config.statusline,
+ * config.mcpServers, etc.) end up with. A smuggled or malformed value can
+ * therefore never be invisible to the gate: either it fails validation (and
+ * never reaches `config` at all) or it succeeds and is correctly flagged.
+ *
+ * This is an isolated, throwaway validation pass — its own errors/warnings
+ * are discarded; the real pass below (against the merged config) is what
+ * reports diagnostics to the user.
+ */
+function resolveProjectExecutionKeys(projectRaw: Record<string, unknown> | null): string[] {
+  if (!projectRaw) return [];
+  const scratchErrors: string[] = [];
+  const detected: string[] = [];
+
+  if ("statusline" in projectRaw) {
+    if (validateStatusline(projectRaw.statusline, "project", scratchErrors) !== undefined) {
+      detected.push("statusline");
+    }
+  }
+  if ("mcpServers" in projectRaw) {
+    if (validateMcpServers(projectRaw.mcpServers, "project", scratchErrors) !== undefined) {
+      detected.push("mcpServers");
+    }
+  }
+  if ("notify" in projectRaw) {
+    if (typeof projectRaw.notify === "string") detected.push("notify");
+  }
+  if ("env" in projectRaw) {
+    if (isObject(projectRaw.env)) detected.push("env");
+  }
+  if ("strictMcpConfig" in projectRaw) {
+    if (typeof projectRaw.strictMcpConfig === "boolean") detected.push("strictMcpConfig");
+  }
+
+  return detected;
+}
+
 // ── Main loader ──
 
 export function loadConfig(projectDir?: string): LoadResult {
@@ -899,16 +1007,10 @@ export function loadConfig(projectDir?: string): LoadResult {
   const projDir = projectDir ?? process.cwd();
   const projectPath = join(projDir, ".heirloom", "settings.json");
 
-  const globalRaw = loadJsonFile(globalPath);
-  const projectRaw = loadJsonFile(projectPath);
+  const globalRaw = loadJsonFile(globalPath, warnings);
+  const projectRaw = loadJsonFile(projectPath, warnings);
 
-  // Determined from projectRaw directly, independent of the merge below, so a
-  // key present in both the global and project files is still attributed to
-  // the project — the merge alone can't tell where a key "came from" once
-  // deepMerge has combined the two objects.
-  const projectExecutionKeys = projectRaw
-    ? Object.keys(projectRaw).filter((k) => EXECUTION_CAPABLE_KEYS.has(k))
-    : [];
+  const projectExecutionKeys = resolveProjectExecutionKeys(projectRaw);
 
   let merged: Record<string, unknown> = {};
   if (globalRaw && projectRaw) {
