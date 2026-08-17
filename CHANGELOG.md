@@ -7,7 +7,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.3.0] — unreleased
+## [0.3.0] — 2026-08-17
 
 The release where **project-supplied content became untrusted by default**. Before
 this, cloning a repo and running heirloom inside it could execute attacker-chosen

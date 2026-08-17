@@ -1,6 +1,6 @@
 # 0.3.0 — release scope
 
-**Status:** draft · proposed scope · not yet cut
+**Status:** cut 2026-08-17 · `v0.3.0`
 **Baseline:** `v0.2.1` → `HEAD` = **64 commits**, 192 files, ~23.8k insertions / 3.4k deletions
 
 The headline: 0.2.1 was a capable agent; 0.3.0 is the release where **project-supplied
