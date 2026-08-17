@@ -28,6 +28,7 @@ describe("SkillLoader.load honors enabledSkills", () => {
   let homeDir: string;
   let prevCwd: string;
   let prevHome: string | undefined;
+  let prevHeirloomHome: string | undefined;
 
   function writeSkill(name: string) {
     const dir = join(projectDir, ".heirloom", "skills", name);
@@ -47,7 +48,12 @@ describe("SkillLoader.load honors enabledSkills", () => {
     homeDir = mkdtempSync(join(tmpdir(), "skills-home-"));
     prevCwd = process.cwd();
     prevHome = process.env.HOME;
-    process.env.HOME = homeDir; // isolate the trust store write
+    prevHeirloomHome = process.env.HEIRLOOM_HOME;
+    // isolate the trust store write: resolveHome() prefers HEIRLOOM_HOME over
+    // HOME, so both must be set or a real HEIRLOOM_HOME in the environment
+    // wins and writeSkill()/trustSkill() write into the user's real store.
+    process.env.HOME = homeDir;
+    process.env.HEIRLOOM_HOME = homeDir;
     process.chdir(projectDir);
     writeSkill("alpha");
     writeSkill("beta");
@@ -57,6 +63,8 @@ describe("SkillLoader.load honors enabledSkills", () => {
     process.chdir(prevCwd);
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevHeirloomHome === undefined) delete process.env.HEIRLOOM_HOME;
+    else process.env.HEIRLOOM_HOME = prevHeirloomHome;
     rmSync(projectDir, { recursive: true, force: true });
     rmSync(homeDir, { recursive: true, force: true });
   });
