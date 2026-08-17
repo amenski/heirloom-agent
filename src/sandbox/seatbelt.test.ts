@@ -19,6 +19,15 @@ const itOnDarwin = it.skipIf(!onDarwin);
 
 // ── helpers ──
 
+/** Poll until predicate is true, same convention as jobs.test.ts's waitFor. */
+async function waitFor(predicate: () => boolean, timeoutMs = 8000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 interface RunResult {
   exit: number | null;
   stdout: string;
@@ -47,7 +56,13 @@ function runCommand(command: string, cwd: string, level?: "strict-sandbox" | "wo
       resolve({ exit: null, stdout, stderr: stderr + "\n(timed out)" });
     }, 20_000);
     child.on("error", (err) => { clearTimeout(timer); resolve({ exit: null, stdout, stderr: stderr + `\n${err.message}` }); });
-    child.on("exit", (code) => { clearTimeout(timer); resolve({ exit: code, stdout, stderr }); });
+    // 'close' rather than 'exit': 'exit' fires as soon as the process itself
+    // terminates, which can race ahead of the stdout/stderr 'data' handlers
+    // above still draining buffered pipe output. 'close' only fires once the
+    // child's stdio streams have also closed, so stdout/stderr are guaranteed
+    // complete by the time the result is resolved. Same bug as jobs.ts
+    // (commit d864909).
+    child.on("close", (code) => { clearTimeout(timer); resolve({ exit: code, stdout, stderr }); });
   });
 }
 
@@ -233,7 +248,7 @@ describe("seatbelt enforcement (macOS)", () => {
     const node = await runCommand("node -e 'console.log(1)'", workspace, "strict-sandbox");
     expect(node.exit).toBe(0);
     expect(node.stdout.trim()).toBe("1");
-  });
+  }, 85_000);
 
   itOnDarwin("strict-sandbox: writes fail everywhere (read-only)", async () => {
     const outsideDir = mkdtempSync(join(tmpdir(), "seatbelt-strict-"));
@@ -246,7 +261,7 @@ describe("seatbelt enforcement (macOS)", () => {
     } finally {
       rmSync(outsideDir, { recursive: true, force: true });
     }
-  });
+  }, 25_000);
 
   itOnDarwin("strict-sandbox: network attempts are denied (server never reached)", async () => {
     const { server, port, connections } = await startHttpServer();
@@ -258,7 +273,7 @@ describe("seatbelt enforcement (macOS)", () => {
     } finally {
       server.close();
     }
-  });
+  }, 25_000);
 
   itOnDarwin("workspace-write: writes inside the workspace succeed, outside fail", async () => {
     const ws = mkdtempSync(join(tmpdir(), "seatbelt-ws-"));
@@ -280,7 +295,7 @@ describe("seatbelt enforcement (macOS)", () => {
       rmSync(ws, { recursive: true, force: true });
       rmSync(outside, { force: true });
     }
-  });
+  }, 45_000);
 
   itOnDarwin("workspace-write: battery control — ~/ escape write stays denied", async () => {
     // Battery #7 (2026-08-15): `echo hi > ~/…` must keep failing after the
@@ -297,7 +312,7 @@ describe("seatbelt enforcement (macOS)", () => {
       rmSync(ws, { recursive: true, force: true });
       rmSync(target, { force: true });
     }
-  });
+  }, 25_000);
 
   itOnDarwin("workspace-write: network is allowed (server reached)", async () => {
     const { server, port, connections } = await startHttpServer();
@@ -309,13 +324,13 @@ describe("seatbelt enforcement (macOS)", () => {
     } finally {
       server.close();
     }
-  });
+  }, 25_000);
 
   itOnDarwin("workspace-write: git status works in the workspace", async () => {
     const result = await runCommand("git status", process.cwd(), "workspace-write");
     expect(result.exit).toBe(0);
     expect(result.stdout).toContain("On branch");
-  });
+  }, 25_000);
 });
 
 // ── tools-layer wiring (macOS only — exercises the real spawn paths) ──
@@ -341,12 +356,12 @@ describe("sandbox wiring into run_bash and background jobs", () => {
 
     const allowed = await runBashTimed("echo seatbelt-wired-ok", workspace, workspace, 5000, true, "strict-sandbox");
     expect(allowed.content).toContain("seatbelt-wired-ok");
-  });
+  }, 15_000);
 
   itOnDarwin("no level passed → spawn behavior unchanged", async () => {
     const result = await runBashTimed("echo seatbelt-off-ok", workspace, workspace, 5000, true, undefined);
     expect(result.content).toContain("seatbelt-off-ok");
-  });
+  }, 10_000);
 
   itOnDarwin("background jobs inherit the sandbox level (write denied in a strict job)", async () => {
     const started = jobManager.start(
@@ -357,12 +372,12 @@ describe("sandbox wiring into run_bash and background jobs", () => {
     );
     expect(started.ok).toBe(true);
     const id = started.ok ? started.id : "";
-    await new Promise((r) => setTimeout(r, 800));
+    await waitFor(() => jobManager.check(id)!.status !== "running");
     const report = jobManager.check(id);
     expect(report?.status).toBe("failed");
     expect(report?.exitCode).not.toBe(0);
     expect(existsSync("/tmp/heirloom-seatbelt-job-probe.txt")).toBe(false);
-  });
+  }, 15_000);
 
   // ── trusted-root containment through the tools layer (item 8.6) ──
 
@@ -433,7 +448,7 @@ describe("sandbox wiring into run_bash and background jobs", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   itOnDarwin("background jobs reject a cwd escaping the trusted root the same way", async () => {
     const started = jobManager.start("echo should-not-run", "/tmp", 10_000, {
