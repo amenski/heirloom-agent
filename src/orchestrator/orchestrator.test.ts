@@ -248,7 +248,9 @@ describe("Orchestrator", () => {
     // "tool"/"end" fire during the detached run — wait for the delivery, then
     // assert the full sequence.
     await deliveries.delivered();
-    expect(events).toContainEqual(expect.objectContaining({ kind: "tool", name: "read_file" }));
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: "tool", name: "read_file", args: { path: "a.txt" } }),
+    );
     expect(events[events.length - 1]).toMatchObject({ kind: "end", depth: 0 });
   });
 

@@ -20,7 +20,7 @@ import { TaskRegistry } from "./runner.js";
  */
 export type SubagentProgress =
   | { kind: "start"; task: string; agent?: string; depth: number }
-  | { kind: "tool"; name: string; depth: number }
+  | { kind: "tool"; name: string; args: Record<string, unknown>; depth: number }
   | { kind: "end"; task: string; depth: number }
   | { kind: "text"; text: string; depth: number; agent?: string };
 
@@ -366,14 +366,16 @@ export class Orchestrator {
               sessionId: ctx.sessionId,
               signal: taskAbort.signal,
               getTodos: () => subStore.getTodos(),
-              // Live tool activity for the parent UI. Only the tool name
-              // travels — args can carry file contents and are already rendered
-              // by the sub-agent's own permission prompts when they matter.
+              // Live tool activity for the parent UI. args travel alongside the
+              // name so the renderer can show e.g. "Bash(grep -n …)" the same
+              // way the top-level transcript does (ToolCallFormatter's
+              // describeToolCall already truncates to short, specific fields —
+              // it never dumps a raw arg like file `content` verbatim).
               // Read at fire time (not captured): the progress sink is
               // re-pointed per turn, and an async sub-run's tool/end events may
               // land in a later turn's live stream.
-              onToolStart: (name: string) =>
-                this.onSubagentProgress?.({ kind: "tool", name, depth }),
+              onToolStart: (name: string, args: Record<string, unknown>) =>
+                this.onSubagentProgress?.({ kind: "tool", name, args, depth }),
               // Live sub-run text (async-subagents.md §4): streamed text deltas
               // flow to the parent UI as progress events — the App's mount-time
               // sink renders them as dim `[agent <name>]` transcript rows,

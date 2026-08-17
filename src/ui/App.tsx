@@ -78,6 +78,13 @@ import { seedPromptHistory } from "./core/prompt-history.js";
 import { loadPromptHistory, appendPromptHistory } from "./core/history-store.js";
 import { summarizeReasoning } from "./core/reasoning-echo.js";
 import { resolveRefreshProfile, type ResolvedRefresh } from "./core/refresh-rates.js";
+import {
+  formatSubagentHeader,
+  formatSubagentToolLine,
+  formatSubagentFinishLine,
+  initSubagentDisplayState,
+  type SubagentDisplayState,
+} from "./core/subagent-progress-format.js";
 import { groupTableLines, splitCommittable } from "./core/table-group.js";
 import {
   formatToolCallHeader,
@@ -871,6 +878,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       // Set on each sub-agent "start" event so the "finished" line can report
       // that sub-run's own duration rather than the whole turn's.
       let subagentStart = turnStart;
+      // Per-depth child-tool-call bookkeeping for the inline sub-agent display
+      // (subagent-progress-format.ts): how many "└ Tool(args)" lines have
+      // printed at this depth so far, so the rollup line only prints once the
+      // cap is crossed. Keyed by depth like the rest of this renderer — two
+      // sub-agents at the same depth already share one line prefix today, so
+      // this introduces no new ambiguity. Reset every turn, same lifetime as
+      // subagentStart.
+      const subagentDisplay = new Map<number, SubagentDisplayState>();
 
       announceToScreenReader("Heirloom is processing your request", "polite");
 
@@ -1038,36 +1053,54 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         onDiagnostic: () => {},
         onRetry: () => {},
         onCompacted: () => {},
-        // Live sub-agent activity. Without these lines the parent renders
-        // nothing between the new_task header and the final summary, so a
-        // long delegation is indistinguishable from a hang. Indented and
-        // dimmed so a sub-agent's tools never read as the parent's own.
+        // Live sub-agent activity, styled after Claude Code's inline agent
+        // display (Agent(desc) header + nested "└ Tool(args)" child lines).
+        // Without these lines the parent renders nothing between the
+        // new_task header and the final summary, so a long delegation is
+        // indistinguishable from a hang. Indented and dimmed so a sub-agent's
+        // tools never read as the parent's own.
+        //
+        // Static's append-only contract (OutputArea.tsx: a committed line is
+        // never repainted) rules out a live "Running…" status per line and a
+        // live-toggle collapse — both need to rewrite an already-printed
+        // line. subagent-progress-format.ts's rollup ("… +N tool uses")
+        // mirrors formatToolResultPreview's own "first N, then …+N" shape
+        // instead of inventing a new convention.
         onSubagentProgress: (event: {
           kind: "start" | "tool" | "end";
           task?: string;
           name?: string;
+          args?: Record<string, unknown>;
           agent?: string;
           depth: number;
         }) => {
           flushReasoning();
           flushStream();
-          const indent = "  ".repeat(event.depth + 1);
-          // Elapsed time is the liveness signal. A sub-agent goes quiet for a
-          // full model turn between tool calls, and the hint-bar dots are too
-          // subtle to answer "is it still running?" — stamping each line means
-          // the last row on screen always says how long ago it moved.
-          const at = Math.round((Date.now() - turnStart) / 1000);
-          let line: string;
+          let line: string | null;
           if (event.kind === "start") {
-            const who = event.agent ? `${event.agent} agent` : "sub-agent";
             subagentStart = Date.now();
-            line = `${indent}⌁ ${who} started`;
+            subagentDisplay.set(event.depth, initSubagentDisplayState());
+            line = formatSubagentHeader({
+              description: event.task ?? "",
+              agentName: event.agent,
+              model: ctx.modelDisplayName?.(),
+              depth: event.depth,
+            });
           } else if (event.kind === "tool") {
-            line = `${indent}⌁ ${event.name} · ${at}s`;
+            const state =
+              subagentDisplay.get(event.depth) ?? initSubagentDisplayState();
+            subagentDisplay.set(event.depth, state);
+            line = formatSubagentToolLine(
+              state,
+              event.name ?? "",
+              event.args ?? {},
+              event.depth,
+            );
           } else {
-            const took = Math.round((Date.now() - subagentStart) / 1000);
-            line = `${indent}⌁ sub-agent finished · ${took}s`;
+            const took = Date.now() - subagentStart;
+            line = formatSubagentFinishLine({ depth: event.depth, elapsedMs: took });
           }
+          if (line === null) return;
           scheduleOutput(theme.colorEnabled ? `\x1b[2m${line}\x1b[0m` : line);
         },
         onLoopDetected: (m: string) => {
