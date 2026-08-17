@@ -21,10 +21,16 @@ import type { PermissionRule } from "./rules.js";
  * node_modules. Discovery tools (glob walker, repo map) already skip
  * node_modules; this closes the explicit-path hole so a human always sees a
  * direct read into installed dependencies. Ask, not deny: reading a package's
- * .d.ts or package.json to introspect an installed API is legitimate. The
- * search tool's `grep -rn` is NOT covered — its subject carries no path
- * (buildSubject yields empty text), so no glob rule can match it; it remains
- * a known gap.
+ * .d.ts or package.json to introspect an installed API is legitimate.
+ *
+ * search's `dir` argument is now a matchable subject too (extractToolSubject/
+ * buildSubject in rules.ts extract it, defaulting to "." like the tool
+ * handler does), so the secret-path globs below apply to it the same as
+ * read_file — closing what was previously a known gap (grep -rn against
+ * ~/.ssh, ~/.aws, etc. with no prompt). The out-of-workspace case (a `dir`
+ * outside workingDir generally, not just these specific secret paths) is a
+ * separate, dynamic check in PermissionEngine.outOfWorkspaceGuardedRule,
+ * since no static glob can express "outside workingDir".
  *
  * Network-egress scope: run_bash only, matched on the invoked binary's
  * basename. Indirection (`xargs curl`, `echo url | sh`) is caught upstream
@@ -37,6 +43,18 @@ export const BUILTIN_GUARDED_RULES: PermissionRule[] = [
   { tool: "read_file", kind: "glob", pattern: "**/id_rsa*", action: "ask", origin: "builtin-guarded" },
   { tool: "read_file", kind: "glob", pattern: "**/*.pem", action: "ask", origin: "builtin-guarded" },
   { tool: "read_file", kind: "glob", pattern: "**/credentials*", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/.env*", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/.ssh/*", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/.aws/*", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/id_rsa*", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/*.pem", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/credentials*", action: "ask", origin: "builtin-guarded" },
+  // search's `dir` is commonly the secret directory itself (e.g.
+  // `dir: "~/.ssh"`), not a file under it — "**/.ssh/*" alone doesn't match
+  // the bare directory (same asymmetry as node_modules above), so these
+  // directory-itself variants are needed in addition.
+  { tool: "search", kind: "glob", pattern: "**/.ssh", action: "ask", origin: "builtin-guarded" },
+  { tool: "search", kind: "glob", pattern: "**/.aws", action: "ask", origin: "builtin-guarded" },
   // node_modules: the directory itself (list_files on the package root) and
   // anything under it. `**/node_modules` alone can't match `./node_modules/ink`,
   // and `**/node_modules/**` alone can't match `./node_modules` — both are needed.

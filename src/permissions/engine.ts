@@ -1,5 +1,5 @@
-import { join, relative, isAbsolute, resolve, dirname } from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { join, relative, isAbsolute, resolve, dirname, basename } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync, realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { PermissionAction, PermissionRule, PermissionSubject } from "./rules.js";
 import { buildSubject, patternMatches, specificity, serializeRulePattern, extractHostname } from "./rules.js";
@@ -44,8 +44,20 @@ export class PermissionEngine {
 
   /** Tools whose exact/glob patterns carry file paths (normalized on load). */
   private static readonly FILE_TOOLS = new Set([
-    "read_file", "write_to_file", "edit", "list_files", "glob",
+    "read_file", "write_to_file", "edit", "list_files", "glob", "search",
   ]);
+
+  /**
+   * FILE_TOOLS whose subject is a directory to search/enumerate, not a
+   * specific file — the out-of-workspace realpath containment check (see
+   * resolveSubject) applies only to these. read_file/write_to_file/edit
+   * already get equivalent protection today via BUILTIN_ALLOW_RULES' "./**"
+   * fallback glob simply not matching an out-of-workspace absolute path
+   * (falls through to defaultMode, which asks) — this set covers the tools
+   * whose builtin allow is instead an unconditional kind:"any" (glob,
+   * search), which that fallback mechanism can't gate by path at all.
+   */
+  private static readonly DIR_SCOPED_TOOLS = new Set(["search", "glob"]);
 
   /** Read-only file tools eligible for the "grant whole folder" broadening offer. */
   private static readonly READ_TOOLS = new Set([
@@ -144,6 +156,82 @@ export class PermissionEngine {
     return `./${rel}`;
   }
 
+  /**
+   * Realpath-resolves a path via its nearest existing ancestor: walk up to
+   * the deepest existing component, resolve that with realpath, re-append
+   * the missing tail. Same nearest-existing-ancestor pattern as
+   * seatbeltWorkspaceRoot (src/sandbox/seatbelt.ts) — reused conceptually
+   * rather than imported, since this module has no dependency on the
+   * sandbox layer and the two resolve different kinds of paths (a spawn cwd
+   * there vs. an arbitrary tool-call directory argument here). A symlink
+   * inside workingDir pointing outside it resolves to its real, physical
+   * target, so the containment check below can't be fooled by a symlink
+   * escape. Falls back to the lexical absolute path when nothing on the
+   * path exists (the call would fail on its own merits anyway).
+   */
+  private realpathNearestAncestor(path: string): string {
+    let existing = path;
+    const missing: string[] = [];
+    while (!existsSync(existing)) {
+      const parent = dirname(existing);
+      if (parent === existing) return path;
+      missing.unshift(basename(existing));
+      existing = parent;
+    }
+    try {
+      const real = realpathSync(existing);
+      return missing.length ? join(real, ...missing) : real;
+    } catch {
+      return path;
+    }
+  }
+
+  /**
+   * Synthesizes a builtin-guarded "ask" rule when a directory-scoped tool's
+   * (search, glob) subject resolves outside workingDir — realpath-resolved,
+   * so a symlink inside the workspace pointing outside it is caught, not
+   * just a lexically-out-of-tree path. Returns undefined for every other
+   * case (in-workspace, non-dir-scoped tool, no resolvedPath), so it's a
+   * pure no-op everywhere else.
+   *
+   * Why engine-level rather than a static rule: BUILTIN_GUARDED_RULES is a
+   * fixed glob-pattern list, and "outside workingDir" is relative to a
+   * per-instance, per-session boundary — no glob can express it. This is
+   * the dynamic counterpart to what BUILTIN_ALLOW_RULES' "./**" pattern
+   * already does implicitly for read_file/list_files (an absolute
+   * out-of-tree path just never matches "./**", so those tools fall through
+   * to defaultMode's "ask"). search/glob can't lean on that trick because
+   * their builtin allow is an unconditional kind:"any" (matches every call
+   * regardless of path) — this restores the same path-sensitivity for them
+   * without loosening or duplicating the read_file mechanism.
+   *
+   * origin "builtin-guarded" so it flows through the exact same precedence
+   * and posture-exemption path as a static guarded rule (see resolve()'s
+   * isGuarded derivation and resolveTier) — a human always sees this,
+   * regardless of auto-approve posture or defaultMode: allowAll.
+   */
+  private outOfWorkspaceGuardedRule(toolName: string, subject: PermissionSubject): PermissionRule | undefined {
+    if (!PermissionEngine.DIR_SCOPED_TOOLS.has(toolName)) return undefined;
+    if (!subject.resolvedPath) return undefined;
+
+    // subject.resolvedPath has already been through relativizeSubject:
+    // "./rel" (lexically inside workingDir) or an absolute path (lexically
+    // outside, or workingDir itself). Reconstruct the absolute lexical form
+    // before realpath-resolving, since relativizeSubject's normalization is
+    // lexical only (no filesystem access) and can't see a symlink escape.
+    const lexicalAbsolute = subject.resolvedPath.startsWith("./")
+      ? resolve(this.workingDir, subject.resolvedPath.slice(2))
+      : resolve(this.workingDir, subject.resolvedPath);
+
+    const realRoot = this.realpathNearestAncestor(resolve(this.workingDir));
+    const realTarget = this.realpathNearestAncestor(lexicalAbsolute);
+    const rel = relative(realRoot, realTarget);
+    const isInside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+    if (isInside) return undefined;
+
+    return { tool: toolName, kind: "any", pattern: "", action: "ask", origin: "builtin-guarded" };
+  }
+
   private resolveBash(command: string): InternalResolveResult {
     const { segments, wasUnresolved } = buildBashSubject(command);
 
@@ -170,8 +258,15 @@ export class PermissionEngine {
   }
 
   private resolveSubject(toolName: string, subject: PermissionSubject): InternalResolveResult {
+    const outOfWorkspaceRule = this.outOfWorkspaceGuardedRule(toolName, subject);
     const allRules = [...BUILTIN_DESTRUCTIVE_RULES, ...BUILTIN_GUARDED_RULES, ...this.configRules, ...this.sessionRules];
     const matches = allRules.filter((r) => patternMatches(r, subject));
+    // Spliced in alongside the static guarded rules (not short-circuited)
+    // so it participates in the same tier/specificity resolution as any
+    // other guarded match: an explicit, more-specific user rule can still
+    // beat it (resolveTier), but the blanket builtin-allow fallback below —
+    // consulted only when matches.length === 0 — never gets a chance to.
+    if (outOfWorkspaceRule) matches.push(outOfWorkspaceRule);
 
     if (matches.length === 0) {
       // Fallback: reads inside the working tree are free. Applied ONLY here,

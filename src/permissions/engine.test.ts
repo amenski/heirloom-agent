@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PermissionEngine, type PermissionRule } from "./engine.js";
@@ -746,5 +746,178 @@ describe("PermissionEngine.resolve", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// ── search/glob: dir-scoped path containment (closes the search exfiltration
+// gap — search's `dir` and glob's `cwd` are now subject to the same
+// path/glob rule matching and out-of-workspace containment as read_file's
+// `path`, see PermissionEngine.FILE_TOOLS/DIR_SCOPED_TOOLS and
+// outOfWorkspaceGuardedRule). ──
+describe("PermissionEngine: search/glob directory containment", () => {
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "heirloom-engine-search-dir-"));
+    mkdirSync(join(workDir, "src"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("ANTI-REGRESSION: a search inside the workspace resolves allow silently, no guarded/out-of-workspace match", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const result = engine.resolve("search", { pattern: "TODO", dir: join(workDir, "src") });
+    expect(result.action).toBe("allow");
+    expect(result.isGuarded).toBe(false);
+    expect(result.wasUnresolved).toBe(false);
+  });
+
+  it("ANTI-REGRESSION: a search with no dir (defaults to '.') inside the workspace resolves allow silently", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const result = engine.resolve("search", { pattern: "TODO" });
+    expect(result.action).toBe("allow");
+    expect(result.isGuarded).toBe(false);
+  });
+
+  it("ANTI-REGRESSION: a glob inside the workspace resolves allow silently", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const result = engine.resolve("glob", { pattern: "**/*.ts", cwd: join(workDir, "src") });
+    expect(result.action).toBe("allow");
+    expect(result.isGuarded).toBe(false);
+  });
+
+  it("a search with dir outside the workspace resolves ask, isGuarded true, exempt from allowAll", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-outside-"));
+    try {
+      const engine = new PermissionEngine({ defaultMode: "allowAll" }, workDir);
+      const result = engine.resolve("search", { pattern: "password", dir: outside });
+      expect(result.action).toBe("ask");
+      expect(result.isGuarded).toBe(true);
+      expect(result.winningRule?.origin).toBe("builtin-guarded");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("a glob with cwd outside the workspace resolves ask, isGuarded true", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-glob-outside-"));
+    try {
+      const engine = new PermissionEngine(undefined, workDir);
+      const result = engine.resolve("glob", { pattern: "**/*", cwd: outside });
+      expect(result.action).toBe("ask");
+      expect(result.isGuarded).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("a search with dir inside the workspace but pointing at a secret path (.ssh) resolves ask via the guarded glob", () => {
+    const sshDir = join(workDir, ".ssh");
+    mkdirSync(sshDir, { recursive: true });
+    writeFileSync(join(sshDir, "id_rsa"), "fake key material\n");
+    const engine = new PermissionEngine(undefined, workDir);
+
+    // dir pointing at a file under .ssh
+    const fileResult = engine.resolve("search", { pattern: "BEGIN", dir: join(sshDir, "id_rsa") });
+    expect(fileResult.action).toBe("ask");
+    expect(fileResult.isGuarded).toBe(true);
+
+    // dir pointing at the .ssh directory itself
+    const dirResult = engine.resolve("search", { pattern: "BEGIN", dir: sshDir });
+    expect(dirResult.action).toBe("ask");
+    expect(dirResult.isGuarded).toBe(true);
+  });
+
+  it("a search with dir inside the workspace pointing at a .env file's directory resolves ask via the guarded glob", () => {
+    writeFileSync(join(workDir, ".env"), "SECRET=1\n");
+    const engine = new PermissionEngine(undefined, workDir);
+    const result = engine.resolve("search", { pattern: "SECRET", dir: join(workDir, ".env") });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+  });
+
+  it("a symlink inside the workspace pointing outside it resolves ask (realpath containment, not lexical)", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-symlink-target-"));
+    try {
+      writeFileSync(join(outside, "secret.txt"), "top secret\n");
+      const link = join(workDir, "escape-link");
+      symlinkSync(outside, link, "dir");
+
+      const engine = new PermissionEngine({ defaultMode: "allowAll" }, workDir);
+      // Lexically the path starts with workDir (it's "<workDir>/escape-link"),
+      // so a lexical-only check would wrongly call this in-workspace. The
+      // realpath resolution must see through the symlink to `outside`.
+      const result = engine.resolve("search", { pattern: "secret", dir: link });
+      expect(result.action).toBe("ask");
+      expect(result.isGuarded).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("relative dir '.' resolves to the workspace root and stays a silent allow", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const result = engine.resolve("search", { pattern: "TODO", dir: "." });
+    expect(result.action).toBe("allow");
+  });
+
+  it("relative dir './src' resolves relative to workingDir and stays a silent allow", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const result = engine.resolve("search", { pattern: "TODO", dir: "./src" });
+    expect(result.action).toBe("allow");
+  });
+
+  it("relative dir '../..' escaping the workspace resolves ask", () => {
+    // workingDir is <workDir>/a/b/c; "../../.." climbs 3 levels above it,
+    // landing on tmpdir() itself — strictly outside workDir.
+    const nested = join(workDir, "a", "b", "c");
+    mkdirSync(nested, { recursive: true });
+    const engine = new PermissionEngine(undefined, nested);
+    const result = engine.resolve("search", { pattern: "TODO", dir: "../../.." });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+  });
+
+  it("the blanket builtin allow (search: any) does not override a guarded secret-path match", () => {
+    const sshDir = join(workDir, ".ssh");
+    mkdirSync(sshDir, { recursive: true });
+    // defaultMode allowAll would normally make an unmatched call free, but a
+    // guarded match must still win — this is the precedence property the
+    // task calls out explicitly: guarded/out-of-workspace beats blanket allow.
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, workDir);
+    const result = engine.resolve("search", { pattern: "x", dir: sshDir });
+    expect(result.action).toBe("ask");
+    expect(result.winningRule?.origin).toBe("builtin-guarded");
+  });
+
+  it("the blanket builtin allow (search: any) does not override the out-of-workspace synthetic guard", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-precedence-"));
+    try {
+      const engine = new PermissionEngine({ defaultMode: "allowAll" }, workDir);
+      const result = engine.resolve("search", { pattern: "x", dir: outside });
+      expect(result.action).toBe("ask");
+      expect(result.winningRule?.origin).toBe("builtin-guarded");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("a strictly-more-specific user allow rule for an out-of-workspace dir is NOT able to override the out-of-workspace guard (kind:any kill-switch, same as web_search)", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-killswitch-"));
+    try {
+      const engine = new PermissionEngine(
+        { rules: [{ tool: "search", kind: "exact", pattern: outside, action: "allow", origin: "config" }] },
+        workDir,
+      );
+      const result = engine.resolve("search", { pattern: "x", dir: outside });
+      // Exact-match user rules match subject.resolvedPath (normalized), and
+      // outOfWorkspaceGuardedRule's kind:"any" always beats any real allow in
+      // that tier — same as the existing web_search kill-switch precedent.
+      expect(result.action).toBe("ask");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

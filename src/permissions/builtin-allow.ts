@@ -15,6 +15,16 @@ import type { PermissionRule } from "./rules.js";
  * out-specify the narrower guarded ask and silently allow reading secrets —
  * exactly the regression this structure avoids.
  *
+ * search and glob's entries below are unconditional (kind "any" — no path
+ * discrimination at all), unlike read_file/list_files' "./**" glob which
+ * only matches paths lexically inside workingDir. That asymmetry is closed
+ * by two mechanisms that also produce real matches (so this fallback is
+ * still preempted the same way): the search-specific secret-path globs in
+ * guarded.ts, and PermissionEngine.outOfWorkspaceGuardedRule, which
+ * synthesizes a guarded "ask" match for any search/glob call whose `dir`/
+ * `cwd` realpath-resolves outside workingDir. Both land in the
+ * specificity-ranked pool before this fallback is ever consulted.
+ *
  * origin "config" (not a new tier) keeps the rest of the engine — audit,
  * winningRule display, risk classification — treating these like any allow.
  */

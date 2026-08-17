@@ -56,6 +56,51 @@ describe("BUILTIN_GUARDED_RULES", () => {
   });
 });
 
+describe("BUILTIN_GUARDED_RULES: search secret-path dir globs", () => {
+  it("matches search dir pointing at a file under .ssh/.aws and at the directory itself", () => {
+    const sshRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.ssh/*")!;
+    const sshDirRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.ssh")!;
+    const awsRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.aws/*")!;
+    const awsDirRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.aws")!;
+    expect(patternMatches(sshRule, { tool: "search", text: "/home/user/.ssh/id_rsa", resolvedPath: "/home/user/.ssh/id_rsa" })).toBe(true);
+    expect(patternMatches(sshDirRule, { tool: "search", text: "/home/user/.ssh", resolvedPath: "/home/user/.ssh" })).toBe(true);
+    expect(patternMatches(awsRule, { tool: "search", text: "/home/user/.aws/credentials", resolvedPath: "/home/user/.aws/credentials" })).toBe(true);
+    expect(patternMatches(awsDirRule, { tool: "search", text: "/home/user/.aws", resolvedPath: "/home/user/.aws" })).toBe(true);
+  });
+
+  it("matches search dir pointing at .env/credentials/id_rsa/.pem paths", () => {
+    const envRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.env*")!;
+    const credRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/credentials*")!;
+    expect(patternMatches(envRule, { tool: "search", text: "./.env", resolvedPath: "./.env" })).toBe(true);
+    expect(patternMatches(credRule, { tool: "search", text: "./credentials.yaml", resolvedPath: "./credentials.yaml" })).toBe(true);
+  });
+
+  it("does not match an ordinary in-repo search dir", () => {
+    for (const rule of BUILTIN_GUARDED_RULES.filter((r) => r.tool === "search")) {
+      expect(patternMatches(rule, { tool: "search", text: "./src", resolvedPath: "./src" })).toBe(false);
+    }
+  });
+
+  it("a search guarded rule does not match a read_file call to the same path (tool-scoped)", () => {
+    const searchSshRule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "search" && r.pattern === "**/.ssh/*")!;
+    expect(patternMatches(searchSshRule, { tool: "read_file", text: "/home/user/.ssh/id_rsa", resolvedPath: "/home/user/.ssh/id_rsa" })).toBe(false);
+  });
+
+  it("engine resolves a search into .ssh to ask with isGuarded=true, even under defaultMode: allowAll", () => {
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/repo");
+    const result = engine.resolve("search", { pattern: "x", dir: "/repo/.ssh" });
+    expect(result.action).toBe("ask");
+    expect(result.isGuarded).toBe(true);
+    expect(result.winningRule?.origin).toBe("builtin-guarded");
+  });
+
+  it("engine still allows ordinary in-repo searches (no secret-path false positive)", () => {
+    const engine = new PermissionEngine({ defaultMode: "allowAll" }, "/repo");
+    const result = engine.resolve("search", { pattern: "x", dir: "/repo/src" });
+    expect(result.action).toBe("allow");
+  });
+});
+
 describe("BUILTIN_GUARDED_RULES: node_modules", () => {
   it("matches reads anywhere under node_modules (workspace-root and nested)", () => {
     const rule = BUILTIN_GUARDED_RULES.find((r) => r.tool === "read_file" && r.pattern.includes("node_modules"))!;

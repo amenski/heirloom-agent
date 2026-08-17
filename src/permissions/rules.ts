@@ -240,6 +240,20 @@ export function extractToolSubject(toolName: string, args: Record<string, unknow
     const u = args?.url;
     return typeof u === "string" ? u : "";
   }
+  // search's directory arg is `dir` (defaults to "." — the tool handler's
+  // own default, mirrored here so an omitted dir resolves to the workspace
+  // rather than to an empty/unmatchable subject). glob's is `cwd` (defaults
+  // to ctx.workingDir at call time; "." resolves the same way here since
+  // PermissionEngine.normalizePath resolves relative paths against
+  // workingDir too).
+  if (toolName === "search") {
+    const d = args?.dir;
+    return typeof d === "string" && d ? d : ".";
+  }
+  if (toolName === "glob") {
+    const c = args?.cwd;
+    return typeof c === "string" && c ? c : ".";
+  }
   const raw = args?.path ?? args?.filePath;
   return typeof raw === "string" ? raw : "";
 }
