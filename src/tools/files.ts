@@ -3,7 +3,7 @@ import { resolve, relative, join } from "node:path";
 import type { ToolOutput, ToolDef } from "../types.js";
 import type { ToolHandler, ToolContext } from "./types.js";
 import { ToolRegistry } from "./registry.js";
-import { wrapUntrusted } from "./untrusted-content.js";
+import { wrapUntrusted, sanitizeControlChars } from "./untrusted-content.js";
 
 const readFileHandler: ToolHandler = async (args, ctx) => {
   const path = args.path as string;
@@ -11,12 +11,14 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
     const content = await readFile(path, "utf-8");
     const s = await stat(path);
     if (ctx.fileMtimes) ctx.fileMtimes.set(path, s.mtimeMs);
-    const lines = content.split("\n").slice(0, 2000);
+    const lines = sanitizeControlChars(content).split("\n").slice(0, 2000);
     let result = lines.map((l, i) => `${i + 1}: ${l}`).join("\n");
     if (lines.length >= 2000) result += "\n(file truncated at 2000 lines)";
     // Markers around the whole numbered block — the truncation footer is part
     // of the payload (same convention as web_fetch's). Error text below stays
-    // unwrapped: it is the tool's own voice.
+    // unwrapped: it is the tool's own voice. Terminal-control escapes (T14)
+    // are stripped before line-numbering so file content (OSC 52, CSI cursor
+    // moves, etc.) can never reach the terminal raw.
     return { content: wrapUntrusted(result) };
   } catch (err: unknown) {
     return { content: `Error reading file: ${(err as Error).message}` };

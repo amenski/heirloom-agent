@@ -305,7 +305,11 @@ export function formatResults(results: WebResult[], status: string): string {
 
   const hasContent = results.some((r) => r.content);
   const cap = hasContent ? ENRICHED_OUTPUT_CAP_CHARS : OUTPUT_CAP_CHARS;
-  let out = lines.join("\n");
+  // Titles/snippets come straight from the backend (Bing/SearXNG) — external,
+  // attacker-influenceable content (T14) that was previously only wrapped
+  // (T12), not sanitized. `content` is already sanitized in enrichResults;
+  // sanitizing the whole joined block here is a defensive no-op for that part.
+  let out = sanitizeControlChars(lines.join("\n"));
   if (out.length > cap) {
     out = `${out.slice(0, cap)}\n… (truncated)`;
   }
