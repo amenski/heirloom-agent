@@ -7,6 +7,70 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-08-18
+
+The release that **simplifies modes and unifies the write boundary**. New
+sessions no longer land in Code: they start in a read-only *General* chat mode
+on a cheap model, with implementation work one explicit `/mode code` away. The
+specialist modes (architect/ask/debug/orchestrator) are hidden from the picker
+but stay reachable by slug, and Code absorbs the `workflow` group so delegation
+is an automatic capability. Under `workspace-write`, the write boundary is now
+a single shared set — Seatbelt, the permission engine, and the file tools all
+resolve the same realpath'd write roots, and an out-of-workspace file write
+becomes a guarded ask instead of a hard deny.
+
+1 commit since 0.3.0.
+
+### Added
+
+- **`general` mode, the new default.** A session with no explicit `--mode` or
+  `/mode` starts in read-only chat on `deepseek/deepseek-v4-flash` with
+  `reasoningEffort: low`. A resumed session's last mode wins over the default;
+  an explicit `--mode` wins over both. Headless (`-x`) runs resolve the same
+  default instead of falling back to the every-tool registry.
+- **`sandbox.writeRoots`** (global-only): extra directories writable under
+  `workspace-write`, beyond the workspace root and the temp/npm carve-outs.
+  Resolved once into a shared write-set (`resolveWriteRoots`) that the Seatbelt
+  profile, permission engine, and profile evaluator all consult — a path one
+  layer allows for a write, the others do too. The key is read from the user's
+  global `settings.json` only: a project value is ignored with a warning
+  (regardless of trust state), and a global grant survives the untrusted-
+  project strip.
+- **Mode `model`, `reasoningEffort`, and `hidden` fields.** A mode can declare
+  its own model/effort defaults, applied when the user hasn't chosen
+  explicitly, and hide itself from the picker and `/modes` listing while
+  remaining loadable by slug.
+- **`provider/model` references in `--model` and `settings.model`** (e.g.
+  `--model anthropic/claude-…`); a bare name stays relative to the
+  configured/detected provider.
+- **`reasoningEffort: "low"`** is now accepted alongside `"high"`/`"max"`.
+- **Timing diagnostics** in the debug log: a `prompt_assembly` row per turn and
+  a `request` row per provider call (total, time-to-first-event,
+  time-to-first-text, cache reads).
+
+### Changed
+
+- The default mode is now **`general`** (read-only chat) instead of `code`;
+  implementation work starts with `/mode code` or `--mode code`.
+- **Code mode gains the `workflow` group** — direct `new_task` delegation
+  without switching to the orchestrator.
+- **architect, ask, debug, and orchestrator are hidden** from the mode picker
+  and `/modes` listing; they remain usable as compatibility aliases by slug.
+- **Out-of-workspace file writes become a guarded ask** under
+  `workspace-write` instead of a hard deny; in-set writes resolve silently. The
+  boundary follows the profile level, not `sandbox.enabled`.
+- Session meta now records whether the model and effort were explicit
+  (`modelExplicit`, `effortExplicit`), so a resumed session restores the origin
+  of a choice instead of collapsing it into a mode default.
+- `/mode` help text and completion list the current mode set (`general`,
+  `code`).
+
+### Fixed
+
+- Headless runs now apply the active mode's tool gating (default `general`,
+  read-only) instead of every tool registered; an unknown `--mode` still exits
+  1 with the "unknown mode" message.
+
 ## [0.3.0] — 2026-08-17
 
 The release where **project-supplied content became untrusted by default**. Before
@@ -122,6 +186,7 @@ further injection sinks.
 Earlier releases predate this changelog. See the git history for
 `v0.1.0..v0.2.1`.
 
-[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/amenski/heirloom-agent/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amenski/heirloom-agent/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/amenski/heirloom-agent/releases/tag/v0.2.1

@@ -315,6 +315,46 @@ describe("buildStablePreamble — repository map injection", () => {
   });
 });
 
+describe("buildStablePreamble — tool guides", () => {
+  const workingDir = process.cwd();
+  const mode = (groups: ("read" | "edit" | "command" | "workflow")[]) => ({
+    slug: "test",
+    name: "Test",
+    roleDefinition: "Test mode",
+    groups,
+  });
+
+  it("keeps the edit and shell guide for Code with workflow delegation", () => {
+    const out = buildStablePreamble({
+      workingDir,
+      mode: mode(["read", "edit", "command", "workflow"]),
+    });
+
+    expect(out).toContain("# Choosing an edit tool");
+    expect(out).toContain("# Shell");
+  });
+
+  it("does not add the edit or shell guide to a workflow-only mode", () => {
+    const out = buildStablePreamble({
+      workingDir,
+      mode: mode(["workflow"]),
+    });
+
+    expect(out).not.toContain("# Choosing an edit tool");
+    expect(out).not.toContain("# Shell");
+  });
+
+  it("keeps General without the edit or shell guide", () => {
+    const out = buildStablePreamble({
+      workingDir,
+      mode: mode(["read"]),
+    });
+
+    expect(out).not.toContain("# Choosing an edit tool");
+    expect(out).not.toContain("# Shell");
+  });
+});
+
 describe("getProjectInstructions — CLAUDE.md chain", () => {
   let dir: string;
 

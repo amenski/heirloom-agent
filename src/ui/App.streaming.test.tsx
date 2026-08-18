@@ -172,17 +172,19 @@ describe("mode picker shortcut (ctrl+o)", () => {
     await flush();
     let frame = stripAnsi(inst.lastFrame() ?? "");
     expect(frame).toContain("Modes");
-    expect(frame).toContain("architect");
+    expect(frame).toContain("code");
+    expect(frame).toContain("general");
+    expect(frame).not.toContain("architect");
 
-    // Enter selects the first listed mode (listAll is alphabetical →
-    // architect), which routes through /mode <slug>.
+    // Enter selects the first listed mode (listAll is alphabetical → code),
+    // which routes through /mode <slug>.
     inst.stdin.write("\r");
     await flush();
     await flush();
     await flush();
     frame = stripAnsi(inst.lastFrame() ?? "");
-    expect(captured).toEqual(["/mode architect"]);
-    expect(frame).toContain("mode:architect");
+    expect(captured).toEqual(["/mode code"]);
+    expect(frame).toContain("mode:code");
   });
 });
 

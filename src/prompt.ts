@@ -181,8 +181,6 @@ You operate on the user's repository through tools.
 }
 
 function getToolGuide(groups: ToolGroup[]): string {
-  if (groups.includes("workflow")) return "";
-
   const hasEdit = groups.includes("edit");
   const hasCommand = groups.includes("command");
 
