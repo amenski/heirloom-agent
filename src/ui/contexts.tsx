@@ -148,6 +148,35 @@ const TerminalContext = createContext<TerminalInfo>({
  */
 export const RESIZE_SETTLE_MS = 120;
 
+// Ink-based tests commonly leave a rendered tree mounted until the worker is
+// torn down. Keep one resize listener for all TerminalProvider instances so a
+// forgotten test unmount cannot accumulate listeners on stdout. Production
+// normally has one provider, so this is also a faithful one-listener model.
+const terminalResizeSubscribers = new Set<() => void>();
+let terminalResizeStream: NodeJS.WriteStream | null = null;
+
+function dispatchTerminalResize(): void {
+  for (const subscriber of terminalResizeSubscribers) subscriber();
+}
+
+function subscribeTerminalResize(subscriber: () => void): () => void {
+  const stream = process.stdout;
+  if (terminalResizeStream !== stream) {
+    terminalResizeStream?.off("resize", dispatchTerminalResize);
+    terminalResizeStream = stream;
+    terminalResizeStream.on("resize", dispatchTerminalResize);
+  }
+  terminalResizeSubscribers.add(subscriber);
+
+  return () => {
+    terminalResizeSubscribers.delete(subscriber);
+    if (terminalResizeSubscribers.size === 0 && terminalResizeStream) {
+      terminalResizeStream.off("resize", dispatchTerminalResize);
+      terminalResizeStream = null;
+    }
+  };
+}
+
 export function TerminalProvider({
   children,
 }: {
@@ -186,10 +215,10 @@ export function TerminalProvider({
       timer = setTimeout(apply, RESIZE_SETTLE_MS);
     };
 
-    process.stdout.on("resize", onResize);
+    const unsubscribeResize = subscribeTerminalResize(onResize);
     return () => {
       if (timer) clearTimeout(timer);
-      process.stdout.off("resize", onResize);
+      unsubscribeResize();
     };
   }, []);
 

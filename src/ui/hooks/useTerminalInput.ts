@@ -219,6 +219,8 @@ export function parseTerminalInput(buf: string, pendingPaste: string | null = nu
 let inputWireAttached = false;                        // idempotent attach guard (per module instance)
 let inputWirePaste: string | null = null;             // split-paste buffer, survives remounts
 let activeHandlerRef: { current: ((key: InputKey) => void) | null } | null = null;
+let inputWireStdin: NodeJS.ReadableStream | null = null;
+let inputWireRestore: (() => void) | null = null;
 
 function onTerminalData(data: string | Buffer): void {
   const chunk = typeof data === "string" ? data : data.toString("utf-8");
@@ -233,6 +235,7 @@ function onTerminalData(data: string | Buffer): void {
 export function attachInputWire(stdin: NodeJS.ReadableStream): void {
   if (inputWireAttached) return;
   inputWireAttached = true;
+  inputWireStdin = stdin;
   stdin.on("data", onTerminalData);
   // Without this the terminal sends a paste as bare bytes, so every embedded
   // newline reaches the handler as a plain Enter and submits that line on its
@@ -240,6 +243,7 @@ export function attachInputWire(stdin: NodeJS.ReadableStream): void {
   // the \x1b[200~/\x1b[201~ framing parseTerminalInput expects.
   enableBracketedPaste();
   const restore = (): void => disableBracketedPaste();
+  inputWireRestore = restore;
   process.on("exit", restore);
   process.once("SIGINT", restore);
   process.once("SIGTERM", restore);
@@ -247,9 +251,23 @@ export function attachInputWire(stdin: NodeJS.ReadableStream): void {
 
 /** Test-only: reset module-level wire state between tests. */
 export function __resetInputWireForTests(): void {
+  // Each Vitest test gets a fresh module instance but shares the real process
+  // and stdin proxy. Remove the process/stream listeners from the previous
+  // instance before allowing the next test to attach another wire; otherwise
+  // repeated renders accumulate SIGINT/SIGTERM/exit listeners and trigger
+  // Node's MaxListenersExceededWarning.
+  inputWireStdin?.removeListener("data", onTerminalData);
+  if (inputWireRestore) {
+    process.off("exit", inputWireRestore);
+    process.off("SIGINT", inputWireRestore);
+    process.off("SIGTERM", inputWireRestore);
+    inputWireRestore();
+  }
   inputWireAttached = false;
   inputWirePaste = null;
   activeHandlerRef = null;
+  inputWireStdin = null;
+  inputWireRestore = null;
 }
 
 /** Test-only: install (or clear, with null) the active dispatch handler. */

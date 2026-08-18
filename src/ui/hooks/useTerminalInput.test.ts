@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { PassThrough } from "node:stream";
 import { parseTerminalInput, attachInputWire, __resetInputWireForTests, __setActiveHandlerForTests, type InputKey } from "./useTerminalInput.js";
 
@@ -136,10 +136,36 @@ describe("input wire (single module-level listener)", () => {
     __resetInputWireForTests();
   });
 
+  afterEach(() => {
+    __resetInputWireForTests();
+  });
+
   it("attaches the data listener exactly once (idempotent)", () => {
     attachInputWire(stream);
     attachInputWire(stream);
     expect(stream.listenerCount("data")).toBe(1);
+  });
+
+  it("reset detaches the stream and process lifecycle listeners", () => {
+    const before = {
+      data: stream.listenerCount("data"),
+      sigint: process.listenerCount("SIGINT"),
+      sigterm: process.listenerCount("SIGTERM"),
+      exit: process.listenerCount("exit"),
+    };
+    attachInputWire(stream);
+
+    expect(stream.listenerCount("data")).toBe(before.data + 1);
+    expect(process.listenerCount("SIGINT")).toBe(before.sigint + 1);
+    expect(process.listenerCount("SIGTERM")).toBe(before.sigterm + 1);
+    expect(process.listenerCount("exit")).toBe(before.exit + 1);
+
+    __resetInputWireForTests();
+
+    expect(stream.listenerCount("data")).toBe(before.data);
+    expect(process.listenerCount("SIGINT")).toBe(before.sigint);
+    expect(process.listenerCount("SIGTERM")).toBe(before.sigterm);
+    expect(process.listenerCount("exit")).toBe(before.exit);
   });
 
   it("enables bracketed paste mode so multi-line pastes arrive as one event", () => {
