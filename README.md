@@ -35,14 +35,6 @@ heirloom -p "..."                # one-shot, no TUI (for scripts)
 heirloom doctor                  # verify your setup
 ```
 
-Prefer a real binary? Build once and link it:
-
-```bash
-npm run build
-npm link          # now `heirloom` is on your PATH
-heirloom          # same thing, no `npm start --`
-```
-
 Check your setup any time with `heirloom doctor`.
 
 ---
@@ -56,16 +48,21 @@ Check your setup any time with `heirloom doctor`.
 ## Everyday use
 
 ```
-heirloom [code] > /mode ask       switch persona (read-only)
-heirloom [ask]  > Shift+Tab        toggle askAll / allowAll posture
-heirloom [ask ⚡] >
+heirloom [general] > explain this codebase       read-only by default
+heirloom [general] > /mode code                  enable implementation tools
+heirloom [code]    > Shift+Tab                   cycle normal / auto-approve / plan
 ```
+
+New sessions start in `General`, a fast, read-only chat mode. Switch to `Code`
+when you want Heirloom to edit files, run commands, or delegate a larger task
+to a sub-agent. `Shift+Tab` is an independent permission posture: it cycles
+`normal → auto-approve → plan` in whichever mode is active.
 
 | Keys / commands | |
 |---|---|
 | `Enter` | send · `Shift+Enter` newline |
 | `Esc` | interrupt the current turn — nothing partial is saved |
-| `Shift+Tab` | toggle the approval posture |
+| `Shift+Tab` | cycle the approval posture |
 | `/` | open the command menu |
 | `/help` | full command list |
 | `/model`, `/effort` | pick model · set reasoning effort |
@@ -86,7 +83,7 @@ heirloom [ask ⚡] >
 | `-c, --continue` | continue the most recent session for this directory |
 | `--model <provider/model>` | override the configured model |
 | `--mode <name>` | start in a given mode |
-| `-d, --debug` | write redacted request/response JSONL |
+| `-d, --debug` | opt in to diagnostic request/response JSONL (includes conversation and tool payloads, with secret redaction) |
 
 ```bash
 cat error.log | heirloom -p "Explain this error"
@@ -101,8 +98,6 @@ project wins when both exist):
 
 ```jsonc
 {
-  "model": "deepseek-v4-pro",
-  "provider": "deepseek",
   "permissions": {
     "defaultMode": "askAll",
     "rules": [
@@ -117,6 +112,11 @@ project wins when both exist):
 }
 ```
 
+With the default DeepSeek setup, General uses DeepSeek Flash with low
+reasoning effort to keep everyday chat fast and inexpensive. An explicit
+provider or model selection in settings, flags, or slash commands takes
+precedence; use `model` and `provider` here, `--model`, or `/model` to choose.
+
 - Store API keys in `~/.heirloom/credentials.yaml` (via `heirloom auth`) or env
   vars — not in settings.json.
 - Project instructions: `.heirloom/instructions.md` (or `AGENTS.md`).
@@ -130,9 +130,10 @@ Full schema: [`docs/config-spec.md`](./docs/config-spec.md).
 
 ### Persona modes
 
-`code` (read/write/run), `ask` (read-only), `architect` (plan in docs),
-`debug` (investigate), `orchestrator` (delegate tasks). Each mode gates which
-tools the model sees. Switch anytime with `/mode <slug>`.
+`general` is the default read-only conversation mode. `code` adds file editing,
+command execution, debugging, and task delegation through `new_task`. Each
+mode gates which tools the model sees; switch with `/mode general` or
+`/mode code`.
 
 ### Permission rules
 
@@ -175,7 +176,10 @@ you made outside it.
 ### Streaming & observability
 
 Replies stream as they generate. `/cost` shows session token usage. `/theme`
-switches color schemes with a live preview. `/doctor` runs diagnostics.
+switches color schemes with a live preview. `/doctor` runs diagnostics. The
+`-d`/`--debug` flag is opt-in and writes diagnostic JSONL containing request,
+response, conversation, and tool-call payloads after secret redaction; avoid
+enabling it for sensitive sessions unless you need that detail.
 
 ## Supported models
 
@@ -231,8 +235,9 @@ zero telemetry and no vendor lock-in. Every design decision is documented in
 
 ### Does it send my data anywhere?
 
-No. Heirloom sends nothing anywhere except to the model provider you configured.
-There is no telemetry, no analytics, no phoning home.
+Heirloom has no telemetry or analytics. It sends prompts and tool results to
+the model provider you select, and may contact integrations you explicitly
+configure or invoke, such as web search, MCP servers, hooks, or notifications.
 
 ### Is it safe to use on production code?
 
@@ -278,7 +283,7 @@ Having trouble? See [`docs/troubleshooting.md`](./docs/troubleshooting.md).
 git clone https://github.com/amenski/heirloom-agent.git
 cd heirloom-agent
 npm install
-npm test              # vitest — 1,059 tests
+npm test              # run the test suite
 npx tsc --noEmit      # type gate
 npm run build         # bundle with tsup
 ```
