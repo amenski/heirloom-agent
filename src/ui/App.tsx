@@ -1527,7 +1527,7 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       {
         id: "cmd-mode",
         label: "/mode",
-        description: "Switch persona (code/ask/architect/debug/orchestrator)",
+        description: "Switch persona (general/code)",
         category: "command",
         execute: () => handleSlashCommand("/modes"),
       },

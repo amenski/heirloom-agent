@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { PermissionEngine, ResolveResult } from "./engine.js";
 import { extractHostname } from "./rules.js";
+import { isPathWithinWriteRoots, resolveWriteRoots } from "../sandbox/write-roots.js";
 
 /**
  * PermissionProfile — the capability-boundary layer (docs/permission-profile.md §3).
@@ -155,11 +156,22 @@ export class ProfileEvaluator {
   private readonly fsRules: { pattern: string; action: FsAction; re: RegExp }[];
   private readonly networkAllow: string[];
   private readonly networkDeny: string[];
+  /**
+   * The shared workspace-write write-set (docs/unified-write-boundary.md §1):
+   * the same {@link resolveWriteRoots} set the Seatbelt layer emits allow-lines
+   * from, so a path either layer allows for a write is allowed by the other.
+   * Consulted by {@link editTargetInWriteSet} (the engine enforces the
+   * boundary itself with its own copy of the same set). Only meaningful at
+   * `workspace-write` (strict-sandbox has no write-set; unrestricted imposes
+   * no boundary). Resolved once at construction — the workspace root,
+   * carve-outs, and configured writeRoots are session-stable.
+   */
+  private readonly writeSet: string[];
 
   constructor(
     config?: PermissionProfileConfig,
     cwd?: string,
-    opts?: { searchHost?: string },
+    opts?: { searchHost?: string; writeRoots?: string[] },
   ) {
     this.level = config?.level ?? "unrestricted";
     this.cwd = cwd ?? process.cwd();
@@ -172,6 +184,10 @@ export class ProfileEvaluator {
     }));
     this.networkAllow = (config?.network?.allow ?? []).map((e) => e.toLowerCase());
     this.networkDeny = (config?.network?.deny ?? []).map((e) => e.toLowerCase());
+    this.writeSet =
+      this.level === "workspace-write"
+        ? resolveWriteRoots("workspace-write", this.cwd, opts?.writeRoots)
+        : [];
   }
 
   decide(
@@ -211,34 +227,69 @@ export class ProfileEvaluator {
     return "allow"; // every level permits reads anywhere (§3 table)
   }
 
-  /** §3 level table: write allowance per level. */
+  /**
+   * §3 level table: write allowance per level. `workspace-write` returns
+   * true unconditionally — the level's write BOUNDARY is no longer enforced
+   * here (docs/unified-write-boundary.md §2): out-of-set file writes pass
+   * through layer 1 so the rule engine resolves them to a guarded ask
+   * instead of a terminal deny (the Seatbelt layer still kernel-denies the
+   * same paths for shell writes). strict-sandbox stays read-only;
+   * unrestricted imposes no boundary.
+   */
   private levelAllowsWrite(canonical: string): boolean {
     switch (this.level) {
       case "strict-sandbox":
         return false;
       case "workspace-write":
-        return canonical.startsWith("./");
+        return true;
       case "unrestricted":
         return true;
     }
   }
 
   /**
+   * Reconstructs the absolute path a canonical subject form denotes, so the
+   * realpath-based containment check has a physical target to resolve:
+   *   "./rel"  → cwd/rel    (workspace-relative addressing)
+   *   "~/rel"  → home/rel   (home-relative addressing)
+   *   anything else is already absolute.
+   */
+  private canonicalToAbsolute(canonical: string): string {
+    if (canonical.startsWith("./")) return resolve(this.cwd, canonical.slice(2));
+    if (canonical.startsWith("~/")) return join(this.home, canonical.slice(2));
+    return canonical;
+  }
+
+  /**
    * Consolidation M.1 (permission-profile.md §5): whether an edit-group
    * tool call's write target is inside the profile's effective write-set.
    * This is the old `isEditToolInWorkspace` containment check (security-
-   * spec D1), profile-derived: `workspace-write`'s default write-set is
-   * the workspace roots, `unrestricted` covers any path, and
-   * `strict-sandbox` has no write-set (always false). Explicit fs deny
-   * rules and the always-denied set also exclude the target. The approval
-   * overlay (App.tsx) consults this as its edit-in-workspace condition,
-   * instead of re-implementing containment.
+   * spec D1), now the shared write-set: `workspace-write`'s boundary is the
+   * resolveWriteRoots set (workspace + carve-outs + global writeRoots,
+   * realpath-checked), `unrestricted` covers any path, and `strict-sandbox`
+   * has no write-set (always false). Explicit fs deny rules and the
+   * always-denied set also exclude the target. The approval overlay
+   * (App.tsx) consults this as its edit-in-workspace condition. It answers
+   * "inside the write-set" (where the engine writes silently) — an
+   * out-of-set target is NOT denied here, it becomes a guarded ask in the
+   * engine (docs/unified-write-boundary.md §2).
    */
   editTargetInWriteSet(tool: string, input: Record<string, unknown>): boolean {
     if (!WRITE_TOOLS.has(tool)) return false;
     const raw = input.path ?? input.filePath;
     if (typeof raw !== "string" || raw === "") return false;
-    return this.decide(tool, input) === "allow";
+    const canonical = canonicalizePath(raw, this.cwd, this.home);
+    if (isAlwaysDenied(canonical)) return false;
+    const rule = this.fsRules.find((r) => r.re.test(canonical));
+    if (rule && rule.action === "deny") return false;
+    switch (this.level) {
+      case "strict-sandbox":
+        return false;
+      case "unrestricted":
+        return true;
+      case "workspace-write":
+        return isPathWithinWriteRoots(this.canonicalToAbsolute(canonical), this.writeSet);
+    }
   }
 
   private decideNetwork(hostname: string | undefined): ProfileDecision {

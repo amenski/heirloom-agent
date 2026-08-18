@@ -16,6 +16,7 @@ import { buildStablePreamble, buildVolatileContext, type PromptContext } from ".
 import { estimateTokens, estimateOverheadTokens } from "./compaction/budget.js";
 import { formatTodoBlock } from "./tools/todo.js";
 import type { TodoItem } from "./tools/todo.js";
+import { logTiming } from "./debug/logger.js";
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolOutput>;
 
@@ -191,6 +192,7 @@ export async function runAgent(
     research: options.research,
     planMode: options.planMode,
   };
+  const promptAssemblyStart = Date.now();
   const stablePreamble = getStablePreamble(promptCtx);
   const volatileContext = await buildVolatileContext(promptCtx);
 
@@ -199,6 +201,14 @@ export async function runAgent(
   // estimateOverheadTokens with the status bar meter and /context so all three
   // measure the same payload.
   const compactionOverheadTokens = estimateOverheadTokens(tools, volatileContext);
+
+  logTiming({
+    phase: "prompt_assembly",
+    promptBytes: stablePreamble.length + volatileContext.length,
+    estimatedTokens: Math.ceil((stablePreamble.length + volatileContext.length) / 4) + compactionOverheadTokens,
+    toolCount: tools.length,
+    durationsMs: { total: Date.now() - promptAssemblyStart },
+  });
 
   let messages: Message[] = options.history ? [...options.history] : [];
   // The system prompt lives at position 0 only, and holds only the stable

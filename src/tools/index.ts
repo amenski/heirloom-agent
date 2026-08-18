@@ -86,6 +86,16 @@ export function setSandboxLevel(v: SandboxLevel | undefined): void {
 }
 
 /**
+ * Set the GLOBAL-only `sandbox.writeRoots` config (docs/unified-write-
+ * boundary.md) — additional workspace-write directories, threaded into
+ * ctx.writeRoots so run_bash/background jobs and the file-tool containment
+ * check resolve the same write-set. Absent = no configured roots.
+ */
+export function setWriteRoots(v: string[] | undefined): void {
+  ctx.writeRoots = v;
+}
+
+/**
  * Set the effective web_search backend config (config.webSearch), resolved
  * once at startup from the POST-TOFU-strip config — see ToolContext.webSearch.
  * web-search.ts reads this instead of calling loadConfig() per call, which

@@ -87,6 +87,10 @@ export function resolveTimeoutToBackground(v: boolean | undefined): boolean {
  * never the per-call cwd. A sandboxed spawn whose cwd realpath-resolves
  * outside it (item 8.6) is rejected before spawning: tool error, no spawn,
  * no profile.
+ *
+ * `writeRoots` is the configured `sandbox.writeRoots` list (docs/unified-
+ * write-boundary.md), threaded from `ctx.writeRoots` so the Seatbelt
+ * write-set for this spawn agrees with the file-tool containment check.
  */
 export function runBashTimed(
   command: string,
@@ -95,6 +99,7 @@ export function runBashTimed(
   timeoutMs: number,
   timeoutToBackground: boolean,
   sandboxLevel?: SandboxLevel,
+  writeRoots?: string[],
 ): Promise<ToolOutput> {
   if (isSandboxedLevel(sandboxLevel)) {
     const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot);
@@ -102,7 +107,7 @@ export function runBashTimed(
   }
   let proc: ChildProcess;
   try {
-    const sandbox = sandboxPrefix(command, cwd, trustedRoot, sandboxLevel);
+    const sandbox = sandboxPrefix(command, cwd, trustedRoot, sandboxLevel, writeRoots);
     if (sandbox) {
       proc = spawn(sandbox.file, sandbox.args, {
         cwd,
@@ -211,7 +216,7 @@ const runBashHandler: ToolHandler = async (args, ctx) => {
   // Seatbelt write-set root is ctx.workingDir, never a model-passed cwd.
   const root = ctx.workingDir || process.cwd();
   const cwd = (args.cwd as string) || root;
-  return runBashTimed(command, cwd, root, RUN_BASH_TIMEOUT_MS, resolveTimeoutToBackground(ctx.timeoutToBackground), ctx.sandboxLevel);
+  return runBashTimed(command, cwd, root, RUN_BASH_TIMEOUT_MS, resolveTimeoutToBackground(ctx.timeoutToBackground), ctx.sandboxLevel, ctx.writeRoots);
 };
 
 const runBashDef: ToolDef = {

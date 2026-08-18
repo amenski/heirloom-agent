@@ -733,6 +733,56 @@ describe("loadConfig sandbox (permission-profile.md §8, phase (e))", () => {
   });
 });
 
+describe("loadConfig sandbox.writeRoots (global-only)", () => {
+  function writeGlobalSettings(obj: unknown): void {
+    writeFileSync(join(homeDir, "settings.json"), JSON.stringify(obj), "utf-8");
+  }
+
+  it("honors writeRoots from the global settings file", () => {
+    writeGlobalSettings({ sandbox: { enabled: true, writeRoots: ["~/SecondBrain/AgentMemory"] } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(warnings.some((w) => w.includes("global-only"))).toBe(false);
+    expect(config.sandbox?.writeRoots).toEqual(["~/SecondBrain/AgentMemory"]);
+  });
+
+  it("ignores writeRoots in a PROJECT file, with a warning (the load-bearing security property)", () => {
+    writeProjectSettings({ sandbox: { enabled: true, writeRoots: ["/tmp/hostile"] } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.sandbox?.writeRoots).toBeUndefined();
+    expect(warnings.some((w) => w.includes("sandbox.writeRoots is global-only"))).toBe(true);
+  });
+
+  it("a project writeRoots never overrides or merges with the global one", () => {
+    writeGlobalSettings({ sandbox: { enabled: true, writeRoots: ["/global/root"] } });
+    writeProjectSettings({ sandbox: { enabled: true, writeRoots: ["/project/root"] } });
+    const { config, warnings } = loadConfig(projectDir);
+    expect(config.sandbox?.writeRoots).toEqual(["/global/root"]);
+    expect(warnings.some((w) => w.includes("sandbox.writeRoots is global-only"))).toBe(true);
+  });
+
+  it("rejects a non-array writeRoots with a validation error", () => {
+    writeGlobalSettings({ sandbox: { enabled: true, writeRoots: "not-an-array" } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("config.sandbox.writeRoots: must be an array of strings"))).toBe(true);
+  });
+
+  it("rejects a writeRoots array containing non-string entries", () => {
+    writeGlobalSettings({ sandbox: { enabled: true, writeRoots: ["/ok", 5] } });
+    const { errors } = loadConfig(projectDir);
+    expect(errors.some((e) => e.includes("config.sandbox.writeRoots: must be an array of strings"))).toBe(true);
+  });
+
+  it("leaves writeRoots undefined when absent from both files", () => {
+    writeProjectSettings({ sandbox: { enabled: true } });
+    const { config, errors, warnings } = loadConfig(projectDir);
+    expect(errors).toEqual([]);
+    expect(config.sandbox?.writeRoots).toBeUndefined();
+    expect(warnings.some((w) => w.includes("global-only"))).toBe(false);
+  });
+});
+
 describe("loadConfig webSearch.searxngUrl", () => {
   it("is undefined when absent (no warning, Bing-only default)", () => {
     writeProjectSettings({});

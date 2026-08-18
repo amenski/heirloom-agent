@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { ProfileEvaluator, authorize, compileGlob } from "./profile.js";
 import type { PermissionProfileConfig } from "./profile.js";
 import { PermissionEngine, type PermissionRule } from "./engine.js";
+import { buildSeatbeltProfile } from "../sandbox/seatbelt.js";
+import { realpathNearestAncestor, resolveWriteRoots } from "../sandbox/write-roots.js";
 import { SessionStore, type PermissionDecision } from "../sessions/store.js";
 
 const CWD = "/workspace";
@@ -34,13 +36,19 @@ describe("ProfileEvaluator.decide — level defaults (§3 table)", () => {
     expect(ev.decide("web_search", { query: "hello" })).toBe("deny");
   });
 
-  it("workspace-write: read anywhere, write only inside workspace roots, network default-deny", () => {
+  it("workspace-write: read anywhere, writes reachable everywhere (boundary enforced as an engine ask), network default-deny", () => {
     const ev = evaluator("workspace-write");
     expect(ev.decide("read_file", { path: "/etc/passwd" })).toBe("allow");
     expect(ev.decide("write_to_file", { path: "/workspace/src/main.ts" })).toBe("allow");
     expect(ev.decide("edit", { filePath: "/workspace/src/main.ts" })).toBe("allow");
-    expect(ev.decide("write_to_file", { path: "/tmp/x" })).toBe("deny");
-    expect(ev.decide("write_to_file", { path: join(HOME, "x") })).toBe("deny");
+    // Layer 1 passes ALL writes through at workspace-write — the level's
+    // write boundary is no longer a terminal deny here: the rule engine
+    // resolves in-set targets silently and out-of-set targets to a guarded
+    // ask (docs/unified-write-boundary.md §2, "outside → ask, not hard-deny").
+    // These two asserts pin the REACHABILITY semantics; the silent/ask split
+    // lives in the engine (see engine.test.ts "file-tool write boundary").
+    expect(ev.decide("write_to_file", { path: "/tmp/x" })).toBe("allow");
+    expect(ev.decide("write_to_file", { path: join(HOME, "x") })).toBe("allow");
     expect(ev.decide("web_fetch", { url: "https://api.deepseek.com/v1" })).toBe("deny");
     expect(ev.decide("web_search", { query: "hello" })).toBe("deny"); // bing not allowlisted
   });
@@ -84,9 +92,12 @@ describe("ProfileEvaluator.decide — explicit fs rules narrow only (§3)", () =
     expect(ev.decide("write_to_file", { path: "/workspace/lib/b.ts" })).toBe("allow");
   });
 
-  it("a read rule grants nothing beyond the level default — it never enables a write", () => {
+  it("a read rule grants nothing beyond the level default — reachability is level-driven, not rule-driven", () => {
     const fs = [{ path: "~/notes/**", action: "read" as const }];
-    expect(evaluator("workspace-write", { fs }).decide("write_to_file", { path: join(HOME, "notes", "a.txt") })).toBe("deny");
+    // At workspace-write the write is reachable by the LEVEL default (layer 1
+    // no longer hard-denies out-of-set writes — the engine asks instead); the
+    // read rule adds nothing. strict-sandbox still denies all writes.
+    expect(evaluator("workspace-write", { fs }).decide("write_to_file", { path: join(HOME, "notes", "a.txt") })).toBe("allow");
     expect(evaluator("strict-sandbox", { fs }).decide("write_to_file", { path: join(HOME, "notes", "a.txt") })).toBe("deny");
     // and it never restricts either — reads stay allowed everywhere
     expect(evaluator("strict-sandbox", { fs }).decide("read_file", { path: "/etc/passwd" })).toBe("allow");
@@ -296,6 +307,101 @@ describe("editTargetInWriteSet — consolidation M.1 (§5)", () => {
     expect(profile.editTargetInWriteSet("read_file", { path: "/workspace/a.ts" })).toBe(false);
     expect(profile.editTargetInWriteSet("edit", {})).toBe(false);
     expect(profile.editTargetInWriteSet("run_bash", { command: "echo hi" })).toBe(false);
+  });
+});
+
+describe("unified write boundary: Seatbelt profile and file-tool containment agree", () => {
+  // The design's central claim (docs/unified-write-boundary.md §2): a path the
+  // Seatbelt layer allows for a shell write is allowed for a file-tool write,
+  // and vice versa. "Allowed for a file-tool write" is editTargetInWriteSet —
+  // inside the shared write-set, where the engine writes silently; a target
+  // outside it is NOT an allow on either side (Seatbelt kernel-denies it, the
+  // engine guarded-asks it). This asserts the ALLOW-side agreement against the
+  // two LAYERS' actual outputs — buildSeatbeltProfile's SBPL string vs the
+  // profile's write-set query — not by comparing the shared resolveWriteRoots
+  // helper against itself. It fails on the pre-fix code, where Seatbelt
+  // honored writeRoots but the profile still checked "./" only.
+
+  function subpathsFrom(sbpl: string): string[] {
+    return [...sbpl.matchAll(/\(allow file-write\* \(subpath "([^"]+)"\)\)/g)].map((m) => m[1]);
+  }
+
+  function under(root: string, path: string): boolean {
+    const rel = relative(realpathNearestAncestor(root), realpathNearestAncestor(path));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  }
+
+  it("shell-write allowed ⇔ file-write allowed across workspace / writeRoot / carve-out / out-of-set", () => {
+    const root = mkdtempSync(join(tmpdir(), "agree-root-"));
+    // A home-relative writeRoot (the SecondBrain shape) — under home, outside
+    // every carve-out, and NOT created on disk: resolution goes through the
+    // nearest-existing-ancestor realpath and still applies to the missing tail.
+    const writeRoot = join(homedir(), "SecondBrain", "AgentMemory");
+    try {
+      const profile = new ProfileEvaluator({ level: "workspace-write" }, root, { writeRoots: [writeRoot] });
+      const sbpl = buildSeatbeltProfile("workspace-write", root, resolveWriteRoots("workspace-write", root, [writeRoot]));
+      const seatbeltRoots = subpathsFrom(sbpl);
+
+      const candidates: [string, string][] = [
+        ["in workspace", join(root, "src", "a.ts")],
+        ["global writeRoot", join(writeRoot, "notes", "a.md")],
+        ["$TMPDIR carve-out", join(tmpdir(), "x.txt")],
+        ["out-of-set (home, not ~/.npm)", join(homedir(), "agree-out-probe", "b.txt")],
+      ];
+
+      for (const [label, path] of candidates) {
+        const seatbeltAllows = seatbeltRoots.some((r) => under(r, path));
+        const fileAllows = profile.editTargetInWriteSet("write_to_file", { path });
+        expect(fileAllows, label).toBe(seatbeltAllows);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a symlink inside the workspace pointing outside escapes both layers (realpath, not lexical)", () => {
+    const root = mkdtempSync(join(tmpdir(), "agree-root-"));
+    try {
+      const profile = new ProfileEvaluator({ level: "workspace-write" }, root);
+      const sbpl = buildSeatbeltProfile("workspace-write", root, resolveWriteRoots("workspace-write", root));
+      const seatbeltRoots = subpathsFrom(sbpl);
+
+      // Target the home dir — real and existing, but outside every root and
+      // carve-out (the carve-out is ~/.npm, a child of home, not home itself).
+      const link = join(root, "escape");
+      symlinkSync(homedir(), link, "dir");
+
+      expect(seatbeltRoots.some((r) => under(r, link))).toBe(false);
+      expect(profile.editTargetInWriteSet("write_to_file", { path: link })).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("strict-sandbox: Seatbelt emits no write allow-lines and the file tool allows no write", () => {
+    const root = mkdtempSync(join(tmpdir(), "agree-strict-"));
+    try {
+      const profile = new ProfileEvaluator({ level: "strict-sandbox" }, root);
+      const sbpl = buildSeatbeltProfile("strict-sandbox", root);
+      expect(subpathsFrom(sbpl)).toEqual([]);
+      expect(profile.editTargetInWriteSet("write_to_file", { path: join(root, "a.ts") })).toBe(false);
+      expect(profile.editTargetInWriteSet("edit", { path: join(root, "a.ts") })).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a global writeRoot makes that path writable from the file tool (the SecondBrain case)", () => {
+    const root = mkdtempSync(join(tmpdir(), "agree-root-"));
+    const writeRoot = join(homedir(), "SecondBrain", "AgentMemory");
+    try {
+      const without = new ProfileEvaluator({ level: "workspace-write" }, root);
+      const withRoots = new ProfileEvaluator({ level: "workspace-write" }, root, { writeRoots: [writeRoot] });
+      expect(without.editTargetInWriteSet("write_to_file", { path: join(writeRoot, "x.md") })).toBe(false);
+      expect(withRoots.editTargetInWriteSet("write_to_file", { path: join(writeRoot, "x.md") })).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

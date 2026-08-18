@@ -36,3 +36,28 @@ export function logResponse(usage: unknown, toolCalls: unknown[]): void {
   });
   appendFileSync(debugPath, entry + "\n");
 }
+
+export interface TimingEntry {
+  /** Which phase this row measures — a turn emits one "prompt_assembly" row
+   *  and one "request" row per provider call, in that order. */
+  phase: "prompt_assembly" | "request";
+  model?: string;
+  effort?: string;
+  promptBytes?: number;
+  estimatedTokens?: number;
+  toolCount?: number;
+  cachedTokens?: number;
+  /** Milliseconds from phase start to each checkpoint; absent checkpoints
+   *  (e.g. no tool calls this turn) are simply omitted. */
+  durationsMs: {
+    total: number;
+    toFirstEvent?: number;
+    toFirstText?: number;
+  };
+}
+
+export function logTiming(entry: TimingEntry): void {
+  if (!debugPath) return;
+  const record = JSON.stringify({ ts: Date.now(), type: "timing", ...entry });
+  appendFileSync(debugPath, record + "\n");
+}

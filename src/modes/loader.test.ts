@@ -12,11 +12,24 @@ describe("ModeLoader", () => {
     const loader = new ModeLoader();
     const modes = await loader.listAll();
     const slugs = modes.map((m) => m.slug).sort();
-    // Pins the modes shipped with the binary; also guards the empty-list
-    // packaging regression (dist bundle couldn't see the YAMLs).
-    expect(slugs).toEqual(["architect", "ask", "code", "debug", "orchestrator"]);
+    // Only General and Code are discoverable. The retired personas remain
+    // loadable by slug for old sessions and explicit compatibility switches.
+    expect(slugs).toEqual(["code", "general"]);
     const code = await loader.load("code");
     expect(code?.roleDefinition.length).toBeGreaterThan(0);
+    expect(code?.groups).toContain("workflow");
+    expect((await loader.load("general"))?.groups).toEqual(["read"]);
+  });
+
+  it("keeps hidden builtin modes loadable by slug while excluding them from listAll", async () => {
+    const loader = new ModeLoader();
+    for (const slug of ["ask", "architect", "debug", "orchestrator"]) {
+      const mode = await loader.load(slug);
+      expect(mode?.hidden).toBe(true);
+    }
+    const slugs = (await loader.listAll()).map((m) => m.slug);
+    expect(slugs).toEqual(expect.arrayContaining(["general", "code"]));
+    expect(slugs).not.toEqual(expect.arrayContaining(["ask", "architect", "debug", "orchestrator"]));
   });
 
   describe("dist layout (bundle in one dir, builtin/ beside it)", () => {
@@ -38,7 +51,7 @@ describe("ModeLoader", () => {
     it("enumerates builtin modes when they sit beside the bundle", async () => {
       const loader = new ModeLoader(join(dist, "builtin"));
       const slugs = (await loader.listAll()).map((m) => m.slug).sort();
-      expect(slugs).toEqual(["architect", "ask", "code", "debug", "orchestrator"]);
+      expect(slugs).toEqual(["code", "general"]);
     });
 
     it("returns an empty list (not a throw) when the builtin dir is absent", async () => {

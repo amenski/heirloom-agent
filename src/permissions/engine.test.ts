@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { PermissionEngine, type PermissionRule } from "./engine.js";
 
 function rule(partial: Partial<PermissionRule>): PermissionRule {
@@ -918,6 +918,121 @@ describe("PermissionEngine: search/glob directory containment", () => {
       expect(result.action).toBe("ask");
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("file-tool write boundary (docs/unified-write-boundary.md §2)", () => {
+  const HOME = homedir();
+
+  it("is inactive by default — existing call sites behave exactly as before", () => {
+    const engine = new PermissionEngine(undefined, "/workspace");
+    expect(engine.resolve("write_to_file", { path: "/workspace/src/a.ts" }).action).toBe("ask");
+    expect(engine.resolve("write_to_file", { path: "/etc/hosts" }).action).toBe("ask");
+  });
+
+  it("workspace-write boundary: in-set targets resolve silently (no prompt)", () => {
+    const engine = new PermissionEngine(undefined, "/workspace", false, { enforceWriteBoundary: true });
+    expect(engine.resolve("write_to_file", { path: "/workspace/src/a.ts" }).action).toBe("allow");
+    expect(engine.resolve("edit", { path: "/workspace/src/a.ts" }).action).toBe("allow");
+    expect(engine.resolve("edit_file", { filePath: "/workspace/src/a.ts" }).action).toBe("allow");
+  });
+
+  it("workspace-write boundary: carve-outs (/tmp) are in the silent set", () => {
+    const engine = new PermissionEngine(undefined, "/workspace", false, { enforceWriteBoundary: true });
+    expect(engine.resolve("write_to_file", { path: "/tmp/x.txt" }).action).toBe("allow");
+  });
+
+  it("workspace-write boundary: out-of-set targets are a guarded ask — never silent, never hard-deny", () => {
+    const engine = new PermissionEngine(undefined, "/workspace", false, { enforceWriteBoundary: true });
+    const r = engine.resolve("write_to_file", { path: "/etc/hosts" });
+    expect(r.action).toBe("ask");
+    expect(r.isGuarded).toBe(true);
+
+    // Posture cannot bypass it.
+    const allowAll = new PermissionEngine({ defaultMode: "allowAll" }, "/workspace", false, { enforceWriteBoundary: true });
+    expect(allowAll.resolve("write_to_file", { path: "/etc/hosts" }).action).toBe("ask");
+  });
+
+  it("out-of-set guarded ask is non-approvable by rule specificity (search/glob parity)", () => {
+    const engine = new PermissionEngine(
+      { rules: [{ tool: "write_to_file", kind: "exact", pattern: "/etc/hosts", action: "allow", origin: "config" }] },
+      "/workspace",
+      false,
+      { enforceWriteBoundary: true },
+    );
+    const r = engine.resolve("write_to_file", { path: "/etc/hosts" });
+    expect(r.action).toBe("ask");
+    expect(r.isGuarded).toBe(true);
+  });
+
+  it("an explicit deny rule still beats the in-set silent allow", () => {
+    const engine = new PermissionEngine(
+      { rules: [{ tool: "write_to_file", kind: "glob", pattern: "./secret/**", action: "deny", origin: "config" }] },
+      "/workspace",
+      false,
+      { enforceWriteBoundary: true },
+    );
+    expect(engine.resolve("write_to_file", { path: "/workspace/secret/x.ts" }).action).toBe("deny");
+    expect(engine.resolve("write_to_file", { path: "/workspace/src/a.ts" }).action).toBe("allow");
+  });
+
+  it("an explicit ask rule beats the in-set silent allow (secret-adjacent paths still prompt)", () => {
+    const engine = new PermissionEngine(
+      { rules: [{ tool: "write_to_file", kind: "glob", pattern: "./**/*.env", action: "ask", origin: "config" }] },
+      "/workspace",
+      false,
+      { enforceWriteBoundary: true },
+    );
+    expect(engine.resolve("write_to_file", { path: "/workspace/.env" }).action).toBe("ask");
+  });
+
+  it("a global writeRoot widens the silent set (the SecondBrain case)", () => {
+    const writeRoot = join(HOME, "SecondBrain", "AgentMemory");
+    const without = new PermissionEngine(undefined, "/workspace", false, { enforceWriteBoundary: true });
+    expect(without.resolve("write_to_file", { path: join(writeRoot, "x.md") }).action).toBe("ask");
+
+    const withRoot = new PermissionEngine(undefined, "/workspace", false, {
+      enforceWriteBoundary: true,
+      writeRoots: ["~/SecondBrain/AgentMemory"],
+    });
+    expect(withRoot.resolve("write_to_file", { path: join(writeRoot, "x.md") }).action).toBe("allow");
+  });
+
+  it("a symlink inside the workspace escaping it is treated as out-of-set (realpath, not lexical)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wb-escape-"));
+    const link = join(dir, "escape");
+    symlinkSync(HOME, link, "dir");
+    try {
+      const engine = new PermissionEngine(undefined, dir, false, { enforceWriteBoundary: true });
+      const r = engine.resolve("write_to_file", { path: link });
+      expect(r.action).toBe("ask");
+      expect(r.isGuarded).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("agreement with the Seatbelt layer: a path the engine silently allows is one Seatbelt emits an allow-line for", () => {
+    // docs/unified-write-boundary.md §2's central claim, asserted at the
+    // engine level: the silent set IS resolveWriteRoots — the same set
+    // buildSeatbeltProfile emits (subpath ...) allow-lines from. A target
+    // inside the workspace root, a configured writeRoot, or a carve-out is
+    // silently allowed here and shell-writable there; a genuinely external
+    // path is neither (Seatbelt denies it; this asks).
+    const root = mkdtempSync(join(tmpdir(), "wb-agree-"));
+    const writeRoot = join(HOME, "SecondBrain", "AgentMemory");
+    try {
+      const engine = new PermissionEngine(undefined, root, false, {
+        enforceWriteBoundary: true,
+        writeRoots: ["~/SecondBrain/AgentMemory"],
+      });
+      expect(engine.resolve("write_to_file", { path: join(root, "a.ts") }).action).toBe("allow");
+      expect(engine.resolve("write_to_file", { path: join(writeRoot, "x.md") }).action).toBe("allow");
+      expect(engine.resolve("write_to_file", { path: join(tmpdir(), "y.txt") }).action).toBe("allow"); // $TMPDIR carve-out
+      expect(engine.resolve("write_to_file", { path: join(HOME, "wb-out-probe", "z.txt") }).action).toBe("ask");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

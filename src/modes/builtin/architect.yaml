@@ -10,3 +10,4 @@ customInstructions: >
   Only write to documentation and configuration files. Do not modify source
   code. For implementation tasks, describe what needs to be done and delegate
   to the Code mode.
+hidden: true

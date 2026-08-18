@@ -24,8 +24,8 @@ problem:
 │  What the user sees. Commands, prompts, streaming output.   │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 6: Modes (personas with tool gates + file restrictions)
-│  Each mode is a YAML-defined persona: Code, Ask, Architect,  │
-│  Debug, Orchestrator.                                        │
+│  YAML-defined personas: General and Code, plus hidden        │
+│  compatibility aliases for retired modes.                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 5: Safety (permissions + checkpoint/restore)          │
 │  Pattern-based allow/ask/deny rules + shadow-Git checkpoints.│
@@ -179,11 +179,12 @@ checkpoint details in session-spec.md.
 
 ## 8. Layer 6 — Modes
 
-A mode is a YAML persona gating tool groups and file writes: **code** (full
-access), **ask** (read-only), **architect** (docs/config writes only),
-**debug** (full access + systematic instructions), **orchestrator**
-(`new_task` delegation only). This prevents "oops, I accidentally edited
-your production config" at the architectural level. Details: mode-spec.md.
+A mode is a YAML persona gating tool groups and file writes. **General** is the
+read-only default, while **Code** has implementation access plus the workflow
+group for `new_task` delegation. Ask, Architect, Debug, and Orchestrator remain
+hidden aliases for compatibility with older sessions and explicit slugs. This
+prevents "oops, I accidentally edited your production config" at the
+architectural level. Details: mode-spec.md.
 
 ## 9. Layer 7 — CLI & TUI
 
@@ -254,7 +255,7 @@ src/
 ├── skills/                     # SKILL.md loader + trust + load_skill
 ├── modes/
 │   ├── loader.ts               # YAML mode loader + precedence
-│   └── builtin/*.yaml          # code, ask, architect, debug, orchestrator
+│   └── builtin/*.yaml          # general, code + hidden aliases
 ├── mcp/                        # client.ts + connector.ts (mcp__ tools)
 ├── orchestrator/               # new_task sub-agents
 ├── selfreflection/             # error reflection

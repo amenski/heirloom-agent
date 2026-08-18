@@ -4,7 +4,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // (persist + validate + roll back) is unit-testable. Importing cli.tsx does
 // NOT run the real CLI startup: main() is guarded to only auto-run when this
 // module is the process entrypoint, which is false under vitest.
-import { handleSlashCore } from "./cli.js";
+import { handleSlashCore, syncModeModel } from "./cli.js";
+import { resolveRestoredSelection } from "./modes/model-policy.js";
 
 function makeShared(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -43,7 +44,7 @@ describe("/model command (C2: persist + validate + roll back)", () => {
 
     expect(shared.providerName).toBe("openai");
     expect(shared.activeModel).toBe("gpt-5.6-sol");
-    expect(sessionStore.appendState).toHaveBeenCalledWith("sess-1", { provider: "openai", model: "gpt-5.6-sol" });
+    expect(sessionStore.appendState).toHaveBeenCalledWith("sess-1", { provider: "openai", model: "gpt-5.6-sol", modelExplicit: true });
     expect(resetCompactor).toHaveBeenCalledTimes(1);
   });
 
@@ -67,5 +68,43 @@ describe("/model command (C2: persist + validate + roll back)", () => {
     expect(shared.activeModel).toBe("deepseek-v4-pro");
     expect(sessionStore.appendState).not.toHaveBeenCalled();
     expect(resetCompactor).not.toHaveBeenCalled();
+  });
+});
+
+describe("mode model defaults on resume", () => {
+  function shared() {
+    return {
+      providerName: "deepseek",
+      activeModel: undefined as string | undefined,
+      activeEffort: undefined as string | undefined,
+      modelExplicit: false,
+      effortExplicit: false,
+      providerExplicit: false,
+      baselineProviderName: "deepseek",
+      baselineModel: undefined as string | undefined,
+      baselineEffort: undefined as string | undefined,
+    };
+  }
+
+  it("recomputes General's Flash/low defaults for a known mode-derived resume", () => {
+    const restored = resolveRestoredSelection("deepseek-v4-flash", false);
+    expect(restored).toEqual({ value: undefined, explicit: false });
+
+    const state = shared();
+    syncModeModel(state, { slug: "general", name: "General", roleDefinition: "", model: "deepseek/deepseek-v4-flash", reasoningEffort: "low" });
+    expect(state).toMatchObject({ activeModel: "deepseek-v4-flash", activeEffort: "low" });
+  });
+
+  it("recomputes a specialist default when Code follows a mode-derived Flash session", () => {
+    const restored = resolveRestoredSelection("deepseek-v4-flash", false);
+    const state = { ...shared(), activeModel: restored.value };
+    syncModeModel(state, { slug: "code", name: "Code", roleDefinition: "" });
+    expect(state.activeModel).toBeUndefined();
+    expect(state.activeEffort).toBe("high");
+  });
+
+  it("preserves explicit and legacy-ambiguous restored choices", () => {
+    expect(resolveRestoredSelection("openai-model", true)).toEqual({ value: "openai-model", explicit: true });
+    expect(resolveRestoredSelection("legacy-model", undefined)).toEqual({ value: "legacy-model", explicit: true });
   });
 });

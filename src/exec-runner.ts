@@ -2,7 +2,7 @@ import { APICallError, RetryError } from "ai";
 import { buildExecPrompt, type ExecInputStream } from "./exec-input.js";
 import { runAgent } from "./agent.js";
 import { buildRepoMap } from "./prompt.js";
-import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground, setSandboxLevel, setWebSearchConfig } from "./tools/index.js";
+import { executeTool, registry, setSessionId, setSignal, setTimeoutToBackground, setSandboxLevel, setWriteRoots, setWebSearchConfig } from "./tools/index.js";
 import { todoStore } from "./tools/todo.js";
 import { initPresets, createProvider, getPreset } from "./providers/presets.js";
 import { PermissionEngine, ProfileEvaluator } from "./permissions/index.js";
@@ -15,12 +15,14 @@ import { ModeLoader } from "./modes/loader.js";
 import { AgentLoader } from "./agents/index.js";
 import { join } from "node:path";
 import { checkSettingsTrust, stripExecutionKeys } from "./config/settings-trust.js";
+import { GENERAL_MODEL_ID, GENERAL_REASONING_EFFORT, parseModelId } from "./modes/model-policy.js";
 
 export interface ExecRunnerOptions {
   prompt: string;
   projectRoot: string;
   resumeSessionId?: string;
   mode?: string;
+  model?: string;
   debug?: boolean;
   input?: ExecInputStream;
 }
@@ -124,6 +126,11 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         ? effectiveConfig.permissionProfile.level
         : undefined,
     );
+    // sandbox.writeRoots (docs/unified-write-boundary.md) — same resolution
+    // the TUI uses; already global-only from the loader, and any project TOFU
+    // strip above only ever narrows (forces `{ enabled: true }`, dropping
+    // writeRoots), never widens.
+    setWriteRoots(effectiveConfig.sandbox?.writeRoots);
 
     // web_search backend config (webSearch.searxngUrl) — resolved from the
     // EFFECTIVE (post-TOFU-strip) config, same as sandbox/permissions above.
@@ -135,24 +142,43 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     const resolvedBaseUrl = configEnv?.BASE_URL || undefined;
 
     let providerName = configResult.config.provider || "deepseek";
-    let activeModel: string | undefined = configResult.config.model ?? configEnv?.MODEL ?? undefined;
+    const rawModel = options.model ?? configResult.config.model ?? configEnv?.MODEL ?? undefined;
+    const parsedModel = parseModelId(rawModel, providerName);
+    if (rawModel?.includes("/") && parsedModel) providerName = parsedModel.provider;
+    let activeModel: string | undefined = parsedModel?.model;
 
-    if (options.resumeSessionId) {
+    if (options.resumeSessionId && !rawModel) {
       activeModel = undefined;
     }
 
-    // Validate the requested mode before touching the provider so a typo fails
+    // Resolve the active mode before touching the provider so a typo fails
     // with a clear "unknown mode" message instead of silently proceeding or
-    // crashing later (B1/D7). Loaded lazily to avoid the cost when no --mode.
-    if (options.mode) {
-      const modeLoader = new ModeLoader();
-      const resolved = await modeLoader.load(options.mode, options.projectRoot);
-      if (!resolved) {
-        const available = (await modeLoader.listAll(options.projectRoot)).map((m) => m.slug).sort();
-        writeErr(`Error: unknown mode "${options.mode}", available: ${available.join(", ")}`);
-        return 1;
+    // crashing later (B1/D7). An explicit --mode wins; otherwise the same
+    // "general" default the TUI starts new sessions with (src/cli.tsx) — so
+    // headless runs get the same tool gating as an unconfigured TUI session
+    // instead of registry.getAllDefs()'s every-tool fallback.
+    const modeLoader = new ModeLoader();
+    const activeMode = await modeLoader.load(options.mode || "general", options.projectRoot);
+    if (!activeMode) {
+      const available = (await modeLoader.listAll(options.projectRoot)).map((m) => m.slug).sort();
+      writeErr(`Error: unknown mode "${options.mode || "general"}", available: ${available.join(", ")}`);
+      return 1;
+    }
+
+    // General has a deliberately cheap provider default. An explicit model,
+    // configured provider, or configured effort remains authoritative.
+    if (!rawModel && activeMode.slug === "general") {
+      const modeModel = parseModelId(activeMode.model || GENERAL_MODEL_ID, providerName);
+      if (modeModel && (!configResult.config.provider || configResult.config.provider === modeModel.provider)) {
+        providerName = modeModel.provider;
+        activeModel = modeModel.model;
       }
     }
+    const activeCaps = getPreset(providerName)?.models[activeModel ?? getPreset(providerName)?.defaultModel ?? ""];
+    const activeEffort = configResult.config.reasoningEffort
+      ?? (activeMode.slug === "general" && activeCaps?.effort
+        ? (activeMode.reasoningEffort || GENERAL_REASONING_EFFORT)
+        : activeMode.slug === "general" ? undefined : activeCaps?.effort?.default);
 
     // createProvider throws for an unknown provider or a missing API key. In
     // headless mode that must be a clean one/two-line message telling the user
@@ -192,13 +218,22 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       effectiveConfig.permissions,
       options.projectRoot,
       Object.keys(effectiveConfig.mcpServers ?? {}).length > 0,
+      {
+        // docs/unified-write-boundary.md §2: same boundary as the TUI —
+        // active whenever the profile level is workspace-write, threading the
+        // global-only sandbox.writeRoots into the shared write-set.
+        enforceWriteBoundary: effectiveConfig.permissionProfile?.level === "workspace-write",
+        writeRoots: effectiveConfig.sandbox?.writeRoots,
+      },
     );
     // Same construction the TUI uses (cli.tsx): a configured permissionProfile
     // adds the layer-1 capability gate — a profile deny fails closed exactly
     // like a rule deny (no prompt; the headless askUser below is never
     // reached). Absent → layer 1 does not exist (permission-profile.md §9).
     const permissionProfile = effectiveConfig.permissionProfile
-      ? new ProfileEvaluator(effectiveConfig.permissionProfile, options.projectRoot)
+      ? new ProfileEvaluator(effectiveConfig.permissionProfile, options.projectRoot, {
+          writeRoots: effectiveConfig.sandbox?.writeRoots,
+        })
       : undefined;
 
     // Lifecycle hooks (hooks-spec.md): headless mode skips untrusted project
@@ -295,7 +330,8 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
       // budget spans the whole session.
       const agentOptions = {
         provider,
-        tools: registry.getAllDefs(),
+        tools: activeMode.groups ? registry.getByMode(activeMode.groups) : registry.getAllDefs(),
+        effort: activeEffort,
         executeTool,
         permissions,
         permissionProfile,

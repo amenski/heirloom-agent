@@ -103,6 +103,33 @@ describe("SessionStore", () => {
       expect(loaded!.meta.model).toBe("gpt-4o");
       expect(loaded!.meta.provider).toBe("openai");
     });
+
+    it("preserves tri-state model origin markers for resume policy", async () => {
+      const modeDerived = await store.create({
+        cwd: TEST_CWD,
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+        mode: "general",
+        modelExplicit: false,
+      });
+      const explicit = await store.create({
+        cwd: TEST_CWD,
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        mode: "general",
+        modelExplicit: true,
+      });
+      const legacy = await store.create({
+        cwd: TEST_CWD,
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        mode: "general",
+      });
+
+      expect((await store.load(modeDerived))!.meta.modelExplicit).toBe(false);
+      expect((await store.load(explicit))!.meta.modelExplicit).toBe(true);
+      expect((await store.load(legacy))!.meta.modelExplicit).toBeUndefined();
+    });
   });
 
   describe("compaction", () => {

@@ -264,7 +264,7 @@ export class Orchestrator {
       const subMode = await this.options.modeLoader.load(modeSlug);
       if (!subMode) {
         return {
-          content: `Unknown mode: "${modeSlug}". Available built-in modes: code, architect, debug, ask, orchestrator.`,
+          content: `Unknown mode: "${modeSlug}". Available built-in modes: general, code.`,
           error: "UNKNOWN_MODE",
         };
       }

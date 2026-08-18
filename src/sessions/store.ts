@@ -19,6 +19,12 @@ export interface SessionMeta {
   provider: string;
   model: string;
   mode: string;
+  /** True when the user explicitly selected the model, rather than a mode default. */
+  modelExplicit?: boolean;
+  /** Last explicitly selected reasoning effort, when one was persisted. */
+  effort?: string;
+  /** True when the user explicitly selected the reasoning effort. */
+  effortExplicit?: boolean;
 }
 
 export interface CompactionSummary {
@@ -418,6 +424,9 @@ export class SessionStore {
       provider: first.provider as string,
       model: first.model as string,
       mode: first.mode as string,
+      modelExplicit: first.modelExplicit as boolean | undefined,
+      effort: first.effort as string | undefined,
+      effortExplicit: first.effortExplicit as boolean | undefined,
     };
 
     for (const rec of records) {
@@ -427,6 +436,12 @@ export class SessionStore {
           meta = { ...meta, model: rec.model as string };
         if (rec.provider !== undefined)
           meta = { ...meta, provider: rec.provider as string };
+        if (rec.modelExplicit !== undefined)
+          meta = { ...meta, modelExplicit: rec.modelExplicit as boolean };
+        if (rec.effort !== undefined)
+          meta = { ...meta, effort: rec.effort as string };
+        if (rec.effortExplicit !== undefined)
+          meta = { ...meta, effortExplicit: rec.effortExplicit as boolean };
       }
     }
 

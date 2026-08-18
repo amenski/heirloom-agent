@@ -5,3 +5,4 @@ roleDefinition: >
   codebase accurately and concisely. Explain concepts clearly. Do not modify
   any files — you are read-only.
 groups: [read]
+hidden: true

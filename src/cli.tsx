@@ -14,7 +14,7 @@ import { buildRepoMap, loadProjectResearch } from "./prompt.js";
 import { estimateTokens, estimateTokensDetailed, estimateOverheadTokens } from "./compaction/budget.js";
 import { fireNotify } from "./notify.js";
 import { HookRunner, fireNotificationHooks } from "./hooks/index.js";
-import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground, setSandboxLevel, setWebSearchConfig } from "./tools/index.js";
+import { executeTool, TOOL_DEFS, registry, setSessionId, setCheckpointManager, setSignal, setSessionStore, setSetMode, setTimeoutToBackground, setSandboxLevel, setWriteRoots, setWebSearchConfig } from "./tools/index.js";
 import { jobManager } from "./tools/jobs.js";
 import { todoStore } from "./tools/todo.js";
 import { PermissionEngine, ProfileEvaluator, authorize } from "./permissions/index.js";
@@ -60,12 +60,40 @@ import { StatusLineManager } from "./ui/statusline/index.js";
 import { isSkillAlreadyLoaded, buildSkillLoadMessage } from "./ui/core/skill-load.js";
 import { toModelId } from "./ui/core/model-picker.js";
 import { loadFavoriteModels, loadRecentModels, persistRecentModel, persistToggleFavorite } from "./ui/components/ModelsDropdown/settings.js";
+import { GENERAL_MODEL_ID, GENERAL_REASONING_EFFORT, parseModelId, resolveRestoredSelection } from "./modes/model-policy.js";
 
 // Opt-in stall watchdog (HEIRLOOM_PROFILE=1|true): started before the Ink
 // render() call, stopped + reported inside logSessionEnd. Module-level so
 // both logSessionEnd and the /doctor slash command can read it without
 // threading a new field through `shared`'s type.
 let stallWatchdog: ReturnType<typeof startStallWatchdog> | null = null;
+
+export function syncModeModel(shared: any, mode: ModeConfig | undefined): void {
+  if (!mode) return;
+  if (!shared.modelExplicit) {
+    if (mode.slug === "general") {
+      const configuredModeModel = parseModelId(mode.model || GENERAL_MODEL_ID, shared.baselineProviderName);
+      const modeModel = configuredModeModel &&
+        (!shared.providerExplicit || shared.baselineProviderName === configuredModeModel.provider)
+        ? configuredModeModel
+        : undefined;
+      if (modeModel) {
+        shared.providerName = modeModel.provider;
+        shared.activeModel = modeModel.model;
+      }
+    } else {
+      shared.providerName = shared.baselineProviderName;
+      shared.activeModel = shared.baselineModel;
+    }
+  }
+  if (!shared.effortExplicit) {
+    const preset = getPreset(shared.providerName);
+    const caps = preset?.models[shared.activeModel ?? preset.defaultModel];
+    shared.activeEffort = mode.slug === "general"
+      ? (caps?.effort ? (mode.reasoningEffort || GENERAL_REASONING_EFFORT) : undefined)
+      : (shared.baselineEffort || caps?.effort?.default);
+  }
+}
 
 // Guarded so tests can import handleSlashCore (below) without triggering the
 // real CLI startup (which reads real settings.json / calls process.exit on a
@@ -183,6 +211,7 @@ async function main() {
       projectRoot: process.cwd(),
       resumeSessionId: typeof parsed.resume === "string" ? parsed.resume : undefined,
       mode: parsed.mode,
+      model: parsed.model,
       debug: parsed.debug,
     });
     return;
@@ -260,6 +289,14 @@ async function main() {
 
   const detected = detectProvider(configEnv);
   let providerName = configResult.config.provider || detected || "deepseek";
+  const rawInitialModel = parsed.model ?? configResult.config.model ?? configEnv?.MODEL ?? undefined;
+  const parsedInitialModel = parseModelId(rawInitialModel, providerName);
+  // `--model` and settings.model are provider/model references. Resolve the
+  // provider prefix before constructing the provider factory; a bare model
+  // remains relative to the configured/detected provider for compatibility.
+  if (rawInitialModel?.includes("/") && parsedInitialModel) {
+    providerName = parsedInitialModel.provider;
+  }
   // Captured for getProvider() below: the resolved API key/base URL come from
   // settings.json env.* and are only valid for THIS provider. Reusing them
   // after /model switches to a different provider would leak one provider's
@@ -274,7 +311,7 @@ async function main() {
     }
   }
 
-  const initialModel: string | undefined = parsed.model ?? configResult.config.model ?? configEnv?.MODEL ?? undefined;
+  const initialModel: string | undefined = parsedInitialModel?.model;
   const thinkingEnabled = configResult.config.thinkingEnabled ?? true;
   const reasoningEffort = configResult.config.reasoningEffort;
 
@@ -309,12 +346,23 @@ async function main() {
     configResult.config.permissions,
     process.cwd(),
     Object.keys(configResult.config.mcpServers ?? {}).length > 0,
+    {
+      // docs/unified-write-boundary.md §2: the file-tool write boundary is
+      // active whenever the profile level is workspace-write (unconditional
+      // — not gated on sandbox.enabled). The engine resolves in-set writes
+      // silently and out-of-set writes to a guarded ask, from the same
+      // resolveWriteRoots set the Seatbelt layer emits allow-lines from.
+      enforceWriteBoundary: configResult.config.permissionProfile?.level === "workspace-write",
+      writeRoots: configResult.config.sandbox?.writeRoots,
+    },
   );
   // The capability-boundary gate (permission-profile.md §3): constructed only
   // when `permissionProfile` is configured — absent entirely disables layer 1
   // and authorize() runs the engine alone (today's behavior byte-for-byte).
   const permissionProfile = configResult.config.permissionProfile
-    ? new ProfileEvaluator(configResult.config.permissionProfile, process.cwd())
+    ? new ProfileEvaluator(configResult.config.permissionProfile, process.cwd(), {
+        writeRoots: configResult.config.sandbox?.writeRoots,
+      })
     : undefined;
 
   // Orchestrator mode (9.3) is registered once at startup, but its runtime
@@ -388,16 +436,29 @@ async function main() {
   const sessionCreateBase = {
     cwd: process.cwd(),
     provider: providerName,
-    model: initialModel || getPreset(providerName)?.defaultModel || "deepseek-v4-pro",
-    mode: parsed.mode || "code",
+    model: initialModel || ((parsed.mode === "general" || !parsed.mode) &&
+      (!configResult.config.provider || configResult.config.provider === "deepseek") &&
+      (!detected || detected === "deepseek")
+      ? "deepseek-v4-flash"
+      : getPreset(providerName)?.defaultModel || "deepseek-v4-pro"),
+    mode: parsed.mode || "general",
+    modelExplicit: rawInitialModel !== undefined,
+    effortExplicit: reasoningEffort !== undefined,
+    ...(reasoningEffort !== undefined ? { effort: reasoningEffort } : {}),
   };
 
   // loadEffective replays `state` records into meta, so a session resumed after
   // a /model switch carries the provider/model that was active when it ended.
   // Adopt it unless the user overrode the choice explicitly on this launch
-  // (CLI flag / settings.json), which must still win.
+  // (CLI flag / settings.json), which must still win. Mode follows the same
+  // rule (resumedMode below): a resumed session's last mode wins over the
+  // general default, but an explicit --mode on this launch still wins over both.
   let resumedProvider: string | undefined;
   let resumedModel: string | undefined;
+  let resumedMode: string | undefined;
+  let resumedModelExplicit: boolean | undefined;
+  let resumedEffort: string | undefined;
+  let resumedEffortExplicit: boolean | undefined;
 
   if (typeof resumeSessionId === "string") {
     try {
@@ -407,6 +468,10 @@ async function main() {
       sessionLoaded = true;
       resumedProvider = loaded.meta?.provider;
       resumedModel = loaded.meta?.model;
+      resumedMode = loaded.meta?.mode;
+      resumedModelExplicit = loaded.meta?.modelExplicit;
+      resumedEffort = loaded.meta?.effort;
+      resumedEffortExplicit = loaded.meta?.effortExplicit;
     } catch {
       process.stderr.write(`Session not found: ${resumeSessionId}\n`);
       process.exit(1);
@@ -421,6 +486,10 @@ async function main() {
         sessionLoaded = true;
         resumedProvider = loaded.meta?.provider;
         resumedModel = loaded.meta?.model;
+        resumedMode = loaded.meta?.mode;
+        resumedModelExplicit = loaded.meta?.modelExplicit;
+        resumedEffort = loaded.meta?.effort;
+        resumedEffortExplicit = loaded.meta?.effortExplicit;
       } catch (err) {
         process.stderr.write(`Failed to load session ${sessionId}: ${(err as Error).message}\n`);
         process.exit(1);
@@ -431,6 +500,9 @@ async function main() {
   } else {
     sessionId = await sessionStore.create(sessionCreateBase);
   }
+
+  const resumedModelSelection = resolveRestoredSelection(resumedModel, resumedModelExplicit);
+  const resumedEffortSelection = resolveRestoredSelection(resumedEffort, resumedEffortExplicit);
 
   if (parsed.debug) enableDebug(sessionId);
 
@@ -452,6 +524,7 @@ async function main() {
     const mode = await modeLoader.load(slug);
     if (!mode) return null;
     shared.activeMode = { ...mode };
+    syncModeModel(shared, shared.activeMode);
     await sessionStore.appendState(sessionId, { mode: slug });
     return mode.name;
   });
@@ -470,6 +543,12 @@ async function main() {
       ? configResult.config.permissionProfile.level
       : undefined,
   );
+  // sandbox.writeRoots (docs/unified-write-boundary.md): the GLOBAL-only
+  // grant, already resolved to global-source-only by the loader (a project
+  // value never reaches config.sandbox.writeRoots). Threaded into ctx so
+  // both the Seatbelt spawn path and the file-tool containment check consult
+  // the same set.
+  setWriteRoots(configResult.config.sandbox?.writeRoots);
 
   // web_search backend config (webSearch.searxngUrl): configResult was
   // reassigned above (the TOFU strip on decline) if the project declared any
@@ -523,16 +602,36 @@ async function main() {
     posture: "normal" as "normal" | "autoApprove" | "plan",
     // An explicit choice this launch (--model / settings.json) outranks the
     // resumed session's last-used provider/model; otherwise resume restores it.
-    providerName: (configResult.config.provider || parsed.model ? providerName : resumedProvider) ?? providerName,
-    activeModel: (initialModel ?? resumedModel) as string | undefined,
+    providerName: (configResult.config.provider || rawInitialModel ? providerName : resumedProvider) ?? providerName,
+    activeModel: (initialModel ?? resumedModelSelection.value) as string | undefined,
     activeEffort: undefined as string | undefined,
+    modelExplicit: (rawInitialModel !== undefined || resumedModelSelection.explicit) as boolean,
+    effortExplicit: (reasoningEffort !== undefined || resumedEffortSelection.explicit) as boolean,
+    providerExplicit: (configResult.config.provider !== undefined || detected !== undefined) as boolean,
+    baselineProviderName: ((configResult.config.provider || rawInitialModel ? providerName : resumedProvider) ?? providerName) as string,
+    baselineModel: (initialModel ?? resumedModelSelection.value) as string | undefined,
+    baselineEffort: (reasoningEffort ?? resumedEffortSelection.value) as string | undefined,
     // Live mode: /mode and the /modes picker mutate this so the running agent
     // (runAgentTurnBridge reads shared.activeMode) picks up the switch mid-
     // session. A plain closure var here would stay stale until restart.
+    // Resolved just below — never left undefined — so "no mode selected" can
+    // no longer fall through to registry.getAllDefs() (every tool, ungated).
     activeMode: undefined as ModeConfig | undefined,
     debug: parsed.debug as boolean | undefined,
   };
-  shared.activeEffort = reasoningEffort || getActiveModelCaps()?.effort?.default;
+  shared.activeEffort = shared.effortExplicit
+    ? (reasoningEffort ?? resumedEffortSelection.value)
+    : getActiveModelCaps()?.effort?.default;
+
+  // Startup mode resolution: an explicit --mode on this launch wins (handled
+  // below, after this block, same as today); otherwise a resumed session's
+  // last mode wins; otherwise general — the same "everything but write access"
+  // persona sessionCreateBase.mode already defaults new sessions to.
+  if (!parsed.mode) {
+    shared.activeMode = (await modeLoader.load(resumedMode || "general")) ?? (await modeLoader.load("general")) ?? undefined;
+  }
+
+  syncModeModel(shared, shared.activeMode);
 
   // A session resumed at startup (--resume/--last) must seed the live history so
   // the model actually sees the prior turns on the very first message. Without
@@ -573,13 +672,13 @@ async function main() {
 
   if (parsed.mode) {
     const mode = await modeLoader.load(parsed.mode);
-    if (mode) { shared.activeMode = mode; await sessionStore.appendState(sessionId, { mode: parsed.mode }); }
+    if (mode) { shared.activeMode = mode; syncModeModel(shared, shared.activeMode); await sessionStore.appendState(sessionId, { mode: parsed.mode }); }
   }
 
   // Shown inside the app's scrollback after mount — printing to stdout here
   // would get garbled by Ink's first render.
   const resumeNotice = sessionLoaded
-    ? `Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${shared.activeMode?.slug || "code"}`
+    ? `Resumed ${sessionId} · ${sessionMessages.length} messages · mode: ${shared.activeMode?.slug || "general"}`
     : undefined;
   const initialNotice = [...skillLoader.notices, resumeNotice].filter(Boolean).join("\n") || undefined;
 
@@ -1450,12 +1549,12 @@ export async function handleSlashCore(
     case "/mode": {
       const slug = input.slice(6).trim();
       if (!slug) {
-        console.log(`Current: ${shared.activeMode?.slug ?? "code"}`);
+        console.log(`Current: ${shared.activeMode?.slug ?? "general"}`);
         for (const m of await modeLoader.listAll()) console.log(`  ${m.slug} — ${m.description || m.roleDefinition.slice(0, 60)}`);
         return;
       }
       const mode = await modeLoader.load(slug);
-      if (mode) { shared.activeMode = mode; await sessionStore.appendState(sessionId, { mode: slug }); console.log(`Switched to ${mode.name} mode.`); }
+      if (mode) { shared.activeMode = mode; syncModeModel(shared, shared.activeMode); await sessionStore.appendState(sessionId, { mode: slug }); console.log(`Switched to ${mode.name} mode.`); }
       else console.log(`Unknown mode: ${slug}.`);
       return;
     }
@@ -1485,7 +1584,9 @@ export async function handleSlashCore(
         console.log(`Cannot switch to ${provider}/${model}: ${(err as Error).message}`);
         return;
       }
-      await sessionStore.appendState(sessionId, { provider, model });
+      shared.modelExplicit = true;
+      syncModeModel(shared, shared.activeMode);
+      await sessionStore.appendState(sessionId, { provider, model, modelExplicit: true });
       resetCompactor();
       recordRecentModel(toModelId(provider, model));
       console.log(`Model changed to ${shared.providerName}/${shared.activeModel}`);
@@ -1502,6 +1603,8 @@ export async function handleSlashCore(
       if (!arg) { console.log(`Effort: ${shared.activeEffort ?? caps.effort.default}\nValid: ${caps.effort.values.join(", ")}`); return; }
       if (!caps.effort.values.includes(arg)) { console.log(`Invalid effort. Valid: ${caps.effort.values.join(", ")}`); return; }
       shared.activeEffort = arg;
+      shared.effortExplicit = true;
+      await sessionStore.appendState(sessionId, { effort: arg, effortExplicit: true });
       console.log(`Effort set to ${arg}.`);
       return;
     }

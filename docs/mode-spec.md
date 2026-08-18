@@ -26,6 +26,10 @@ groups: string[]         # Allowed tool groups: read, edit, command, mcp, workfl
 fileRegex: string        # Restrict file modifications to matching paths
 customInstructions: string  # Additional rules appended to the system prompt
 model: string            # Sticky model (provider/model)
+reasoningEffort: string  # Mode effort default when the user has not selected one
+hidden: boolean          # Excluded from listAll() (the picker/`/modes` listing);
+                          # still reachable by slug via load() — a compatibility
+                          # alias for a retired mode name (e.g. ask.yaml)
 ```
 
 YAML is parsed by a small hand-rolled parser (`src/modes/loader.ts:16`):
@@ -57,25 +61,46 @@ These bypass mode gates regardless of group:
   confirmation — tool-spec.md)
 - `attempt_completion` — end-the-turn signal (all groups; tool-spec.md)
 
-`new_task` is **not** always-available: it is `workflow`-group only, so only
-the orchestrator mode can delegate.
+`new_task` is **not** always-available: it is `workflow`-group only. Code can
+delegate directly; the retired orchestrator alias remains available for
+compatibility.
 
 ## 5. Built-in modes
 
 `src/modes/builtin/*.yaml`:
 
-### code (default mode)
+### general (default mode)
+```yaml
+slug: general
+name: General
+groups: [read]
+model: deepseek/deepseek-v4-flash
+reasoningEffort: low
+```
+A session with no explicit `--mode`/`/mode` starts here — `activeMode` is
+never left `undefined` at startup (`src/cli.tsx`); a resumed session's last
+mode wins over this default, and an explicit `--mode` wins over both.
+Headless (`heirloom -x`, `src/exec-runner.ts`) resolves the same default: an
+unrecognized `--mode` still exits 1 with the "unknown mode" message, and a
+valid explicit `--mode` gates tools to its own groups instead.
+
+### code
 ```yaml
 slug: code
 name: Code
-groups: [read, edit, command]
+groups: [read, edit, command, workflow]
 ```
 
-### ask
+Code includes the workflow group so delegation is an automatic capability of
+implementation work rather than a separate picker mode. Debugging behavior is
+also handled within Code's normal implementation persona.
+
+### ask (hidden from the picker/listAll — reachable via `/mode ask`)
 ```yaml
 slug: ask
 name: Ask
 groups: [read]
+hidden: true
 ```
 
 ### architect
@@ -84,21 +109,33 @@ slug: architect
 name: Architect
 groups: [read, edit]
 fileRegex: "\\.(md|yaml|yml|json|txt)$"
+hidden: true
 ```
+
+Architect is a hidden compatibility alias for existing sessions and explicit
+`/mode architect` switches; it is not shown in the picker.
 
 ### debug
 ```yaml
 slug: debug
 name: Debug
 groups: [read, edit, command]
+hidden: true
 ```
+
+Debug is a hidden compatibility alias. Code handles debugging as part of its
+normal implementation behavior.
 
 ### orchestrator
 ```yaml
 slug: orchestrator
 name: Orchestrator
 groups: [workflow]
+hidden: true
 ```
+
+Orchestrator is a hidden compatibility alias. New sessions use Code's
+workflow capability directly.
 
 ## 6. Resolution precedence
 
@@ -138,5 +175,6 @@ customInstructions: "Always reference line numbers. Suggest concrete fixes, not 
 ## 9. Verified against
 
 `src/modes/loader.ts` (ModeConfig, load, listAll) · `src/modes/builtin/*.yaml`
-(all five built-ins) · `src/tools/types.ts` (ToolGroup) · `src/cli.tsx`
-(mode → tool-filter wiring, default mode)
+(the two visible built-ins plus hidden compatibility aliases) · `src/tools/types.ts` (ToolGroup) · `src/cli.tsx`
+(mode → tool-filter wiring, default mode) · `src/exec-runner.ts` (headless
+mode → tool-filter wiring, default mode)

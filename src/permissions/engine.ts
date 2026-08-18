@@ -7,6 +7,7 @@ import { buildBashSubject } from "./bash-normalize.js";
 import { BUILTIN_DESTRUCTIVE_RULES } from "./destructive.js";
 import { BUILTIN_GUARDED_RULES } from "./guarded.js";
 import { BUILTIN_ALLOW_RULES } from "./builtin-allow.js";
+import { isPathWithinWriteRoots, resolveWriteRoots } from "../sandbox/write-roots.js";
 
 export type { PermissionAction, PermissionRule, PatternKind, RuleOrigin } from "./rules.js";
 
@@ -41,6 +42,25 @@ export class PermissionEngine {
   private projectConfigDir: string;
   /** True when the user has at least one MCP server configured. Not a rule — never persisted — just the signal that lets defaultMode: allowAll cover mcp__* tools without an explicit rule. */
   private hasMcpServersConfigured: boolean;
+  /**
+   * Whether the file-tool write boundary is active (docs/unified-write-
+   * boundary.md §2): true when the permission profile level is
+   * `workspace-write`. Deliberately NOT gated on sandbox.enabled — the
+   * boundary follows the profile level (decision 2026-08-17). When active,
+   * write/edit targets inside the shared write-set resolve silently (no
+   * prompt); targets outside it resolve to a builtin-guarded ask. Under
+   * strict-sandbox the profile layer denies all writes before the engine
+   * runs; under unrestricted there is no boundary — neither sets this.
+   */
+  private readonly enforceWriteBoundary: boolean;
+  /**
+   * The shared workspace-write write-set (resolveWriteRoots,
+   * docs/unified-write-boundary.md §1): workspace root + the battery-proven
+   * carve-outs (/tmp, $TMPDIR, ~/.npm) + global sandbox.writeRoots,
+   * realpath-resolved — the same set the Seatbelt layer emits allow-lines
+   * from. Empty when the boundary is inactive.
+   */
+  private readonly writeSet: string[];
 
   /** Tools whose exact/glob patterns carry file paths (normalized on load). */
   private static readonly FILE_TOOLS = new Set([
@@ -75,12 +95,21 @@ export class PermissionEngine {
     "edit", "edit_file", "write_to_file", "search_replace", "apply_diff", "apply_patch",
   ]);
 
-  constructor(config?: PermissionConfig, workingDir?: string, hasMcpServersConfigured?: boolean) {
+  constructor(
+    config?: PermissionConfig,
+    workingDir?: string,
+    hasMcpServersConfigured?: boolean,
+    opts?: { writeRoots?: string[]; enforceWriteBoundary?: boolean },
+  ) {
     this.workingDir = workingDir ?? process.cwd();
     this.configRules = (config?.rules ?? []).map((r) => this.normalizeConfigRule(r));
     this.defaultMode = config?.defaultMode ?? "askAll";
     this.projectConfigDir = join(this.workingDir, ".heirloom");
     this.hasMcpServersConfigured = hasMcpServersConfigured ?? false;
+    this.enforceWriteBoundary = opts?.enforceWriteBoundary ?? false;
+    this.writeSet = this.enforceWriteBoundary
+      ? resolveWriteRoots("workspace-write", this.workingDir, opts?.writeRoots)
+      : [];
   }
 
   /**
@@ -232,6 +261,45 @@ export class PermissionEngine {
     return { tool: toolName, kind: "any", pattern: "", action: "ask", origin: "builtin-guarded" };
   }
 
+  /**
+   * The file-tool write boundary (docs/unified-write-boundary.md §2): a
+   * write/edit tool whose target realpath-resolves INSIDE the shared
+   * write-set is silently allowed (no prompt — the common in-workspace case
+   * stays free, matching how reads work); a target OUTSIDE it is a
+   * builtin-guarded "ask" — the exact search/glob containment mechanism
+   * (commit 3f8fc31), so a human always sees it regardless of posture or
+   * defaultMode, and no rule can out-specify it (kind "any" is an absolute
+   * kill-switch, see resolveTier). This is the design's "outside → ask, not
+   * hard-deny": the Seatbelt layer still kernel-denies the same out-of-set
+   * paths for shell writes, and the layers agree on the ALLOW side — a path
+   * either layer allows for a write, the other does too.
+   *
+   * Origin "config" for the in-set allow (a plain allow, same as
+   * BUILTIN_ALLOW_RULES — an explicit user deny/ask rule out-specifies it);
+   * origin "builtin-guarded" for the out-of-set ask (same precedence and
+   * posture-exemption path as a static guarded rule). Returns undefined when
+   * the boundary is inactive, the tool isn't a write tool, or there is no
+   * path to gate.
+   */
+  private writeBoundaryRule(toolName: string, subject: PermissionSubject): PermissionRule | undefined {
+    if (!this.enforceWriteBoundary) return undefined;
+    if (!PermissionEngine.WRITE_TOOLS.has(toolName)) return undefined;
+    if (!subject.resolvedPath) return undefined;
+
+    // Same lexical-absolute reconstruction as outOfWorkspaceGuardedRule:
+    // relativizeSubject's normalization is lexical only (no filesystem
+    // access), so a symlink escape is only visible to the realpath-based
+    // containment check here.
+    const lexicalAbsolute = subject.resolvedPath.startsWith("./")
+      ? resolve(this.workingDir, subject.resolvedPath.slice(2))
+      : resolve(this.workingDir, subject.resolvedPath);
+
+    if (isPathWithinWriteRoots(lexicalAbsolute, this.writeSet)) {
+      return { tool: toolName, kind: "any", pattern: "", action: "allow", origin: "config" };
+    }
+    return { tool: toolName, kind: "any", pattern: "", action: "ask", origin: "builtin-guarded" };
+  }
+
   private resolveBash(command: string): InternalResolveResult {
     const { segments, wasUnresolved } = buildBashSubject(command);
 
@@ -259,14 +327,16 @@ export class PermissionEngine {
 
   private resolveSubject(toolName: string, subject: PermissionSubject): InternalResolveResult {
     const outOfWorkspaceRule = this.outOfWorkspaceGuardedRule(toolName, subject);
+    const boundaryRule = this.writeBoundaryRule(toolName, subject);
     const allRules = [...BUILTIN_DESTRUCTIVE_RULES, ...BUILTIN_GUARDED_RULES, ...this.configRules, ...this.sessionRules];
     const matches = allRules.filter((r) => patternMatches(r, subject));
     // Spliced in alongside the static guarded rules (not short-circuited)
-    // so it participates in the same tier/specificity resolution as any
-    // other guarded match: an explicit, more-specific user rule can still
-    // beat it (resolveTier), but the blanket builtin-allow fallback below —
+    // so they participate in the same tier/specificity resolution as any
+    // other match: an explicit, more-specific user rule can still beat an
+    // in-set boundary allow, and the blanket builtin-allow fallback below —
     // consulted only when matches.length === 0 — never gets a chance to.
     if (outOfWorkspaceRule) matches.push(outOfWorkspaceRule);
+    if (boundaryRule) matches.push(boundaryRule);
 
     if (matches.length === 0) {
       // Fallback: reads inside the working tree are free. Applied ONLY here,

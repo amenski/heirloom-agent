@@ -1,7 +1,8 @@
 import { existsSync, realpathSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ProfileLevel } from "../permissions/index.js";
+import { resolveWriteRoots } from "./write-roots.js";
 
 /**
  * macOS Seatbelt (sandbox-exec) profile generation — the *mechanical* layer
@@ -68,39 +69,6 @@ function sbplQuote(path: string): string {
 }
 
 /**
- * The workspace-write write carve-outs — the only deliberate exceptions to
- * the write boundary, both proven necessary by the 2026-08-15 dev-toolchain
- * battery (real `runBashTimed` under this profile; permission-profile.md §8):
- *
- * 1. Ephemeral temp — literal `/tmp` (realpath `/private/tmp` on macOS) and
- *    the session `$TMPDIR` (e.g. `/var/folders/…/T`). Battery evidence:
- *    `mktemp -d` failed with EPERM on `$TMPDIR`; a raw `echo > /tmp/x` and
- *    `env -u TMPDIR mktemp -d` (the /tmp fallback) also failed. Compilers,
- *    interpreters, `git`, `tar` and package managers all stage temp files
- *    here — SOTA-aligned (Codex ships the same `:tmpdir` option).
- * 2. The npm cache — `~/.npm`. Battery evidence: `npm install is-number`
- *    failed with EPERM on `~/.npm/_cacache/tmp/…` (and `~/.npm/_logs`).
- *
- * strict-sandbox gains none of these (read-only stays absolute). The
- * carve-outs are literal realpath'd subpaths, so a symlink planted in a
- * carve-out dir resolves to its target and the sandbox still denies writes
- * that land outside the subpath set.
- */
-function workspaceWriteCarveouts(): string[] {
-  const literalTmp = seatbeltWorkspaceRoot("/tmp");
-  const sessionTmp = seatbeltWorkspaceRoot(tmpdir());
-  const npmCache = seatbeltWorkspaceRoot(join(homedir(), ".npm"));
-  const seen = new Set<string>();
-  const lines: string[] = [];
-  for (const p of [literalTmp, sessionTmp, npmCache]) {
-    if (seen.has(p)) continue; // TMPDIR unset on some hosts ⇒ tmpdir() === /tmp
-    seen.add(p);
-    lines.push(`(allow file-write* (subpath "${sbplQuote(p)}"))`);
-  }
-  return lines;
-}
-
-/**
  * The SBPL profile source for a level, with the session workspace root
  * fixed at startup — never the per-call cwd (item 8.6) — as the
  * workspace-write write-set. `trustedRoot` is expected already
@@ -112,15 +80,27 @@ function workspaceWriteCarveouts(): string[] {
  * subpath is directory-boundary aware (a `(subpath "/a")` rule does not
  * match "/a2/..."). The carve-outs (temp + npm cache) are workspace-write
  * only, battery-proven 2026-08-15.
+ *
+ * `writeRoots` (optional) is the resolved-root list from
+ * {@link resolveWriteRoots} (docs/unified-write-boundary.md) — the shared
+ * source of truth also consulted by the file-tool containment check
+ * (permissions/engine.ts), so a path either layer allows is allowed by the
+ * other. When omitted, `resolveWriteRoots` is called here directly with no
+ * configured `sandbox.writeRoots`, which reproduces exactly the trustedRoot +
+ * carve-outs set this function has always emitted.
  */
-export function buildSeatbeltProfile(level: SandboxLevel, trustedRoot: string): string {
+export function buildSeatbeltProfile(
+  level: SandboxLevel,
+  trustedRoot: string,
+  writeRoots?: string[],
+): string {
   const lines = ["(version 1)", "(deny default)", ...READ_ONLY_CORE];
   if (level === "workspace-write") {
-    lines.push(
-      `(allow file-write* (subpath "${sbplQuote(trustedRoot)}"))`,
-      ...workspaceWriteCarveouts(),
-      "(allow network-outbound)",
-    );
+    const roots = writeRoots ?? resolveWriteRoots(level, trustedRoot);
+    for (const root of roots) {
+      lines.push(`(allow file-write* (subpath "${sbplQuote(root)}"))`);
+    }
+    lines.push("(allow network-outbound)");
   }
   return lines.join("\n");
 }
@@ -200,16 +180,33 @@ export function validateCwdWithinTrustedRoot(
  * session workspace root fixed at startup (`ctx.workingDir`), never the
  * per-call cwd. Callers run {@link validateCwdWithinTrustedRoot} (when
  * {@link isSandboxedLevel} says a profile applies) before spawning.
+ *
+ * `writeRoots` is the configured `sandbox.writeRoots` list (GLOBAL-only,
+ * unresolved paths — resolution happens inside {@link buildSeatbeltProfile}
+ * via {@link resolveWriteRoots}), threaded through from `ctx.writeRoots`
+ * (docs/unified-write-boundary.md) so a shell write into a configured root
+ * is allowed by the same set the file tools consult.
  */
 export function sandboxPrefix(
   command: string,
   cwd: string,
   trustedRoot: string,
   level: ProfileLevel | undefined,
+  writeRoots?: string[],
 ): SandboxSpawn | null {
   if (!isSandboxedLevel(level)) return null; // macOS-only; startup notice from the loader
   return {
     file: SANDBOX_EXEC,
-    args: ["-p", buildSeatbeltProfile(level, seatbeltWorkspaceRoot(trustedRoot)), "/bin/sh", "-c", command],
+    args: [
+      "-p",
+      buildSeatbeltProfile(
+        level,
+        seatbeltWorkspaceRoot(trustedRoot),
+        level === "workspace-write" ? resolveWriteRoots(level, seatbeltWorkspaceRoot(trustedRoot), writeRoots) : undefined,
+      ),
+      "/bin/sh",
+      "-c",
+      command,
+    ],
   };
 }

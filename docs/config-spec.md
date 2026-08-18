@@ -43,7 +43,7 @@ are fatal — `main()` exits 1 (`src/cli.tsx`).
 
   // Thinking / reasoning (top-level; higher priority than env.* strings)
   "thinkingEnabled": true,
-  "reasoningEffort": "high",              // "high" | "max"
+  "reasoningEffort": "high",              // "low" | "high" | "max"
   "temperature": 0.2,                     // number, 0..2
 
   // Repaint cadence (heirloom extension): "fast" | "balanced" | "slow"

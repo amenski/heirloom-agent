@@ -4,8 +4,8 @@
 
 ### What `new_task` is
 
-The `new_task` tool (workflow group, exposed by the `orchestrator` mode to
-every other mode) spawns a sub-agent to handle a discrete, isolated task: a
+The `new_task` tool (workflow group, exposed by the visible `Code` mode) spawns
+a sub-agent to handle a discrete, isolated task: a
 fresh `runAgent` loop with its own message history, its own todo store, and
 a tool set derived from the requested mode. When the sub-agent finishes, the
 parent receives only a text summary — no raw file diffs, no tool outputs.

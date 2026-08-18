@@ -21,6 +21,7 @@ const HOME_DIR = join(TEST_DIR, "home");
 const PROJECT_DIR = join(TEST_DIR, "project");
 
 let scriptedCall: { name: string; args: Record<string, unknown> } | null = null;
+let lastStreamOptions: Record<string, unknown> | undefined;
 const executeToolSpy = vi.fn(async (_call: ToolCall): Promise<ToolOutput> => ({ content: "ok" }));
 
 // The scripted "happy path" provider used by the permission tests: one tool call
@@ -29,7 +30,8 @@ const executeToolSpy = vi.fn(async (_call: ToolCall): Promise<ToolOutput> => ({ 
 function scriptedProvider() {
   return {
     name: "fake",
-    async *streamChat(): AsyncGenerator<StreamEvent> {
+    async *streamChat(_messages?: unknown, _tools?: unknown, options?: Record<string, unknown>): AsyncGenerator<StreamEvent> {
+      lastStreamOptions = options;
       if (scriptedCall) {
         const call = scriptedCall;
         scriptedCall = null;
@@ -51,20 +53,28 @@ let providerFactory: (name: string, options?: unknown) => unknown = () => script
 
 vi.mock("./providers/presets.js", () => ({
   initPresets: () => {},
-  getPreset: () => undefined,
+  getPreset: (name: string) => name === "deepseek" ? {
+    defaultModel: "deepseek-v4-pro",
+    models: {
+      "deepseek-v4-flash": { effort: { values: ["low", "high", "max"], default: "high" } },
+      "deepseek-v4-pro": { effort: { values: ["low", "high", "max"], default: "high" } },
+    },
+  } : undefined,
   createProvider: (name: string, options?: unknown) => {
     createProviderSpy(name, options);
     return providerFactory(name, options);
   },
 }));
 
+const getByModeSpy = vi.fn((_groups: unknown) => []);
 vi.mock("./tools/index.js", () => ({
   executeTool: (call: ToolCall) => executeToolSpy(call),
-  registry: { getAllDefs: () => [], register: () => {} },
+  registry: { getAllDefs: () => [], getByMode: (groups: unknown) => getByModeSpy(groups), register: () => {} },
   setSessionId: () => {},
   setSignal: () => {},
   setTimeoutToBackground: () => {},
   setSandboxLevel: () => {},
+  setWriteRoots: () => {},
   setWebSearchConfig: () => {},
 }));
 
@@ -90,7 +100,7 @@ function writeSettings(settings: Record<string, unknown>): void {
   writeFileSync(join(PROJECT_DIR, ".heirloom", "settings.json"), JSON.stringify(settings), "utf-8");
 }
 
-async function run(opts?: { mode?: string; debug?: boolean }): Promise<{ code: number; stderr: string }> {
+async function run(opts?: { mode?: string; model?: string; debug?: boolean }): Promise<{ code: number; stderr: string }> {
   const { runExecMode } = await import("./exec-runner.js");
   const chunks: string[] = [];
   // console.error routes through process.stderr.write, so spying on write
@@ -106,6 +116,7 @@ async function run(opts?: { mode?: string; debug?: boolean }): Promise<{ code: n
       projectRoot: PROJECT_DIR,
       input: nonTtyInput(),
       mode: opts?.mode,
+      model: opts?.model,
       debug: opts?.debug,
     });
     return { code, stderr: chunks.join("") };
@@ -125,6 +136,7 @@ describe("runExecMode headless permission enforcement (T11)", () => {
     createProviderSpy.mockClear();
     providerFactory = () => scriptedProvider();
     scriptedCall = null;
+    lastStreamOptions = undefined;
   });
 
   afterEach(() => {
@@ -289,6 +301,35 @@ describe("runExecMode first-run failures are clean (B1)", () => {
     expect(stderr).not.toContain("    at ");
     // The provider gate must not have fired — mode is validated first.
     expect(createProviderSpy).not.toHaveBeenCalled();
+  });
+
+  it("defaults to General's read-only tool set when no --mode is given, matching the TUI's startup default", async () => {
+    getByModeSpy.mockClear();
+
+    const { code } = await run();
+
+    expect(code).toBe(0);
+    expect(getByModeSpy).toHaveBeenCalledWith(["read"]);
+    expect(createProviderSpy).toHaveBeenCalledWith("deepseek", expect.objectContaining({ modelOverride: "deepseek-v4-flash" }));
+    expect(lastStreamOptions?.effort).toBe("low");
+  });
+
+  it("keeps an explicit model over General's default", async () => {
+    const { code } = await run({ model: "openai/gpt-5.6-luna" });
+
+    expect(code).toBe(0);
+    expect(createProviderSpy).toHaveBeenCalledWith("openai", expect.objectContaining({ modelOverride: "gpt-5.6-luna" }));
+  });
+
+  it("gates tools to the explicit --mode's groups instead of General's default", async () => {
+    writeSettings({ provider: "deepseek" });
+    getByModeSpy.mockClear();
+
+    const { code } = await run({ mode: "code" });
+
+    expect(code).toBe(0);
+    expect(getByModeSpy).toHaveBeenCalledWith(["read", "edit", "command", "workflow"]);
+    expect(createProviderSpy).toHaveBeenCalledWith("deepseek", expect.objectContaining({ modelOverride: undefined }));
   });
 });
 

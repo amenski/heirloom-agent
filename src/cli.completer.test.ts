@@ -29,9 +29,18 @@ describe("completer (prompt Tab completion)", () => {
   });
 
   it("completes /mode args against the known slugs", () => {
-    const [hits, base] = completer("/mode cod", ["code", "ask", "architect"]);
+    const [hits, base] = completer("/mode cod", ["general", "code"]);
     expect(base).toBe("cod");
     expect(hits).toEqual(["code"]);
+  });
+
+  it("does not offer retired mode aliases in completion", () => {
+    const [hits] = completer("/mode ", ["general", "code"]);
+    expect(hits).toEqual(["general", "code"]);
+    expect(hits).not.toContain("architect");
+    expect(hits).not.toContain("debug");
+    expect(hits).not.toContain("orchestrator");
+    expect(hits).not.toContain("ask");
   });
 
   it("completes /model args against the known provider/model list", () => {

@@ -11,6 +11,11 @@ export interface ModeConfig {
   fileRegex?: string;
   customInstructions?: string;
   model?: string;
+  reasoningEffort?: string;
+  /** Excluded from listAll() (the /modes picker and /modes text listing) but
+   *  still reachable by slug via load() — a compatibility alias for a
+   *  retired mode name, not a mode users are meant to discover. */
+  hidden?: boolean;
 }
 
 function parseYaml(content: string): Record<string, unknown> {
@@ -95,6 +100,8 @@ export class ModeLoader {
           fileRegex: parsed.fileRegex as string | undefined,
           customInstructions: parsed.customInstructions as string | undefined,
           model: parsed.model as string | undefined,
+          reasoningEffort: parsed.reasoningEffort as string | undefined,
+          hidden: parsed.hidden === "true" || parsed.hidden === true,
         };
         this.cache.set(slug, mode);
         return mode;
@@ -118,7 +125,7 @@ export class ModeLoader {
     const modes: ModeConfig[] = [];
     for (const slug of slugs) {
       const mode = await this.load(slug, projectDir);
-      if (mode) modes.push(mode);
+      if (mode && !mode.hidden) modes.push(mode);
     }
     return modes;
   }

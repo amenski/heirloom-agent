@@ -20,7 +20,7 @@ const switchModeHandler: ToolHandler = async (args, ctx) => {
 const switchModeDef: ToolDef = {
   name: "switch_mode",
   description:
-    "Switch the active persona mode (code, ask, architect, debug, orchestrator, or a custom mode). The new mode's tool set and instructions apply from the next turn. Use when the current task needs a different mode's capabilities — e.g. an ask-mode conversation that turns into implementation should switch to code first.",
+    "Switch the active persona mode (general, code, or a custom mode). The new mode's tool set and instructions apply from the next turn. Legacy modes remain accepted for resumed sessions and explicit compatibility switches.",
   parameters: {
     type: "object",
     properties: {

@@ -5,7 +5,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { Message, ToolDef } from "../types.js";
 import type { Provider, ProviderBalance, StreamEvent } from "./types.js";
 import type { ProviderPreset } from "./presets.js";
-import { logRequest, logResponse } from "../debug/logger.js";
+import { logRequest, logResponse, logTiming } from "../debug/logger.js";
 
 function mapMessages(messages: Message[]): ModelMessage[] {
   const toolNameByCallId = new Map<string, string>();
@@ -218,6 +218,11 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
         effort: reasoning,
       });
 
+      const requestStart = Date.now();
+      let firstEventAt: number | undefined;
+      let firstTextAt: number | undefined;
+      const promptBytes = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+
       const result = streamText({
         model: modelInstance,
         messages: mapMessages(messages),
@@ -233,10 +238,13 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
 
       const toolCallAccum = new Map<string, { id: string; name: string; args: string }>();
       const started = new Set<string>();
+      let cachedTokens: number | undefined;
 
       for await (const event of result.fullStream) {
+        if (firstEventAt === undefined) firstEventAt = Date.now();
         switch (event.type) {
           case "text-delta":
+            if (firstTextAt === undefined) firstTextAt = Date.now();
             yield { type: "text_delta", content: event.text };
             break;
 
@@ -284,18 +292,34 @@ export function createAISDKProvider(preset: ProviderPreset, model: string, apiKe
           }
 
           case "finish-step":
+            cachedTokens = event.usage.inputTokenDetails?.cacheReadTokens ?? undefined;
             yield {
               type: "usage",
               inputTokens: event.usage.inputTokens ?? 0,
               outputTokens: event.usage.outputTokens ?? 0,
-              cachedInputTokens: event.usage.inputTokenDetails?.cacheReadTokens ?? undefined,
+              cachedInputTokens: cachedTokens,
             };
             logResponse(event.usage, Array.from(toolCallAccum.values()));
             break;
 
-          case "finish":
+          case "finish": {
+            const finishedAt = Date.now();
+            logTiming({
+              phase: "request",
+              model,
+              effort: reasoning,
+              promptBytes,
+              toolCount: tools.length,
+              cachedTokens,
+              durationsMs: {
+                total: finishedAt - requestStart,
+                toFirstEvent: firstEventAt !== undefined ? firstEventAt - requestStart : undefined,
+                toFirstText: firstTextAt !== undefined ? firstTextAt - requestStart : undefined,
+              },
+            });
             yield { type: "done", finishReason: event.finishReason };
             break;
+          }
 
           case "error":
             throw event.error;

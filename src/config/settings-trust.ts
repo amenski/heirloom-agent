@@ -218,8 +218,14 @@ export function stripExecutionKeys(
     }
     if (key === "sandbox") {
       // Absent resolves to the Seatbelt layer being off (see doc comment
-      // above) — force it on instead of deleting.
-      result.sandbox = { enabled: true };
+      // above) — force it on instead of deleting. A GLOBAL sandbox.writeRoots
+      // (the user's own trusted grant, docs/unified-write-boundary.md §3 —
+      // the loader never merges a project value into it) survives the strip:
+      // it's the project's untrusted `enabled` being neutralized, not the
+      // user's write-set widening.
+      const writeRoots = result.sandbox?.writeRoots;
+      result.sandbox =
+        writeRoots && writeRoots.length > 0 ? { enabled: true, writeRoots } : { enabled: true };
       continue;
     }
     if (key === "webSearch") {

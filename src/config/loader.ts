@@ -73,7 +73,7 @@ export interface DeepCodeSettings {
    */
   refresh?: "fast" | "balanced" | "slow";
   /** Reasoning effort: "high" or "max" (default "max") */
-  reasoningEffort?: "high" | "max";
+  reasoningEffort?: "low" | "high" | "max";
 
   // ── Permissions ──
   permissions?: PermissionConfig;
@@ -84,8 +84,17 @@ export interface DeepCodeSettings {
 
   // ── OS sandbox (permission-profile.md §8, phase (e)) ──
   /** Mechanical Seatbelt layer for bash children. macOS-only; when enabled
-   *  on another platform the loader warns and runs policy-only. */
-  sandbox?: { enabled: boolean };
+   *  on another platform the loader warns and runs policy-only.
+   *
+   *  `writeRoots` (docs/unified-write-boundary.md) is GLOBAL-only: extra
+   *  directories writable under workspace-write, beyond the workspace root
+   *  and the fixed carve-outs. Parsed from the user's own
+   *  `~/.heirloom/settings.json` ONLY — a PROJECT `.heirloom/settings.json`
+   *  setting this key is ignored with a warning, never merged in (see
+   *  loadConfig's sandbox block). This is deliberately separate from
+   *  `permissionProfile.fs`, whose "explicit rules narrow only" invariant
+   *  this must not weaken. */
+  sandbox?: { enabled: boolean; writeRoots?: string[] };
 
   // ── MCP Servers ──
   mcpServers?: Record<string, McpServerConfig>;
@@ -1125,10 +1134,10 @@ export function loadConfig(projectDir?: string): LoadResult {
 
   // ── reasoningEffort ──
   if ("reasoningEffort" in merged) {
-    if (merged.reasoningEffort === "high" || merged.reasoningEffort === "max") {
+    if (merged.reasoningEffort === "low" || merged.reasoningEffort === "high" || merged.reasoningEffort === "max") {
       config.reasoningEffort = merged.reasoningEffort;
     } else {
-      errors.push('config.reasoningEffort: must be "high" or "max"');
+      errors.push('config.reasoningEffort: must be "low", "high", or "max"');
     }
   }
 
@@ -1173,6 +1182,28 @@ export function loadConfig(projectDir?: string): LoadResult {
         }
       } else {
         errors.push("config.sandbox.enabled: must be a boolean");
+      }
+
+      // writeRoots (docs/unified-write-boundary.md): the trusted, GLOBAL-only
+      // grant — read from globalRaw alone, never from `merged` or
+      // `projectRaw`, so a project cannot widen the write-set even by
+      // co-opting a key the user's global file already declared. This is the
+      // load-bearing security property: it does not depend on TOFU trust
+      // (unlike the rest of `sandbox`, gated wholesale via
+      // EXECUTION_CAPABLE_KEYS) — a project's writeRoots value is ALWAYS
+      // ignored, trusted settings file or not.
+      if (isObject(globalRaw?.sandbox) && "writeRoots" in (globalRaw.sandbox as Record<string, unknown>)) {
+        const raw = (globalRaw.sandbox as Record<string, unknown>).writeRoots;
+        if (Array.isArray(raw) && raw.every((p) => typeof p === "string")) {
+          if (config.sandbox && raw.length > 0) config.sandbox.writeRoots = raw as string[];
+        } else {
+          errors.push("config.sandbox.writeRoots: must be an array of strings");
+        }
+      }
+      if (isObject(projectRaw?.sandbox) && "writeRoots" in (projectRaw.sandbox as Record<string, unknown>)) {
+        warnings.push(
+          "sandbox.writeRoots is global-only and was ignored in project .heirloom/settings.json — set it in ~/.heirloom/settings.json instead",
+        );
       }
     } else {
       errors.push("config.sandbox: must be an object");

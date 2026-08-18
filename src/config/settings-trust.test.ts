@@ -376,6 +376,18 @@ describe("permissions / permissionProfile / sandbox — gated unconditionally", 
     expect(stripped.sandbox).toEqual({ enabled: true });
   });
 
+  it("stripping a project sandbox key preserves a GLOBAL writeRoots (the user's own grant, docs/unified-write-boundary.md §3)", () => {
+    // The loader never merges a project writeRoots into config.sandbox
+    // (global-only by construction), so a value here is always the user's own
+    // — neutralizing the project's untrusted `enabled` must not drop it.
+    const config = {
+      model: "x",
+      sandbox: { enabled: false, writeRoots: ["~/SecondBrain/AgentMemory"] },
+    };
+    const stripped = stripExecutionKeys(config, ["sandbox"]);
+    expect(stripped.sandbox).toEqual({ enabled: true, writeRoots: ["~/SecondBrain/AgentMemory"] });
+  });
+
   it("stripping permissions is a plain delete (absent already resolves to the strictest PermissionEngine state)", () => {
     const config = { model: "x", permissions: { defaultMode: "allowAll" as const } };
     const stripped = stripExecutionKeys(config, ["permissions"]);

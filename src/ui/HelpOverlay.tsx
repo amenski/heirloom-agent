@@ -33,7 +33,7 @@ const SLASH_COMMANDS: { command: string; description: string }[] = [
   { command: "/exit", description: "Exit the CLI" },
   { command: "/clear", description: "Clear conversation history" },
   { command: "/new", description: "Start a fresh conversation" },
-  { command: "/mode <slug>", description: "Switch persona (code/ask/architect/debug/orchestrator)" },
+  { command: "/mode <slug>", description: "Switch persona (general/code)" },
   { command: "/modes", description: "List available modes" },
   { command: "/model", description: "Show/switch provider/model" },
   { command: "/theme", description: "Switch color theme (live preview)" },

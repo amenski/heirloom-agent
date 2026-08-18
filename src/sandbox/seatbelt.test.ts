@@ -113,6 +113,23 @@ describe("buildSeatbeltProfile", () => {
     expect(p).toContain(`(allow file-write* (subpath "${seatbeltWorkspaceRoot(join(homedir(), ".npm"))}"))`);
   });
 
+  it("workspace-write: emits an allow line for a configured global writeRoot", () => {
+    // docs/unified-write-boundary.md §2: the Seatbelt write-set is the shared
+    // resolveWriteRoots set — a configured `sandbox.writeRoots` entry becomes
+    // a real `(allow file-write* (subpath …))` line, alongside the trusted
+    // root, so a shell write into it is permitted by the same set the file
+    // tools consult.
+    const p = buildSeatbeltProfile("workspace-write", "/ws", ["/ws", "/extra/global-root"]);
+    expect(p).toContain('(allow file-write* (subpath "/ws"))');
+    expect(p).toContain('(allow file-write* (subpath "/extra/global-root"))');
+  });
+
+  it("strict-sandbox: emits no allow line even when a writeRoot is configured", () => {
+    const p = buildSeatbeltProfile("strict-sandbox", "/ws", ["/extra/global-root"]);
+    expect(p).not.toContain("(subpath");
+    expect(p).not.toContain("/extra/global-root");
+  });
+
   it("strict-sandbox: gains none of the carve-outs (read-only stays absolute)", () => {
     const p = buildSeatbeltProfile("strict-sandbox", "/ws");
     expect(p).not.toContain("(subpath");
