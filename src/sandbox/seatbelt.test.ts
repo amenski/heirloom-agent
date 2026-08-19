@@ -215,6 +215,21 @@ describe("validateCwdWithinTrustedRoot", () => {
     }
   });
 
+  it("allows a cwd under an explicitly authorized additional root", () => {
+    const root = mkdtempSync(join(tmpdir(), "seatbelt-root-"));
+    const added = mkdtempSync(join(tmpdir(), "seatbelt-added-"));
+    const other = mkdtempSync(join(tmpdir(), "seatbelt-other-"));
+    try {
+      expect(validateCwdWithinTrustedRoot(added, root, [added])).toEqual({ ok: true });
+      expect(validateCwdWithinTrustedRoot(join(added, "nested"), root, [added])).toEqual({ ok: true });
+      expect(validateCwdWithinTrustedRoot(other, root, [added]).ok).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(added, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a cwd whose symlink escapes the trusted root", () => {
     const root = mkdtempSync(join(tmpdir(), "seatbelt-root-"));
     const outside = mkdtempSync(join(tmpdir(), "seatbelt-out-"));
@@ -374,6 +389,43 @@ describe("sandbox wiring into run_bash and background jobs", () => {
     const allowed = await runBashTimed("echo seatbelt-wired-ok", workspace, workspace, 5000, true, "strict-sandbox");
     expect(allowed.content).toContain("seatbelt-wired-ok");
   }, 15_000);
+
+  itOnDarwin("workspace-write permits git metadata writes only in an explicitly added root", async () => {
+    const primaryRoot = mkdtempSync(join(workspace, ".seatbelt-primary-"));
+    const repo = mkdtempSync(join(workspace, ".seatbelt-added-"));
+    try {
+      const initialized = await runCommand("git init -q", repo);
+      expect(initialized.exit).toBe(0);
+      writeFileSync(join(repo, "tracked.txt"), "tracked\n");
+
+      const denied = await runBashTimed(
+        "git add tracked.txt",
+        repo,
+        primaryRoot,
+        5000,
+        true,
+        "workspace-write",
+      );
+      expect(denied.content).toBe("");
+      expect(denied.error).toContain("Working directory escapes the sandbox workspace root");
+
+      const allowed = await runBashTimed(
+        "git add tracked.txt",
+        repo,
+        primaryRoot,
+        5000,
+        true,
+        "workspace-write",
+        [repo],
+      );
+      expect(allowed.error).toBeUndefined();
+      expect(allowed.content).toContain("Exit code: 0");
+      expect(existsSync(join(repo, ".git", "index"))).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(primaryRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   itOnDarwin("no level passed → spawn behavior unchanged", async () => {
     const result = await runBashTimed("echo seatbelt-off-ok", workspace, workspace, 5000, true, undefined);

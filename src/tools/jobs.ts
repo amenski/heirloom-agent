@@ -172,7 +172,7 @@ export class JobManager {
     // rejected before spawning, same rule as run_bash.
     const trustedRoot = opts?.trustedRoot ?? process.cwd();
     if (isSandboxedLevel(opts?.sandboxLevel)) {
-      const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot);
+      const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot, opts?.writeRoots);
       if (!checked.ok) return { ok: false, error: checked.error };
     }
 

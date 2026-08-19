@@ -954,13 +954,52 @@ describe("file-tool write boundary (docs/unified-write-boundary.md §2)", () => 
     expect(allowAll.resolve("write_to_file", { path: "/etc/hosts" }).action).toBe("ask");
   });
 
-  it("out-of-set guarded ask is non-approvable by rule specificity (search/glob parity)", () => {
-    const engine = new PermissionEngine(
-      { rules: [{ tool: "write_to_file", kind: "exact", pattern: "/etc/hosts", action: "allow", origin: "config" }] },
-      "/workspace",
-      false,
-      { enforceWriteBoundary: true },
-    );
+  it("session approval allows the same external edit after its initial guarded ask", () => {
+    const engine = new PermissionEngine(undefined, "/workspace", false, { enforceWriteBoundary: true });
+    const args = { path: "/etc/heirloom-session-edit.ts" };
+    const initial = engine.resolve("edit", args);
+    expect(initial.action).toBe("ask");
+    expect(initial.isGuarded).toBe(true);
+
+    engine.approveForSession(engine.buildDefaultRule("edit", args), initial.winningRule);
+
+    const approved = engine.resolve("edit", args);
+    expect(approved.action).toBe("allow");
+    expect(approved.isGuarded).toBe(false);
+    expect(engine.resolve("edit", { path: "/etc/heirloom-unapproved-edit.ts" }).action).toBe("ask");
+  });
+
+  it("always approval allows the same external edit after its initial guarded ask", () => {
+    const dir = mkdtempSync(join(tmpdir(), "heirloom-engine-write-approval-"));
+    try {
+      const engine = new PermissionEngine(undefined, dir, false, { enforceWriteBoundary: true });
+      const args = { path: "/etc/heirloom-always-edit.ts" };
+      const initial = engine.resolve("edit", args);
+      expect(initial.action).toBe("ask");
+      expect(initial.isGuarded).toBe(true);
+
+      engine.approveAlways(engine.buildDefaultRule("edit", args), initial.winningRule);
+
+      const approved = engine.resolve("edit", args);
+      expect(approved.action).toBe("allow");
+      expect(approved.isGuarded).toBe(false);
+      expect(engine.resolve("edit", { path: "/etc/heirloom-unapproved-edit.ts" }).action).toBe("ask");
+
+      const settings = JSON.parse(readFileSync(join(dir, ".heirloom", "settings.json"), "utf-8"));
+      const reloaded = new PermissionEngine(
+        { rules: settings.permissions.rules.map((r: { tool: string; pattern: string; action: string }) => ({ ...r, kind: "exact", origin: "config" })) },
+        dir,
+        false,
+        { enforceWriteBoundary: true },
+      );
+      expect(reloaded.resolve("edit", args).action).toBe("allow");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an unapproved out-of-set write remains a guarded ask", () => {
+    const engine = new PermissionEngine(undefined, "/workspace", false, { enforceWriteBoundary: true });
     const r = engine.resolve("write_to_file", { path: "/etc/hosts" });
     expect(r.action).toBe("ask");
     expect(r.isGuarded).toBe(true);
@@ -997,6 +1036,22 @@ describe("file-tool write boundary (docs/unified-write-boundary.md §2)", () => 
       writeRoots: ["~/SecondBrain/AgentMemory"],
     });
     expect(withRoot.resolve("write_to_file", { path: join(writeRoot, "x.md") }).action).toBe("allow");
+  });
+
+  it("an explicitly added root widens the silent set without allowing other external paths", () => {
+    const root = mkdtempSync(join(tmpdir(), "wb-primary-"));
+    const added = mkdtempSync(join(tmpdir(), "wb-added-"));
+    try {
+      const engine = new PermissionEngine(undefined, root, false, {
+        enforceWriteBoundary: true,
+        writeRoots: [added],
+      });
+      expect(engine.resolve("edit", { path: join(added, "src", "a.ts") }).action).toBe("allow");
+      expect(engine.resolve("edit", { path: join(homedir(), "wb-unlisted", "a.ts") }).action).toBe("ask");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(added, { recursive: true, force: true });
+    }
   });
 
   it("a symlink inside the workspace escaping it is treated as out-of-set (realpath, not lexical)", () => {

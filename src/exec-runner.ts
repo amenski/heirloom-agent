@@ -24,6 +24,8 @@ export interface ExecRunnerOptions {
   mode?: string;
   model?: string;
   debug?: boolean;
+  /** Startup-resolved directories explicitly trusted via --add-dir. */
+  additionalWriteRoots?: string[];
   input?: ExecInputStream;
 }
 
@@ -112,6 +114,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     }
 
     const configEnv = effectiveConfig.env;
+    const writeRoots = [...(effectiveConfig.sandbox?.writeRoots ?? []), ...(options.additionalWriteRoots ?? [])];
     const notifyScript = effectiveConfig.notify;
     // commands.timeoutToBackground (plan §3, default ON) — same default
     // resolution the TUI uses; run_bash migration works identically headless.
@@ -126,11 +129,10 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         ? effectiveConfig.permissionProfile.level
         : undefined,
     );
-    // sandbox.writeRoots (docs/unified-write-boundary.md) — same resolution
-    // the TUI uses; already global-only from the loader, and any project TOFU
-    // strip above only ever narrows (forces `{ enabled: true }`, dropping
-    // writeRoots), never widens.
-    setWriteRoots(effectiveConfig.sandbox?.writeRoots);
+    // Merge global sandbox.writeRoots with the startup-resolved --add-dir
+    // roots. Project TOFU stripping can narrow only the config contribution;
+    // explicit CLI roots remain session-scoped trusted roots.
+    setWriteRoots(writeRoots);
 
     // web_search backend config (webSearch.searxngUrl) — resolved from the
     // EFFECTIVE (post-TOFU-strip) config, same as sandbox/permissions above.
@@ -223,7 +225,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         // active whenever the profile level is workspace-write, threading the
         // global-only sandbox.writeRoots into the shared write-set.
         enforceWriteBoundary: effectiveConfig.permissionProfile?.level === "workspace-write",
-        writeRoots: effectiveConfig.sandbox?.writeRoots,
+        writeRoots,
       },
     );
     // Same construction the TUI uses (cli.tsx): a configured permissionProfile
@@ -232,7 +234,7 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
     // reached). Absent → layer 1 does not exist (permission-profile.md §9).
     const permissionProfile = effectiveConfig.permissionProfile
       ? new ProfileEvaluator(effectiveConfig.permissionProfile, options.projectRoot, {
-          writeRoots: effectiveConfig.sandbox?.writeRoots,
+          writeRoots,
         })
       : undefined;
 

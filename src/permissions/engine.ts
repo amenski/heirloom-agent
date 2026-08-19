@@ -266,13 +266,14 @@ export class PermissionEngine {
    * write/edit tool whose target realpath-resolves INSIDE the shared
    * write-set is silently allowed (no prompt — the common in-workspace case
    * stays free, matching how reads work); a target OUTSIDE it is a
-   * builtin-guarded "ask" — the exact search/glob containment mechanism
-   * (commit 3f8fc31), so a human always sees it regardless of posture or
-   * defaultMode, and no rule can out-specify it (kind "any" is an absolute
-   * kill-switch, see resolveTier). This is the design's "outside → ask, not
-   * hard-deny": the Seatbelt layer still kernel-denies the same out-of-set
-   * paths for shell writes, and the layers agree on the ALLOW side — a path
-   * either layer allows for a write, the other does too.
+   * builtin-guarded "ask" — the same containment mechanism as search/glob,
+   * so a human always sees it regardless of posture or defaultMode. A
+   * path-scoped session/always approval may out-specify this dynamic guard
+   * for that target only; the initial call still remains guarded. This is
+   * the design's "outside → ask, not hard-deny": the Seatbelt layer still
+   * kernel-denies the same out-of-set paths for shell writes, and the layers
+   * agree on the ALLOW side — a path either layer allows for a write, the
+   * other does too.
    *
    * Origin "config" for the in-set allow (a plain allow, same as
    * BUILTIN_ALLOW_RULES — an explicit user deny/ask rule out-specifies it);
@@ -373,6 +374,19 @@ export class PermissionEngine {
       return this.resolveTier(denyMatches, allowMatches, "deny");
     }
     if (askMatches.length > 0) {
+      // The write boundary is a dynamic guard: it must prompt initially, but
+      // a path-scoped session/always approval from that prompt must be able to
+      // resolve the same call. Keep the kind:"any" kill-switch semantics for
+      // search/glob and other static guarded rules; only this boundary rule is
+      // intentionally approvable.
+      if (boundaryRule && askMatches.includes(boundaryRule)) {
+        const approvedWrite = this.highestSpecificity(
+          allowMatches.filter((r) => r.kind !== "any"),
+        );
+        if (approvedWrite) {
+          return { action: "allow", winningRule: approvedWrite, wasUnresolved: false };
+        }
+      }
       return this.resolveTier(askMatches, allowMatches, "ask");
     }
     return { action: "allow", winningRule: this.highestSpecificity(allowMatches), wasUnresolved: false };
@@ -442,13 +456,17 @@ export class PermissionEngine {
    * Builds an allow rule for a file path. Broadens to a directory-scope glob
    * so one approval covers related files, not just the exact path the LLM
    * happened to spell:
-   *   - External paths        → parent-directory glob (one level)
+   *   - External read paths   → parent-directory glob (one level)
+   *   - External write paths  → exact match (a write approval never broadens)
    *   - Internal directories   → recursive glob (./dir/**)
    *   - Internal files         → exact match
    */
   private buildPathRule(toolName: string, normalized: string): PermissionRule {
     // External path (doesn't start with "./") → parent directory non-recursive glob
     if (!normalized.startsWith("./")) {
+      if (PermissionEngine.WRITE_TOOLS.has(toolName)) {
+        return { tool: toolName, kind: "exact", pattern: normalized, action: "allow", origin: "config" };
+      }
       return {
         tool: toolName,
         kind: "glob",

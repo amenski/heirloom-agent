@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { pkg } from "./version.js";
 import { checkForNpmUpdate, promptForPendingUpdate } from "./common/update-check.js";
-import { parseArguments } from "./cli-args.js";
+import { parseArguments, resolveAdditionalDirs } from "./cli-args.js";
 import { runExecMode } from "./exec-runner.js";
 import { initPresets, createProvider, getPreset, getKnownProviderNames, getProviderModels, getConfiguredProviders, type ProviderOptions } from "./providers/presets.js";
 import { getProviderCapabilities } from "./providers/registry.js";
@@ -188,6 +188,7 @@ async function main() {
 
   const parsed = await parseArguments();
   if (parsed.version || parsed.help) process.exit(0);
+  const additionalWriteRoots = resolveAdditionalDirs(parsed.addDirs, process.cwd());
 
   let configResult = loadConfig();
   if (configResult.errors.length > 0) {
@@ -213,6 +214,7 @@ async function main() {
       mode: parsed.mode,
       model: parsed.model,
       debug: parsed.debug,
+      additionalWriteRoots,
     });
     return;
   }
@@ -351,9 +353,10 @@ async function main() {
       // active whenever the profile level is workspace-write (unconditional
       // — not gated on sandbox.enabled). The engine resolves in-set writes
       // silently and out-of-set writes to a guarded ask, from the same
-      // resolveWriteRoots set the Seatbelt layer emits allow-lines from.
+      // resolveWriteRoots set the Seatbelt layer emits allow-lines from,
+      // including explicit --add-dir roots for this session.
       enforceWriteBoundary: configResult.config.permissionProfile?.level === "workspace-write",
-      writeRoots: configResult.config.sandbox?.writeRoots,
+      writeRoots: [...(configResult.config.sandbox?.writeRoots ?? []), ...additionalWriteRoots],
     },
   );
   // The capability-boundary gate (permission-profile.md §3): constructed only
@@ -361,7 +364,7 @@ async function main() {
   // and authorize() runs the engine alone (today's behavior byte-for-byte).
   const permissionProfile = configResult.config.permissionProfile
     ? new ProfileEvaluator(configResult.config.permissionProfile, process.cwd(), {
-        writeRoots: configResult.config.sandbox?.writeRoots,
+        writeRoots: [...(configResult.config.sandbox?.writeRoots ?? []), ...additionalWriteRoots],
       })
     : undefined;
 
@@ -543,12 +546,11 @@ async function main() {
       ? configResult.config.permissionProfile.level
       : undefined,
   );
-  // sandbox.writeRoots (docs/unified-write-boundary.md): the GLOBAL-only
-  // grant, already resolved to global-source-only by the loader (a project
-  // value never reaches config.sandbox.writeRoots). Threaded into ctx so
-  // both the Seatbelt spawn path and the file-tool containment check consult
-  // the same set.
-  setWriteRoots(configResult.config.sandbox?.writeRoots);
+  // sandbox.writeRoots (docs/unified-write-boundary.md) plus explicit
+  // --add-dir roots. The loader keeps project config global-only; CLI roots
+  // are session-scoped and already resolved from startup cwd. Threaded into
+  // ctx so Seatbelt and file-tool containment consult the same set.
+  setWriteRoots([...(configResult.config.sandbox?.writeRoots ?? []), ...additionalWriteRoots]);
 
   // web_search backend config (webSearch.searxngUrl): configResult was
   // reassigned above (the TOFU strip on decline) if the project declared any

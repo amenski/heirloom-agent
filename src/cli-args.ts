@@ -1,6 +1,8 @@
 import type { Argv } from "yargs";
 import Yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { pkg } from "./version.js";
 
 // Matches the IDs generateId() produces in src/sessions/store.ts.
@@ -22,6 +24,16 @@ export interface ParsedCliArgs {
   model: string | undefined;
   mode: string | undefined;
   debug: boolean;
+  addDirs: string[];
+}
+
+/** Resolve explicit additional trusted directories relative to the startup cwd. */
+export function resolveAdditionalDirs(paths: string[], cwd: string = process.cwd()): string[] {
+  return paths.map((path) => {
+    if (path === "~") return homedir();
+    if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+    return isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+  });
 }
 
 const TUI_KEYS = [
@@ -48,6 +60,7 @@ async function configureYargs(argv?: string[]) {
         .option("model", { type: "string", describe: "Model for the current session (provider/model)" })
         .option("mode", { type: "string", describe: "Start in the given persona mode" })
         .option("debug", { alias: "d", type: "boolean", default: false, describe: "Enable debug mode" })
+        .option("add-dir", { type: "string", array: true, default: [], describe: "Add a trusted writable directory (repeatable)" })
         .check((argv: Record<string, unknown>) => {
           const positionalPrompt = argv["prompt"] as string | undefined;
           const resume = argv["resume"] as string | undefined;
@@ -121,5 +134,6 @@ export async function parseArguments(argv?: string[]): Promise<ParsedCliArgs> {
     model: parsed.model as string | undefined,
     mode: parsed.mode as string | undefined,
     debug: parsed.debug === true,
+    addDirs: Array.isArray(parsed["add-dir"]) ? parsed["add-dir"].map(String) : [],
   };
 }

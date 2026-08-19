@@ -57,6 +57,7 @@ meant to be shareable). See config-spec.md §Credentials.
 | `--model <provider/model>` | Override the configured model (split on the first `/`). |
 | `--mode <slug>` | Start in the given mode. Headless (`-p`): unknown slug rejected with a clean error (`src/exec-runner.ts`). Interactive: unknown slug silently falls back to the default `code` mode. |
 | `-d`, `--debug` | Write redacted request/response JSONL. |
+| `--add-dir <path>` | Add an explicitly trusted writable directory; repeat for multiple directories. Relative paths resolve from the startup directory and apply to file edits and sandboxed shell writes. |
 | `-h`, `--help` | Show help and the epilog, exit 0. |
 | `-v`, `--version` | Print the current version (from `package.json` via `src/version.ts`), exit 0. |
 

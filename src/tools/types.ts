@@ -48,14 +48,13 @@ export interface ToolContext {
    *  other platforms the loader emits a startup notice and spawns stay
    *  policy-only. */
   sandboxLevel?: SandboxLevel;
-  /** GLOBAL-only `sandbox.writeRoots` config (docs/unified-write-boundary.md):
-   *  additional directories writable under workspace-write, beyond
-   *  `workingDir` and the carve-outs. Raw (unresolved) paths as configured —
-   *  resolution (realpath, "~"/env expansion) happens where consumed
+  /** Additional directories writable under workspace-write, beyond
+   *  `workingDir` and the carve-outs. This combines global
+   *  `sandbox.writeRoots` with session-scoped `--add-dir` roots. Raw
+   *  (unresolved) config paths are resolved where consumed
    *  (resolveWriteRoots, src/sandbox/write-roots.ts). Threaded to both the
    *  Seatbelt spawn path (run_bash/jobs) and the file-tool containment check
-   *  (PermissionEngine) so the two layers agree on the same set. Absent =
-   *  no configured roots (today's behavior). */
+   *  (PermissionEngine) so the two layers agree on the same set. */
   writeRoots?: string[];
   /** web_search backend config (config.webSearch), resolved once at startup
    *  from the EFFECTIVE (post-TOFU-strip) config — never read via a fresh

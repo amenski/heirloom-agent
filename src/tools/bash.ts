@@ -102,7 +102,7 @@ export function runBashTimed(
   writeRoots?: string[],
 ): Promise<ToolOutput> {
   if (isSandboxedLevel(sandboxLevel)) {
-    const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot);
+    const checked = validateCwdWithinTrustedRoot(cwd, trustedRoot, writeRoots);
     if (!checked.ok) return Promise.resolve({ content: "", error: checked.error });
   }
   let proc: ChildProcess;

@@ -156,16 +156,19 @@ export function isSandboxedLevel(level: ProfileLevel | undefined): level is Sand
 export function validateCwdWithinTrustedRoot(
   cwd: string,
   trustedRoot: string,
+  authorizedRoots: string[] = [],
 ): { ok: true } | { ok: false; error: string } {
-  const resolvedRoot = seatbeltWorkspaceRoot(trustedRoot);
   const resolvedCwd = seatbeltWorkspaceRoot(cwd);
-  const rel = relative(resolvedRoot, resolvedCwd);
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
-    return { ok: true };
+  const roots = [trustedRoot, ...authorizedRoots].map(seatbeltWorkspaceRoot);
+  for (const root of roots) {
+    const rel = relative(root, resolvedCwd);
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+      return { ok: true };
+    }
   }
   return {
     ok: false,
-    error: `Working directory escapes the sandbox workspace root: ${cwd} (root: ${trustedRoot}). Sandboxed commands must run inside the workspace.`,
+    error: `Working directory escapes the sandbox workspace root: ${cwd} (root: ${trustedRoot}). Sandboxed commands must run inside the workspace or an explicitly added directory.`,
   };
 }
 

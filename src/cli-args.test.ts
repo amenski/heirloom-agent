@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { isValidSessionId, parseArguments } from "./cli-args.js";
+import { homedir } from "node:os";
+import { isValidSessionId, parseArguments, resolveAdditionalDirs } from "./cli-args.js";
 
 // Mirror of generateId() in src/sessions/store.ts (not exported there).
 // Kept in sync so the validator is tested against the ID shape the app
@@ -157,6 +158,11 @@ describe("parseArguments validation", () => {
     expect(parsed.debug).toBe(true);
   });
 
+  it("captures repeatable --add-dir values", async () => {
+    const parsed = await parseArguments(["--add-dir", "repo-a", "--add-dir", "/tmp/repo-b"]);
+    expect(parsed.addDirs).toEqual(["repo-a", "/tmp/repo-b"]);
+  });
+
   // --- combined ---
 
   it("combined flags work together", async () => {
@@ -165,5 +171,14 @@ describe("parseArguments validation", () => {
     expect(parsed.prompt).toBe("hello");
     expect(parsed.model).toBe("openai/gpt-4.1");
     expect(parsed.debug).toBe(true);
+  });
+});
+
+describe("resolveAdditionalDirs", () => {
+  it("resolves relative paths from the startup cwd and expands home paths", () => {
+    expect(resolveAdditionalDirs(["repo", "~/other"], "/workspace")).toEqual([
+      "/workspace/repo",
+      `${homedir()}/other`,
+    ]);
   });
 });
