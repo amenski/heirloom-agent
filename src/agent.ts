@@ -26,6 +26,44 @@ function permissionSubjectText(toolName: string, args: Record<string, unknown>):
   return extractToolSubject(toolName, args);
 }
 
+// Every tool call in an assistant message must be answered by a tool message
+// with the same id — providers reject a request where one is missing (the AI
+// SDK throws AI_MissingToolResultsError before the call even goes out). The
+// tool loop below can leave a call unanswered whenever it stops mid-batch:
+// the turn-ending breaks (attempt_completion, loop detected, five consecutive
+// failures) skip the remaining calls, and an unexpected throw inside the batch
+// unwinds to the recovery catch. The gap then persists into session history,
+// so every later request in that session — and every resume of it — fails the
+// same way. Backfill a synthetic result for each unanswered call instead, just
+// before the request is built, so the conversation stays well-formed no matter
+// how the previous batch ended.
+const UNANSWERED_TOOL_RESULT = "Error: tool call did not complete (the turn ended before this call produced a result).";
+
+function repairOrphanedToolCalls(messages: Message[]): number {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "tool") answered.add(m.toolCallId);
+  }
+  let repaired = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || !m.toolCalls?.length) continue;
+    const missing = m.toolCalls.filter((tc) => !answered.has(tc.id));
+    if (missing.length === 0) continue;
+    // Insert after the results this batch did produce, so the backfilled ones
+    // land at the end of their own batch rather than ahead of their siblings.
+    let at = i + 1;
+    while (at < messages.length && messages[at].role === "tool") at++;
+    messages.splice(
+      at,
+      0,
+      ...missing.map((tc) => ({ role: "tool" as const, toolCallId: tc.id, content: UNANSWERED_TOOL_RESULT })),
+    );
+    repaired += missing.length;
+  }
+  return repaired;
+}
+
 // Reporting threshold only, not a limit — large tool-call arguments (e.g. a
 // big file write) are still parsed and executed in full. This just surfaces
 // via onDiagnostic when JSON.parse is about to run on a large string, since
@@ -214,6 +252,11 @@ export async function runAgent(
   });
 
   let messages: Message[] = options.history ? [...options.history] : [];
+  // Loaded history can carry an unanswered tool call from an earlier run that
+  // ended mid-batch. Repair it here, before `newStart` is taken, so the index
+  // stays honest and the backfill never lands inside the already-persisted
+  // region.
+  repairOrphanedToolCalls(messages);
   // The system prompt lives at position 0 only, and holds only the stable
   // preamble — replacing it every turn with byte-identical content (the
   // common case) is a no-op for the provider's prefix cache. Volatile context
@@ -347,6 +390,10 @@ export async function runAgent(
     const steering = options.pollSteeringMessage?.() ?? null;
     if (steering) messages.push({ role: "user", content: steering });
     const prefix = [volatileContext, todoBlock, steering ? `User message (typed mid-turn): ${steering}` : ""].filter(Boolean).join("\n\n");
+    const orphaned = repairOrphanedToolCalls(messages);
+    if (orphaned > 0) {
+      options.onDiagnostic?.(`backfilled ${orphaned} unanswered tool result${orphaned === 1 ? "" : "s"}`);
+    }
     const requestMessages = prefix ? withVolatilePrefix(messages, prefix) : messages;
     for await (const event of provider.streamChat(requestMessages, tools, { signal: options.signal, effort, thinkingEnabled })) {
       switch (event.type) {

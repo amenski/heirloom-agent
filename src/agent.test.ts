@@ -1704,4 +1704,87 @@ describe("lifecycle hooks (§5 ordering)", () => {
     expect(executeTool).toHaveBeenCalledTimes(1);
     expect(sessionStore.appendPermission).toHaveBeenCalledTimes(1);
   });
+
+});
+
+
+describe("unanswered tool calls", () => {
+  // Regression: a batch that ends early (attempt_completion, loop detection,
+  // the five-failure escalation, or an unexpected throw) used to leave a tool
+  // call with no matching tool result. The provider rejects that history
+  // outright — AI_MissingToolResultsError — so the whole session became
+  // unusable, not just the turn that broke.
+  const batchOfTwo = (): TurnScript => [
+    { type: "tool_call_start", id: "call_1", name: "search" },
+    { type: "tool_call_delta", id: "call_1", arguments: JSON.stringify({ pattern: "a" }) },
+    { type: "tool_call_start", id: "call_2", name: "search" },
+    { type: "tool_call_delta", id: "call_2", arguments: JSON.stringify({ pattern: "b" }) },
+    { type: "done", finishReason: "tool_calls" },
+  ];
+
+  it("backfills a result for a call skipped when the batch stopped early", async () => {
+    const { provider } = makeProvider([batchOfTwo(), textTurn("done")]);
+    // call_1 ends the turn, so call_2's result is never emitted.
+    const executeTool = async (call: ToolCall) =>
+      call.id === "call_1" ? { content: "stopping", stop: true } : { content: "unreported" };
+
+    const first = await runAgent("go", { provider, tools: [], executeTool });
+    expect(first.messages.filter((m) => m.role === "tool")).toHaveLength(1);
+
+    // The gap is repaired on the next request built from this history.
+    const second = makeProvider([textTurn("ok")]);
+    await runAgent("continue", {
+      provider: second.provider,
+      tools: [],
+      executeTool: async () => ({ content: "" }),
+      history: first.messages,
+    });
+
+    const sent = second.receivedMessages[0];
+    const calls = sent.flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []));
+    const answered = new Set(sent.filter((m) => m.role === "tool").map((m) => m.toolCallId));
+    expect(calls.map((c) => c.id)).toEqual(["call_1", "call_2"]);
+    for (const c of calls) expect(answered.has(c.id)).toBe(true);
+  });
+
+  it("keeps real results ahead of the backfilled one within a batch", async () => {
+    const { provider } = makeProvider([batchOfTwo(), textTurn("done")]);
+    const first = await runAgent("go", {
+      provider,
+      tools: [],
+      executeTool: async (call: ToolCall) =>
+        call.id === "call_1" ? { content: "real", stop: true } : { content: "never runs" },
+    });
+
+    const second = makeProvider([textTurn("ok")]);
+    await runAgent("continue", {
+      provider: second.provider,
+      tools: [],
+      executeTool: async () => ({ content: "" }),
+      history: first.messages,
+    });
+
+    const results = second.receivedMessages[0].filter((m) => m.role === "tool");
+    expect(results[0]).toMatchObject({ toolCallId: "call_1", content: "real" });
+    expect(results[1].toolCallId).toBe("call_2");
+    expect(results[1].content).toContain("did not complete");
+  });
+
+  it("does not shift newMessages when repairing loaded history", async () => {
+    const broken: Message[] = [
+      { role: "system", content: "SYSTEM PROMPT" },
+      { role: "user", content: "earlier" },
+      { role: "assistant", content: null, toolCalls: [{ id: "call_x", name: "search", arguments: {} }] },
+    ];
+    const { provider, receivedMessages } = makeProvider([textTurn("ok")]);
+    const result = await runAgent("next", {
+      provider,
+      tools: [],
+      executeTool: async () => ({ content: "" }),
+      history: broken,
+    });
+
+    expect(receivedMessages[0].some((m) => m.role === "tool" && m.toolCallId === "call_x")).toBe(true);
+    expect(result.newMessages).toEqual([{ role: "assistant", content: "ok" }]);
+  });
 });
