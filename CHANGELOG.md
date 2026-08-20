@@ -7,6 +7,34 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-08-20
+
+The release that makes an interrupted coding session resumable without losing
+its context. It also extends `workspace-write` to explicitly trusted sibling
+repositories, so a project can safely work across a deliberate multi-root set.
+
+2 commits since 0.3.1.
+
+### Added
+
+- **`--add-dir <path>`** — repeatable startup flag for explicitly trusted
+  writable directories. These roots merge with global `sandbox.writeRoots` and
+  apply consistently to the permission engine, macOS Seatbelt, foreground
+  Bash, background jobs, and headless runs. Sandboxed commands may use an
+  added root as their cwd; direct file tools still cannot access `.git`.
+- The prompt's Git environment context now names dirty paths and distinguishes
+  files already dirty at startup from files changed during the current session.
+
+### Fixed
+
+- **Interrupted turns now persist their completed transcript.** After Esc,
+  `/continue` retains the user's request plus completed tool calls and results,
+  rather than inferring work only from a dirty tree. Partial stream text is
+  never persisted.
+- External file-write approvals now create exact-path rules for session and
+  always approvals; another external path still asks. Search and glob guards
+  remain absolute.
+
 ## [0.3.1] — 2026-08-18
 
 The release that **simplifies modes and unifies the write boundary**. New
@@ -186,7 +214,8 @@ further injection sinks.
 Earlier releases predate this changelog. See the git history for
 `v0.1.0..v0.2.1`.
 
-[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/amenski/heirloom-agent/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/amenski/heirloom-agent/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amenski/heirloom-agent/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/amenski/heirloom-agent/releases/tag/v0.2.1
