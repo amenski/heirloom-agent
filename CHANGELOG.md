@@ -7,6 +7,41 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-20
+
+The release that stops a bad search from taking the session with it. A tool
+call the agent never answered used to poison the conversation permanently —
+every later message in that session failed, and so did every resume of it.
+Searching a large directory is also no longer a coin flip: generated and
+vendored directories are skipped, and when a search does run out of time it
+says so instead of reporting something that looks like a permission error.
+
+3 commits since 0.4.0.
+
+### Fixed
+
+- **An unanswered tool call no longer breaks the session.** When a tool batch
+  stopped early — `attempt_completion`, loop detection, the five-failure
+  escalation, or an unexpected fault — the remaining calls were left with no
+  result. Providers reject that conversation outright, so the damage outlived
+  the turn: every later request in the session, and every resume of it, failed
+  the same way. Unanswered calls are now backfilled before the request is
+  built, and loaded history is repaired on the way in.
+- **A search killed by its own timeout now says so.** The 30s cap surfaced as
+  a bare `Command failed: grep -rn <pattern> <dir>` — no exit code, no stderr —
+  which reads like a malformed command or a denied path. It now names the
+  timeout and the directory, and returns whatever grep printed before it was
+  killed instead of discarding those matches.
+
+### Changed
+
+- **`search` skips generated and vendored directories** (`node_modules`,
+  `target`, `dist`, `build`, `vendor`, `.git`, caches and friends) and binary
+  files. Searching a 9.1G tree of 91 repositories went from over 120s — past
+  the timeout, returning nothing usable — to 12.7s. `bin` is deliberately
+  still searched: it is build output for .NET but hand-written scripts almost
+  everywhere else.
+
 ## [0.4.0] — 2026-08-20
 
 The release that makes permission grants stick. Approving a tool "always" now
@@ -246,7 +281,8 @@ further injection sinks.
 Earlier releases predate this changelog. See the git history for
 `v0.1.0..v0.2.1`.
 
-[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/amenski/heirloom-agent/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/amenski/heirloom-agent/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/amenski/heirloom-agent/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/amenski/heirloom-agent/compare/v0.3.0...v0.3.1
