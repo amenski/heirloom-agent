@@ -7,6 +7,38 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-20
+
+The release that makes permission grants stick. Approving a tool "always" now
+survives a restart instead of being quietly discarded, and approvals for reads
+outside the workspace finally take effect the first time you give them. When
+you approve an external read, you also get to say how far the grant reaches:
+just that folder, or the whole tree beneath it.
+
+2 commits since 0.3.2.
+
+### Added
+
+- **Scope choice on external read approvals.** Session and always approvals for
+  reads outside the workspace now ask a second question — "This folder only"
+  (`dir/*`) versus "Include subfolders" (`dir/**`) — so a grant matches the
+  breadth you actually intend. Write tools and builtin-guarded prompts never
+  offer the broadening option.
+
+### Fixed
+
+- **Persisted "always" approvals no longer invalidate the project settings
+  trust hash.** Writing a grant used to leave the settings file looking
+  tampered-with, so the next launch could strip every stored grant.
+- **External `search` and `glob` approvals now take effect.** The dynamic
+  out-of-workspace guard gained the same approval escape hatch as the write
+  boundary, so approved directories stop re-prompting forever. Static guarded
+  and destructive rules remain unapprovable.
+- Search and glob approvals now store the real directory (`search`'s `dir`,
+  `glob`'s `cwd`) instead of an empty-pattern junk rule.
+- Approving a prompt whose matched rule was a user-authored ask rule now stores
+  a real allow rule instead of re-recording the ask rule as a no-op.
+
 ## [0.3.2] — 2026-08-20
 
 The release that makes an interrupted coding session resumable without losing
@@ -214,7 +246,8 @@ further injection sinks.
 Earlier releases predate this changelog. See the git history for
 `v0.1.0..v0.2.1`.
 
-[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/amenski/heirloom-agent/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/amenski/heirloom-agent/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/amenski/heirloom-agent/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/amenski/heirloom-agent/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amenski/heirloom-agent/compare/v0.2.1...v0.3.0
