@@ -2,7 +2,7 @@ import { join, relative, isAbsolute, resolve, dirname, basename } from "node:pat
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync, realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { PermissionAction, PermissionRule, PermissionSubject } from "./rules.js";
-import { buildSubject, patternMatches, specificity, serializeRulePattern, extractHostname } from "./rules.js";
+import { buildSubject, patternMatches, specificity, serializeRulePattern, extractHostname, extractToolSubject } from "./rules.js";
 import { buildBashSubject } from "./bash-normalize.js";
 import { BUILTIN_DESTRUCTIVE_RULES } from "./destructive.js";
 import { BUILTIN_GUARDED_RULES } from "./guarded.js";
@@ -62,6 +62,17 @@ export class PermissionEngine {
    */
   private readonly writeSet: string[];
 
+  /**
+   * Invoked with the settings path after a successful persist() write, so a
+   * caller with access to the TOFU trust store (settings-trust.ts) can
+   * re-record the hash of the file the engine itself just wrote — otherwise
+   * every "always" approval hash-mismatches the trust store's stale entry and
+   * the next launch treats its own project settings file as tampered. Kept
+   * as an injected callback rather than a direct import to avoid an import
+   * cycle (settings-trust.ts -> config/loader.ts -> permissions/index.js).
+   */
+  private readonly onPersist?: (settingsPath: string) => void;
+
   /** Tools whose exact/glob patterns carry file paths (normalized on load). */
   private static readonly FILE_TOOLS = new Set([
     "read_file", "write_to_file", "edit", "list_files", "glob", "search",
@@ -99,7 +110,7 @@ export class PermissionEngine {
     config?: PermissionConfig,
     workingDir?: string,
     hasMcpServersConfigured?: boolean,
-    opts?: { writeRoots?: string[]; enforceWriteBoundary?: boolean },
+    opts?: { writeRoots?: string[]; enforceWriteBoundary?: boolean; onPersist?: (settingsPath: string) => void },
   ) {
     this.workingDir = workingDir ?? process.cwd();
     this.configRules = (config?.rules ?? []).map((r) => this.normalizeConfigRule(r));
@@ -107,6 +118,7 @@ export class PermissionEngine {
     this.projectConfigDir = join(this.workingDir, ".heirloom");
     this.hasMcpServersConfigured = hasMcpServersConfigured ?? false;
     this.enforceWriteBoundary = opts?.enforceWriteBoundary ?? false;
+    this.onPersist = opts?.onPersist;
     this.writeSet = this.enforceWriteBoundary
       ? resolveWriteRoots("workspace-write", this.workingDir, opts?.writeRoots)
       : [];
@@ -374,17 +386,21 @@ export class PermissionEngine {
       return this.resolveTier(denyMatches, allowMatches, "deny");
     }
     if (askMatches.length > 0) {
-      // The write boundary is a dynamic guard: it must prompt initially, but
-      // a path-scoped session/always approval from that prompt must be able to
-      // resolve the same call. Keep the kind:"any" kill-switch semantics for
-      // search/glob and other static guarded rules; only this boundary rule is
-      // intentionally approvable.
-      if (boundaryRule && askMatches.includes(boundaryRule)) {
-        const approvedWrite = this.highestSpecificity(
+      // The write boundary and the out-of-workspace search/glob guard are
+      // both dynamic guards: they must prompt initially, but a path-scoped
+      // session/always approval from that prompt must be able to resolve the
+      // same call thereafter. Keep the kind:"any" kill-switch semantics for
+      // BUILTIN_GUARDED_RULES and BUILTIN_DESTRUCTIVE_RULES (static rules) —
+      // the escape hatch only applies when EVERY ask match is one of these
+      // two dynamic guards; a static guarded/destructive rule matching
+      // alongside one still falls through to the kill-switch below.
+      const dynamicAskMatches = askMatches.filter((r) => r === boundaryRule || r === outOfWorkspaceRule);
+      if (dynamicAskMatches.length > 0 && dynamicAskMatches.length === askMatches.length) {
+        const approvedRule = this.highestSpecificity(
           allowMatches.filter((r) => r.kind !== "any"),
         );
-        if (approvedWrite) {
-          return { action: "allow", winningRule: approvedWrite, wasUnresolved: false };
+        if (approvedRule) {
+          return { action: "allow", winningRule: approvedRule, wasUnresolved: false };
         }
       }
       return this.resolveTier(askMatches, allowMatches, "ask");
@@ -441,7 +457,12 @@ export class PermissionEngine {
       const hostname = extractHostname(String(a.url ?? ""));
       return { tool: "web_fetch", kind: "exact", pattern: hostname ?? "", action: "allow", origin: "config" };
     }
-    const raw = a.path ?? a.filePath;
+    // search/glob don't take path/filePath — their subject is the directory
+    // they operate on (search: `dir`, glob: `cwd`), same extraction
+    // extractToolSubject uses for matching, so the stored rule's pattern
+    // actually reflects what was called rather than the empty string
+    // `a.path ?? a.filePath` would produce for these two tools.
+    const raw = PermissionEngine.DIR_SCOPED_TOOLS.has(toolName) ? extractToolSubject(toolName, a) : a.path ?? a.filePath;
     const rawPath = typeof raw === "string" ? raw : "";
     if (!rawPath) {
       return { tool: toolName, kind: "exact", pattern: "", action: "allow", origin: "config" };
@@ -465,6 +486,15 @@ export class PermissionEngine {
     // External path (doesn't start with "./") → parent directory non-recursive glob
     if (!normalized.startsWith("./")) {
       if (PermissionEngine.WRITE_TOOLS.has(toolName)) {
+        return { tool: toolName, kind: "exact", pattern: normalized, action: "allow", origin: "config" };
+      }
+      // search/glob's subject IS the directory itself (not a file within
+      // it), so the parent-directory glob below would grant the wrong
+      // scope — the directory's siblings, not its own contents. An exact
+      // match on the normalized dir path matches a future search/glob call
+      // on that same directory (the subject search/glob resolve to is the
+      // dir path itself, not something under it).
+      if (PermissionEngine.DIR_SCOPED_TOOLS.has(toolName)) {
         return { tool: toolName, kind: "exact", pattern: normalized, action: "allow", origin: "config" };
       }
       return {
@@ -543,6 +573,34 @@ export class PermissionEngine {
   }
 
   /**
+   * The recursive counterpart of the one-level parent-directory glob
+   * buildPathRule stores for an external READ path — the "include subfolders"
+   * option of the stage-two scope prompt. Returns undefined for internal
+   * paths (folderScopeRule covers those), for non-read tools, and for calls
+   * with no path: an external WRITE approval never broadens (see
+   * buildPathRule), so no tree offer exists for it.
+   *
+   * The base mirrors what buildDefaultRule scopes to for the same call:
+   * search/glob's subject IS the directory it operates on, so that directory
+   * is its own base; every other read tool's subject is a file, whose base is
+   * its parent directory.
+   */
+  externalTreeRule(toolName: string, args?: Record<string, unknown>): PermissionRule | undefined {
+    if (!PermissionEngine.READ_TOOLS.has(toolName)) return undefined;
+
+    const a = args ?? {};
+    const isDirScoped = PermissionEngine.DIR_SCOPED_TOOLS.has(toolName);
+    const raw = isDirScoped ? extractToolSubject(toolName, a) : a.path ?? a.filePath;
+    if (typeof raw !== "string" || !raw) return undefined;
+
+    const normalized = this.normalizePath(raw);
+    if (normalized.startsWith("./")) return undefined;
+
+    const base = isDirScoped ? normalized : dirname(normalized);
+    return { tool: toolName, kind: "glob", pattern: join(base, "**"), action: "allow", origin: "config" };
+  }
+
+  /**
    * Approves `rule` for this process only. Never written to disk, cleared on
    * restart. A destructive- or guarded-origin match is forced to kind
    * "exact" on the literal subject text — approving one instance never
@@ -602,5 +660,6 @@ export class PermissionEngine {
     const tmpPath = join(this.projectConfigDir, `.settings.json.${randomBytes(6).toString("hex")}.tmp`);
     writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
     renameSync(tmpPath, settingsPath);
+    this.onPersist?.(settingsPath);
   }
 }

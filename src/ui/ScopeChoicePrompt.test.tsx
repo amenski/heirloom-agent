@@ -1,7 +1,7 @@
 import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render } from "ink-testing-library";
-import { ScopeChoicePrompt } from "./PermissionPrompt.js";
+import { ScopeChoicePrompt, ExternalScopeChoicePrompt } from "./PermissionPrompt.js";
 import { stripAnsi } from "./test-helpers.js";
 // Collapses the rendered frame to a single space-joined line, stripping the
 // box-drawing border chars too — long sentences wrap inside the bordered box
@@ -52,5 +52,39 @@ describe("ScopeChoicePrompt", () => {
     );
     const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("write access to ./lib");
+  });
+});
+
+describe("ExternalScopeChoicePrompt", () => {
+  it("offers folder-only vs subfolders for the external directory", () => {
+    const { lastFrame } = render(
+      <ExternalScopeChoicePrompt
+        treePattern="/data/notes/**"
+        cursor={0}
+        onChoose={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    const frame = flatten(lastFrame() ?? "");
+    expect(frame).toContain("This folder only");
+    expect(frame).toContain("Include subfolders");
+    expect(frame).toContain("/data/notes and everything beneath it");
+    expect(frame).not.toContain("write access");
+  });
+
+  it("abbreviates the home directory in the covered path", () => {
+    const home = process.env.HOME;
+    if (!home) return;
+    const { lastFrame } = render(
+      <ExternalScopeChoicePrompt
+        treePattern={`${home}/SecondBrain/AgentMemory/**`}
+        cursor={1}
+        onChoose={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    const frame = flatten(lastFrame() ?? "");
+    expect(frame).toContain("~/SecondBrain/AgentMemory and everything beneath it");
+    expect(frame).toContain("> 2. Include subfolders");
   });
 });

@@ -14,7 +14,7 @@ import { Orchestrator } from "./orchestrator/index.js";
 import { ModeLoader } from "./modes/loader.js";
 import { AgentLoader } from "./agents/index.js";
 import { join } from "node:path";
-import { checkSettingsTrust, stripExecutionKeys } from "./config/settings-trust.js";
+import { checkSettingsTrust, stripExecutionKeys, trustSettings } from "./config/settings-trust.js";
 import { GENERAL_MODEL_ID, GENERAL_REASONING_EFFORT, parseModelId } from "./modes/model-policy.js";
 
 export interface ExecRunnerOptions {
@@ -226,6 +226,13 @@ export async function runExecMode(options: ExecRunnerOptions): Promise<number> {
         // global-only sandbox.writeRoots into the shared write-set.
         enforceWriteBoundary: effectiveConfig.permissionProfile?.level === "workspace-write",
         writeRoots,
+        // Re-record the TOFU trust hash after every persisted "always"
+        // approval, same as the TUI (cli.tsx) — headless is still the
+        // user's own process, so persist()'s self-write is not a tamper
+        // signal. Without this, a headless "always" approval would make the
+        // NEXT run treat its own settings.json as untrusted-changed and strip
+        // the `permissions` key, silently discarding the approval.
+        onPersist: (settingsPath) => trustSettings(settingsPath),
       },
     );
     // Same construction the TUI uses (cli.tsx): a configured permissionProfile

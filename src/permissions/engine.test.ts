@@ -436,6 +436,56 @@ describe("PermissionEngine.resolve", () => {
     });
   });
 
+  describe("externalTreeRule: offer subfolders for an external read approval", () => {
+    it("returns a recursive tree glob for an external read path", () => {
+      expect(engine.externalTreeRule("read_file", { path: "/data/notes/a.md" })).toEqual({
+        tool: "read_file",
+        kind: "glob",
+        pattern: "/data/notes/**",
+        action: "allow",
+        origin: "config",
+      });
+    });
+
+    it("returns undefined for an internal path", () => {
+      expect(engine.externalTreeRule("read_file", { path: "./src/a.ts" })).toBeUndefined();
+      expect(engine.externalTreeRule("read_file", { path: "/workspace/src/a.ts" })).toBeUndefined();
+    });
+
+    it("returns undefined for a write tool (an external write approval never broadens)", () => {
+      expect(engine.externalTreeRule("edit", { path: "/data/notes/a.md" })).toBeUndefined();
+      expect(engine.externalTreeRule("write_to_file", { path: "/data/notes/a.md" })).toBeUndefined();
+    });
+
+    it("returns undefined for a call with no path", () => {
+      expect(engine.externalTreeRule("read_file", {})).toBeUndefined();
+      expect(engine.externalTreeRule("read_file")).toBeUndefined();
+      expect(engine.externalTreeRule("run_bash", { command: "npm test" })).toBeUndefined();
+    });
+
+    it("uses the subject directory itself as the base for glob (a dir-scoped tool)", () => {
+      expect(engine.externalTreeRule("glob", { cwd: "/data/notes" })?.pattern).toBe("/data/notes/**");
+    });
+
+    it("approving the tree rule for the session covers files nested arbitrarily deep", () => {
+      const treeRule = engine.externalTreeRule("read_file", { path: "/data/notes/a.md" })!;
+      engine.approveForSession(treeRule);
+      expect(engine.resolve("read_file", { path: "/data/notes/dxf-viewer/sessions.md" }).action).toBe("allow");
+      expect(engine.resolve("read_file", { path: "/data/notes/a/b/c.md" }).action).toBe("allow");
+    });
+
+    it("the tree rule does not cover a sibling directory outside it", () => {
+      engine.approveForSession(engine.externalTreeRule("read_file", { path: "/data/notes/a.md" })!);
+      expect(engine.resolve("read_file", { path: "/data/other/a.md" }).action).toBe("ask");
+    });
+
+    it("the default rule still covers one directory level only", () => {
+      engine.approveForSession(engine.buildDefaultRule("read_file", { path: "/data/notes/a.md" }));
+      expect(engine.resolve("read_file", { path: "/data/notes/b.md" }).action).toBe("allow");
+      expect(engine.resolve("read_file", { path: "/data/notes/dxf-viewer/sessions.md" }).action).toBe("ask");
+    });
+  });
+
   describe("always tier: atomic persistence", () => {
     let dir: string;
 
@@ -904,7 +954,7 @@ describe("PermissionEngine: search/glob directory containment", () => {
     }
   });
 
-  it("a strictly-more-specific user allow rule for an out-of-workspace dir is NOT able to override the out-of-workspace guard (kind:any kill-switch, same as web_search)", () => {
+  it("a user-authored allow rule for an out-of-workspace dir DOES resolve the out-of-workspace guard (BUG FIX: escape hatch, same as the write boundary)", () => {
     const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-killswitch-"));
     try {
       const engine = new PermissionEngine(
@@ -912,10 +962,14 @@ describe("PermissionEngine: search/glob directory containment", () => {
         workDir,
       );
       const result = engine.resolve("search", { pattern: "x", dir: outside });
-      // Exact-match user rules match subject.resolvedPath (normalized), and
-      // outOfWorkspaceGuardedRule's kind:"any" always beats any real allow in
-      // that tier — same as the existing web_search kill-switch precedent.
-      expect(result.action).toBe("ask");
+      // Previously outOfWorkspaceGuardedRule's kind:"any" was an absolute
+      // kill-switch with no escape hatch, so a user-approved allow rule for
+      // this exact dir could never take effect and the call asked forever.
+      // The write boundary already had this escape hatch (a path-scoped
+      // allow resolves the same dynamic guard it was approved from); the
+      // out-of-workspace guard now gets the same treatment.
+      expect(result.action).toBe("allow");
+      expect(result.winningRule?.pattern).toBe(outside);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -1089,5 +1143,173 @@ describe("file-tool write boundary (docs/unified-write-boundary.md §2)", () => 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ── BUG FIX: external search/glob can now be approved (previously the
+// out-of-workspace guard's kind:"any" was an absolute kill-switch with no
+// escape hatch, so an approval never took effect and the same call asked
+// forever). Also covers buildDefaultRule producing a real (non-empty-pattern)
+// rule for search/glob, whose subject is a directory (`dir`/`cwd`), not
+// `path`/`filePath`.
+describe("BUG FIX: external search/glob approval takes effect", () => {
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "heirloom-engine-search-approve-"));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("buildDefaultRule('search', {dir}) produces a non-empty pattern for an external dir", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const built = engine.buildDefaultRule("search", { dir: "/abs/external/dir" });
+    expect(built.pattern).not.toBe("");
+    expect(built.pattern).toBe("/abs/external/dir");
+  });
+
+  it("buildDefaultRule('glob', {cwd}) produces a non-empty pattern for an external dir", () => {
+    const engine = new PermissionEngine(undefined, workDir);
+    const built = engine.buildDefaultRule("glob", { cwd: "/abs/external/dir" });
+    expect(built.pattern).not.toBe("");
+    expect(built.pattern).toBe("/abs/external/dir");
+  });
+
+  it("session-approving an external search allows a subsequent identical search", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-approve-target-"));
+    try {
+      const engine = new PermissionEngine(undefined, workDir);
+      const args = { pattern: "TODO", dir: outside };
+
+      const initial = engine.resolve("search", args);
+      expect(initial.action).toBe("ask");
+      expect(initial.isGuarded).toBe(true);
+
+      engine.approveForSession(engine.buildDefaultRule("search", args), initial.winningRule);
+
+      const approved = engine.resolve("search", args);
+      expect(approved.action).toBe("allow");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("always-approving an external glob allows a subsequent identical glob (and survives a reload)", () => {
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-glob-approve-target-"));
+    try {
+      const engine = new PermissionEngine(undefined, workDir);
+      const args = { pattern: "**/*", cwd: outside };
+
+      const initial = engine.resolve("glob", args);
+      expect(initial.action).toBe("ask");
+      expect(initial.isGuarded).toBe(true);
+
+      engine.approveAlways(engine.buildDefaultRule("glob", args), initial.winningRule);
+
+      const approved = engine.resolve("glob", args);
+      expect(approved.action).toBe("allow");
+
+      const settings = JSON.parse(readFileSync(join(workDir, ".heirloom", "settings.json"), "utf-8"));
+      expect(settings.permissions.rules).toContainEqual(
+        expect.objectContaining({ tool: "glob", action: "allow" }),
+      );
+      // Fossil regression: the persisted rule must not be the empty-pattern
+      // junk buildDefaultRule used to emit for search/glob (BUG 3).
+      expect(settings.permissions.rules[0].pattern).not.toBe("");
+
+      const reloaded = new PermissionEngine(
+        { rules: settings.permissions.rules.map((r: { tool: string; pattern: string; action: string }) => ({ ...r, kind: "exact", origin: "config" })) },
+        workDir,
+      );
+      expect(reloaded.resolve("glob", args).action).toBe("allow");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("static guarded rules (e.g. ~/.ssh) still ask after an approval attempt for a different external dir — kill-switch preserved", () => {
+    const sshDir = join(workDir, ".ssh");
+    mkdirSync(sshDir, { recursive: true });
+    writeFileSync(join(sshDir, "id_rsa"), "fake key material\n");
+
+    const outside = mkdtempSync(join(tmpdir(), "heirloom-engine-search-approve-other-"));
+    try {
+      const engine = new PermissionEngine(undefined, workDir);
+
+      // Approve an unrelated external dir for session/always.
+      const outsideArgs = { pattern: "x", dir: outside };
+      const outsideInitial = engine.resolve("search", outsideArgs);
+      engine.approveAlways(engine.buildDefaultRule("search", outsideArgs), outsideInitial.winningRule);
+      expect(engine.resolve("search", outsideArgs).action).toBe("allow");
+
+      // The static guarded .ssh rule is untouched — still asks, and cannot be
+      // approved away (kind:"any" static rule, not the dynamic escape hatch).
+      const sshArgs = { pattern: "x", dir: sshDir };
+      const sshInitial = engine.resolve("search", sshArgs);
+      expect(sshInitial.action).toBe("ask");
+      engine.approveAlways(engine.buildDefaultRule("search", sshArgs), sshInitial.winningRule);
+      expect(engine.resolve("search", sshArgs).action).toBe("ask");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("BUG FIX: persist() invokes onPersist with the settings path", () => {
+  it("calls onPersist with the project settings.json path after a successful write", () => {
+    const dir = mkdtempSync(join(tmpdir(), "heirloom-engine-onpersist-"));
+    try {
+      const calls: string[] = [];
+      const engine = new PermissionEngine(undefined, dir, false, {
+        onPersist: (settingsPath) => calls.push(settingsPath),
+      });
+      engine.approveAlways({ tool: "run_bash", kind: "exact", pattern: "echo hi", action: "allow", origin: "config" });
+      expect(calls).toEqual([join(dir, ".heirloom", "settings.json")]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not throw and behaves as before when onPersist is not provided", () => {
+    const dir = mkdtempSync(join(tmpdir(), "heirloom-engine-onpersist-absent-"));
+    try {
+      const engine = new PermissionEngine(undefined, dir);
+      expect(() =>
+        engine.approveAlways({ tool: "run_bash", kind: "exact", pattern: "echo hi", action: "allow", origin: "config" }),
+      ).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── BUG FIX (App.tsx): approving a prompt whose winningRule was a
+// non-builtin user-authored "ask" rule must not store that rule verbatim
+// (action still "ask" — a no-op approval that re-prompts forever). The
+// App.tsx fix now always calls buildDefaultRule for the actual approval
+// instead of reusing winningRule; this engine-level test exercises the same
+// principle: buildDefaultRule always returns an "allow" rule regardless of
+// what matched, so App.tsx storing its result (rather than winningRule)
+// resolves the call.
+describe("BUG FIX: approving a non-builtin ask-rule match must produce an allow rule", () => {
+  it("buildDefaultRule always returns action allow, never reusing a matched ask rule's action", () => {
+    const engine = new PermissionEngine(
+      { rules: [{ tool: "read_file", kind: "glob", pattern: "**/*.secret", action: "ask", origin: "config" }] },
+      "/workspace",
+    );
+    const args = { path: "/workspace/x.secret" };
+    const initial = engine.resolve("read_file", args);
+    expect(initial.action).toBe("ask");
+    expect(initial.winningRule?.action).toBe("ask");
+    expect(initial.winningRule?.origin).toBe("config");
+
+    // What App.tsx now stores on approval, instead of winningRule verbatim.
+    const rule = engine.buildDefaultRule("read_file", args);
+    expect(rule.action).toBe("allow");
+
+    engine.approveForSession(rule);
+    expect(engine.resolve("read_file", args).action).toBe("allow");
   });
 });

@@ -48,7 +48,7 @@ import TodoPanel from "./TodoPanel.js";
 import { todoStore } from "../tools/todo.js";
 import type { TodoItem } from "../tools/todo.js";
 import StatusBar from "./StatusBar.js";
-import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
+import PermissionPrompt, { DestructiveConfirmPrompt, ScopeChoicePrompt, ExternalScopeChoicePrompt, type PermissionDecision } from "./PermissionPrompt.js";
 import { explainToolAction } from "./explain-action.js";
 import { buildWelcomeLines } from "./views/WelcomeScreen.js";
 import PromptInput from "./views/PromptInput.js";
@@ -213,6 +213,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     defaultRule?: PermissionRule;
     /** Recursive folder-glob rule offered when a sibling read/write is already approved. */
     folderRule?: PermissionRule;
+    /** Recursive tree-glob rule offered when an external read is approved (default rule covers one level only). */
+    externalTreeRule?: PermissionRule;
     /** True once the user picked session/always and is choosing file-vs-folder scope. */
     scopeStage?: boolean;
     /** The session/always decision carried into the scope stage. */
@@ -1182,7 +1184,8 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
           return new Promise<boolean>((resolve) => {
             const defaultRule = ctx.permissions.buildDefaultRule(toolName, args);
             const folderRule = ctx.permissions.folderScopeRule(toolName, args);
-            setAskPrompt({ resolve, toolName, args, winningRule, defaultRule, folderRule, cursor: 0 });
+            const externalTreeRule = ctx.permissions.externalTreeRule(toolName, args);
+            setAskPrompt({ resolve, toolName, args, winningRule, defaultRule, folderRule, externalTreeRule, cursor: 0 });
           });
         },
         // Mid-turn steering mailbox: the agent loop polls this once per
@@ -1676,10 +1679,10 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
       return;
     }
 
-    // A read or write/edit in a folder that already has a sibling exact
-    // approval: defer to a second prompt asking whether to grant just this
-    // file or the whole folder.
-    if ((decision === "session" || decision === "always") && askPrompt.folderRule) {
+    // A broader grant is on offer (a folder with a sibling exact approval, or
+    // an external read whose default rule covers one directory level only):
+    // defer to a second prompt asking which scope to store.
+    if ((decision === "session" || decision === "always") && scopeBroadeningRule()) {
       setAskPrompt((prev) => prev ? { ...prev, scopeStage: true, scopeDecision: decision, cursor: 0 } : null);
       return;
     }
@@ -1707,11 +1710,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     // narrowToExact becomes a safety no-op rather than a bug-fix requirement.
     const isBuiltinOrigin = askPrompt.winningRule?.origin === "builtin-destructive" || askPrompt.winningRule?.origin === "builtin-guarded";
     const matchedBuiltin = isBuiltinOrigin ? askPrompt.winningRule : undefined;
-    const rule = scopedRule
-      ? scopedRule
-      : isBuiltinOrigin
-        ? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args)
-        : (askPrompt.winningRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args));
+    // A prompt only ever surfaces for a match that resolved to "ask" — so
+    // askPrompt.winningRule, when present, is itself an ask-action rule
+    // (builtin or a user-authored one). Reusing it verbatim would store an
+    // action:"ask" rule that never changes anything on approval, re-prompting
+    // the same call forever. Always build the narrow allow rule for the
+    // specific call instead; matchedBuiltin still forces exact narrowing
+    // below when the winner was a builtin guarded/destructive rule.
+    const rule = scopedRule ?? ctx.permissions.buildDefaultRule(askPrompt.toolName, askPrompt.args);
     if (decision === "session") {
       ctx.permissions.approveForSession(rule, matchedBuiltin);
     } else {
@@ -1719,10 +1725,30 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
     }
   }
 
-  /** Stage-two handler: user chose file-vs-folder scope for a read approval. */
+  /**
+   * The broadening rule the stage-two scope prompt offers for the pending
+   * askPrompt, or undefined when there is no offer. The internal
+   * sibling-folder rule wins when both are somehow present (they are mutually
+   * exclusive by construction — folderScopeRule returns undefined for
+   * external paths and externalTreeRule for internal ones).
+   *
+   * A builtin guarded/destructive match never gets the external tree offer:
+   * approvals for those are narrowed to the exact subject (see
+   * PermissionEngine.narrowToExact), so nothing broader could actually be
+   * stored — the offer would be a lie.
+   */
+  function scopeBroadeningRule(): PermissionRule | undefined {
+    if (!askPrompt) return undefined;
+    if (askPrompt.folderRule) return askPrompt.folderRule;
+    const origin = askPrompt.winningRule?.origin;
+    if (origin === "builtin-destructive" || origin === "builtin-guarded") return undefined;
+    return askPrompt.externalTreeRule;
+  }
+
+  /** Stage-two handler: user chose the narrow or the broadened scope for an approval. */
   function handleScopeDecision(scope: "file" | "folder"): void {
     if (!askPrompt || !askPrompt.scopeDecision) return;
-    const scopedRule = scope === "folder" ? (askPrompt.folderRule ?? null) : null;
+    const scopedRule = scope === "folder" ? (scopeBroadeningRule() ?? null) : null;
     approveAskPrompt(askPrompt.scopeDecision, scopedRule);
     resolveAskPrompt(true);
   }
@@ -1966,15 +1992,22 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         />
       )}
 
-      {askPrompt && askPrompt.scopeStage ? (
+      {askPrompt && askPrompt.scopeStage ? (askPrompt.folderRule ? (
         <ScopeChoicePrompt
-          folderPattern={askPrompt.folderRule?.pattern ?? ""}
+          folderPattern={askPrompt.folderRule.pattern}
           toolName={askPrompt.toolName}
           cursor={askPrompt.cursor}
           onChoose={handleScopeDecision}
           onCancel={() => resolveAskPrompt(false)}
         />
-      ) : askPrompt && (askPrompt.winningRule?.origin === "builtin-destructive" ? (
+      ) : (
+        <ExternalScopeChoicePrompt
+          treePattern={askPrompt.externalTreeRule?.pattern ?? ""}
+          cursor={askPrompt.cursor}
+          onChoose={handleScopeDecision}
+          onCancel={() => resolveAskPrompt(false)}
+        />
+      )) : askPrompt && (askPrompt.winningRule?.origin === "builtin-destructive" ? (
         <DestructiveConfirmPrompt
           request={{
             toolName: askPrompt.toolName,

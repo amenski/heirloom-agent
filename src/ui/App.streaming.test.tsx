@@ -52,6 +52,7 @@ function makeCtx(
       resolve: () => ({ action: "allow", winningRule: null, wasUnresolved: false, isGuarded: false }),
       buildDefaultRule: () => null,
       folderScopeRule: () => null,
+      externalTreeRule: () => null,
       approveForSession: () => {},
       approveAlways: () => {},
     } as any,
@@ -472,6 +473,7 @@ describe("permission profile overlay — consolidation M.1 (§5)", () => {
       resolve: () => ({ action: "ask", winningRule: null, wasUnresolved: false, isGuarded: false }),
       buildDefaultRule: () => null,
       folderScopeRule: () => null,
+      externalTreeRule: () => null,
       approveForSession: () => {},
       approveAlways: () => {},
     } as any;
@@ -538,6 +540,7 @@ describe("permission profile overlay — consolidation M.1 (§5)", () => {
       resolve: () => ({ action: "deny", winningRule: null, wasUnresolved: false, isGuarded: false }),
       buildDefaultRule: () => null,
       folderScopeRule: () => null,
+      externalTreeRule: () => null,
     } as any;
     const inst = render(<App ctx={ctx} />);
     mounted.push(inst);

@@ -264,6 +264,56 @@ export function ScopeChoicePrompt({
   );
 }
 
+const EXTERNAL_SCOPE_OPTIONS: { scope: "file" | "folder"; label: string }[] = [
+  { scope: "file", label: "This folder only" },
+  { scope: "folder", label: "Include subfolders" },
+];
+
+/**
+ * Stage-two prompt shown after the user approves a read (session/always) for
+ * a path OUTSIDE the workspace. The default rule covers one directory level
+ * only, which re-prompts for every subfolder of a tree the user believes they
+ * already approved — this offers the recursive grant instead. Read-only by
+ * construction (an external write approval never broadens), so no
+ * elevated-risk copy: `scope` reuses ScopeChoicePrompt's narrow/broad union.
+ */
+export function ExternalScopeChoicePrompt({
+  treePattern,
+  cursor,
+  onChoose,
+}: {
+  treePattern: string;
+  cursor: number;
+  onChoose: (scope: "file" | "folder") => void;
+  onCancel: () => void;
+}) {
+  const theme = useTheme();
+  const accentColor = slotColor(theme, "accent");
+  const dir = treePattern.replace(/\/\*\*$/, "");
+  const home = process.env.HOME;
+  const display = home ? dir.replace(home, "~") : dir;
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1} marginY={1}>
+      <Box marginBottom={1}>
+        <Text bold>Grant this folder only, or its subfolders too?</Text>
+      </Box>
+      <Text dimColor>This folder only covers files directly in {display}. Include subfolders covers {display} and everything beneath it.</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {EXTERNAL_SCOPE_OPTIONS.map((opt, i) => (
+          <Text key={opt.scope} color={i === cursor ? accentColor : undefined}>
+            {i === cursor ? "> " : "  "}
+            {i + 1}. {opt.label}
+          </Text>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>1-2 select · ↑↓ navigate · Esc cancel</Text>
+      </Box>
+    </Box>
+  );
+}
+
 export function buildPermissionRequest(
   toolName: string,
   args: Record<string, unknown>,

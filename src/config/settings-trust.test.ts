@@ -615,6 +615,46 @@ describe("stripExecutionKeys", () => {
   });
 });
 
+// BUG 1 regression: PermissionEngine.persist() rewrites the project
+// settings.json on every "always" approval, which used to leave the trust
+// store's hash stale (the file the engine itself wrote would then classify
+// as "changed" on the next launch, stripping the very `permissions` key that
+// was just approved). The engine now takes an onPersist callback so its
+// caller can re-record the hash — this test proves the round trip end to
+// end via PermissionEngine + trustSettings, not just the store in isolation.
+describe("PermissionEngine onPersist -> trustSettings round trip (BUG 1)", () => {
+  it("an 'always' approval's own settings.json rewrite re-trusts itself instead of going stale", async () => {
+    const { PermissionEngine } = await import("../permissions/engine.js");
+
+    const settingsPath = writeProjectSettings(projectDir, { model: "x" });
+    trustSettings(settingsPath);
+    expect(checkSettingsTrust(settingsPath).status).toBe("trusted");
+
+    const engine = new PermissionEngine(undefined, projectDir, false, {
+      onPersist: (path) => trustSettings(path),
+    });
+    engine.approveAlways({ tool: "run_bash", kind: "exact", pattern: "echo hi", action: "allow", origin: "config" });
+
+    // persist() rewrote settings.json (different content/hash than the
+    // original trust() above) — without onPersist wiring this would now
+    // read "changed". It must instead already be re-trusted.
+    expect(checkSettingsTrust(settingsPath).status).toBe("trusted");
+  });
+
+  it("without onPersist wired, the same rewrite goes stale — demonstrates the bug the callback fixes", async () => {
+    const { PermissionEngine } = await import("../permissions/engine.js");
+
+    const settingsPath = writeProjectSettings(projectDir, { model: "x" });
+    trustSettings(settingsPath);
+    expect(checkSettingsTrust(settingsPath).status).toBe("trusted");
+
+    const engine = new PermissionEngine(undefined, projectDir); // no onPersist
+    engine.approveAlways({ tool: "run_bash", kind: "exact", pattern: "echo hi", action: "allow", origin: "config" });
+
+    expect(checkSettingsTrust(settingsPath).status).toBe("changed");
+  });
+});
+
 describe("full end-to-end: untrusted → stripped; trusted → applies; changed → stripped again", () => {
   it("untrusted project settings never leak statusline/mcpServers/notify/env.BASE_URL into the effective config", () => {
     const settingsPath = writeProjectSettings(projectDir, {

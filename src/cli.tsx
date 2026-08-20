@@ -357,6 +357,11 @@ async function main() {
       // including explicit --add-dir roots for this session.
       enforceWriteBoundary: configResult.config.permissionProfile?.level === "workspace-write",
       writeRoots: [...(configResult.config.sandbox?.writeRoots ?? []), ...additionalWriteRoots],
+      // Re-record the TOFU trust hash after every persisted "always"
+      // approval — persist() rewrites this project's settings.json, and
+      // without this the trust store's hash goes stale and the next launch
+      // classifies the file as tampered (config/settings-trust.ts).
+      onPersist: (settingsPath) => trustSettings(settingsPath),
     },
   );
   // The capability-boundary gate (permission-profile.md §3): constructed only

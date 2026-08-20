@@ -60,6 +60,7 @@ function makeHarness(): TasksHarness {
       resolve: () => ({ action: "allow", winningRule: null, wasUnresolved: false, isGuarded: false }),
       buildDefaultRule: () => null,
       folderScopeRule: () => null,
+      externalTreeRule: () => null,
       approveForSession: () => {},
       approveAlways: () => {},
     } as any,
