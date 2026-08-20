@@ -419,7 +419,9 @@ describe("sandbox wiring into run_bash and background jobs", () => {
         [repo],
       );
       expect(allowed.error).toBeUndefined();
-      expect(allowed.content).toContain("Exit code: 0");
+      // Success-path run_bash content is just the wrapped stdout (bash.ts) —
+      // "Exit code: N" lines only appear on failure, and `git add` is silent.
+      expect(allowed.content).toContain("(no output)");
       expect(existsSync(join(repo, ".git", "index"))).toBe(true);
     } finally {
       rmSync(repo, { recursive: true, force: true });
