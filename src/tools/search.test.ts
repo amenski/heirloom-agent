@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ToolRegistry } from "./registry.js";
-import { registerSearch } from "./search.js";
+import { registerSearch, runSearchTimed } from "./search.js";
 import type { ToolContext } from "./types.js";
 
 // Exercises the real registered `search` handler end-to-end against a real
@@ -161,4 +162,26 @@ describe("search (grep tool)", () => {
     expect(result.content).toContain("needle");
     expect(result.content).toContain("tail");
   });
+
+  // Regression: a search over a large tree was killed by the 30s timeout, and
+  // the failure surfaced as Node's bare "Command failed: grep -rn <pattern>
+  // <dir>" — no exit code, no stderr. That reads like a malformed command or a
+  // denied path, so the real cause (the directory was too big to finish) was
+  // invisible.
+  it("names the timeout as the cause when the search is killed", async () => {
+    // A FIFO blocks grep forever on read, so the timeout is the only way out —
+    // the same kill path a too-large directory takes, without a 30s test.
+    const fifo = join(TEST_DIR, "blocker.fifo");
+    execFileSync("mkfifo", [fifo]);
+
+    const result = await runSearchTimed("anything", TEST_DIR, 300);
+
+    expect(result.error).toContain("timed out after 0.3s");
+    expect(result.error).toContain(TEST_DIR);
+    expect(result.error).not.toContain("Command failed");
+    expect(result.content).toContain("timed out");
+  });
+
+
+
 });
