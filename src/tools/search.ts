@@ -6,6 +6,35 @@ import { wrapUntrusted, sanitizeControlChars } from "./untrusted-content.js";
 
 const MAX_MATCH_LINES = 50;
 const TIMEOUT_MS = 30_000;
+// Generated, vendored and cached directories: never what a code search is
+// after, and they dominate the cost of a recursive walk — a single
+// node_modules or target/ can be most of a tree's bytes, and a match inside
+// one is a copy of a match in the source that produced it. Skipping them is
+// what keeps a search over a large project inside TIMEOUT_MS. `-I` skips
+// binary files for the same reason.
+//
+// grep matches --exclude-dir against the directory's basename at any depth, so
+// these apply throughout the tree. `bin` is deliberately absent: it is build
+// output for .NET but hand-written scripts nearly everywhere else (bin/rails,
+// bin/setup), and losing those to a search is worse than walking them.
+const SKIP_DIR_NAMES = [
+  // version control
+  ".git", ".svn", ".hg",
+  // JS/TS dependencies, build output and caches
+  "node_modules", "bower_components", ".next", ".nuxt", ".svelte-kit",
+  ".turbo", ".parcel-cache", ".yarn",
+  // JVM
+  "target", ".gradle", ".m2",
+  // Python
+  "__pycache__", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
+  // vendored dependencies (Go modules, Composer, CocoaPods)
+  "vendor", "Pods",
+  // generic build output
+  "dist", "build", "out", "obj", "DerivedData",
+  // caches, coverage and IDE state
+  ".cache", "coverage", ".nyc_output", ".idea", ".terraform",
+];
+const SKIP_DIRS = SKIP_DIR_NAMES.map((d) => `--exclude-dir=${d}`);
 
 /**
  * The search body with an injectable timeout — same split as runBashTimed, so
@@ -22,7 +51,7 @@ export function runSearchTimed(pattern: string, dir: string, timeoutMs: number):
     const started = Date.now();
     execFile(
       "grep",
-      ["-rn", pattern, dir],
+      ["-rn", "-I", ...SKIP_DIRS, pattern, dir],
       { maxBuffer: 512 * 1024, timeout: timeoutMs },
       (err, stdout) => {
         // grep exits 1 for "no matches" — not a failure, same as the old
@@ -75,7 +104,7 @@ const searchDef: ToolDef = {
     type: "object",
     properties: {
       pattern: { type: "string", description: "The regex pattern to search for" },
-      dir: { type: "string", description: "Directory to search in (defaults to cwd)" },
+      dir: { type: "string", description: "Directory to search in (defaults to cwd). Generated and vendored directories (node_modules, target, dist, build, .git, ...) are skipped." },
     },
     required: ["pattern"],
   },

@@ -182,6 +182,67 @@ describe("search (grep tool)", () => {
     expect(result.content).toContain("timed out");
   });
 
+  it("skips generated, vendored and cached directories at any depth", async () => {
+    writeFileSync(join(TEST_DIR, "src.txt"), "needle here\n");
+    const skipped = ["node_modules", ".git", "target", "build", "dist", "vendor", "__pycache__", ".gradle"];
+    for (const dir of skipped) {
+      // Nested, not top-level: --exclude-dir matches the basename at any
+      // depth, and a monorepo's build output is never at the root.
+      const nested = join(TEST_DIR, "packages", "app", dir);
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, "generated.txt"), "needle here\n");
+    }
 
+    const result = await registry.execute(
+      { id: "1", name: "search", arguments: { pattern: "needle", dir: TEST_DIR } },
+      ctx,
+    );
+
+    expect(result.content).toContain("src.txt");
+    for (const dir of skipped) expect(result.content).not.toContain(dir);
+  });
+
+  it("still searches a directory whose name only contains a skipped name", async () => {
+    // --exclude-dir matches the whole basename, so `build-scripts` and
+    // `distribution` are ordinary source directories, not build output.
+    for (const dir of ["build-scripts", "distribution", "my-vendor"]) {
+      mkdirSync(join(TEST_DIR, dir), { recursive: true });
+      writeFileSync(join(TEST_DIR, dir, "src.txt"), "needle here\n");
+    }
+
+    const result = await registry.execute(
+      { id: "1", name: "search", arguments: { pattern: "needle", dir: TEST_DIR } },
+      ctx,
+    );
+
+    for (const dir of ["build-scripts", "distribution", "my-vendor"]) {
+      expect(result.content).toContain(dir);
+    }
+  });
+
+  it("still searches bin, which is usually hand-written scripts", async () => {
+    mkdirSync(join(TEST_DIR, "bin"), { recursive: true });
+    writeFileSync(join(TEST_DIR, "bin", "deploy.sh"), "needle here\n");
+
+    const result = await registry.execute(
+      { id: "1", name: "search", arguments: { pattern: "needle", dir: TEST_DIR } },
+      ctx,
+    );
+
+    expect(result.content).toContain("deploy.sh");
+  });
+
+  it("skips binary files", async () => {
+    writeFileSync(join(TEST_DIR, "bin.dat"), Buffer.from([0x6e, 0x65, 0x65, 0x64, 0x6c, 0x65, 0x00, 0x01]));
+    writeFileSync(join(TEST_DIR, "text.txt"), "needle here\n");
+
+    const result = await registry.execute(
+      { id: "1", name: "search", arguments: { pattern: "needle", dir: TEST_DIR } },
+      ctx,
+    );
+
+    expect(result.content).toContain("text.txt");
+    expect(result.content).not.toContain("bin.dat");
+  });
 
 });
