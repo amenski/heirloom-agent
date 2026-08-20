@@ -1,6 +1,6 @@
 # Documentation
 
-**Status:** index · verified 2026-08-13
+**Status:** index · verified 2026-08-18
 
 ## Purpose
 
@@ -97,6 +97,7 @@ then follow the reading paths below.
 | [claude-code-parity.md](./claude-code-parity.md) | Gap analysis vs Claude Code (forward-looking) |
 | [permission-profile.md](./permission-profile.md) | PermissionProfile ACL design (draft): schema, evaluation order, Seatbelt phase |
 | [async-subagents.md](./async-subagents.md) | Async sub-agent execution design: spawn-return-immediately, auto-wake, cap 3, /tasks |
+| [unified-write-boundary.md](./unified-write-boundary.md) | Unified write boundary design: one shared write-set across Seatbelt + file tools; global-only `sandbox.writeRoots` (approved 2026-08-17, not yet built) |
 | [feature-plans.md](./feature-plans.md) | Per-feature plans for the remaining roadmap: SOTA research, current state, design, decisions |
 | [improvement-roadmap.md](./improvement-roadmap.md) | Roadmap with shipped/unshipped waves |
 | [agent-memory-that-evolves.md](./agent-memory-that-evolves.md) | Memory-design research essay (context only) |
@@ -133,8 +134,10 @@ then follow the reading paths below.
    `gpt-5.6-sol`, …). Docs cite them as-is because they are what the
    product ships; older docs may show retired IDs. `--model` takes
    `provider/model`, split on the first slash.
-3. **Default pairing is deepseek/deepseek-v4-pro**; the anthropic API type
-   is supported via the AI SDK but has no bundled preset.
+3. **Default pairing is deepseek/deepseek-v4-pro**, except the default
+   `general` mode, which pairs deepseek/deepseek-v4-flash at low reasoning
+   effort (mode-spec.md §5); the anthropic API type is supported via the AI
+   SDK but has no bundled preset.
 4. **Previously uncovered areas, now documented (2026-08-13):**
    [eval-harness.md](./eval-harness.md), [update-check.md](./update-check.md),
    [mcp-spec.md](./mcp-spec.md). Still thin: memory-injection mechanics

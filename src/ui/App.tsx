@@ -1236,7 +1236,14 @@ function InnerApp({ ctx }: { ctx: AppContext }) {
         pushOutput(theme.colorEnabled ? `\x1b[2m${footer}\x1b[0m` : footer);
         pushOutput("");
 
-        if (result.stopReason === "done") {
+        // Persist on both completion and abort. The agent's messages are only
+        // ever built from complete exchanges (partial stream text is held in
+        // locals and never pushed), so an aborted turn's `messages` is a valid
+        // transcript — and without it, an interrupt left the user's request and
+        // the tool calls already made OUT of the session record, while their
+        // file edits stayed on disk. On "continue" the model then saw only the
+        // dirty tree and assumed the uncommitted work was its own.
+        if (result.stopReason === "done" || result.stopReason === "aborted") {
           ctx.mutable.conversationHistory = result.messages;
           await callbacks.onNewMessages(input, result.newMessages);
         }

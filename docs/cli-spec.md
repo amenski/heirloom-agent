@@ -55,7 +55,7 @@ meant to be shareable). See config-spec.md §Credentials.
 | `-r`, `--resume [id]` | Resume a specific session by its ID; with no ID, open the session picker. |
 | `-c`, `--continue` | Continue the most recent session for the current project directory. |
 | `--model <provider/model>` | Override the configured model (split on the first `/`). |
-| `--mode <slug>` | Start in the given mode. Headless (`-p`): unknown slug rejected with a clean error (`src/exec-runner.ts`). Interactive: unknown slug silently falls back to the default `code` mode. |
+| `--mode <slug>` | Start in the given mode. Headless (`-p`): unknown slug rejected with a clean error (`src/exec-runner.ts`). Interactive: unknown slug silently falls back to the default `general` mode. |
 | `-d`, `--debug` | Write redacted request/response JSONL. |
 | `--add-dir <path>` | Add an explicitly trusted writable directory; repeat for multiple directories. Relative paths resolve from the startup directory and apply to file edits and sandboxed shell writes. |
 | `-h`, `--help` | Show help and the epilog, exit 0. |
@@ -248,7 +248,8 @@ commands typed mid-turn stay queued and run at turn end (FIFO). Shipped
 
 ## 9. In-session delegation — `new_task`
 
-The `new_task` tool (workflow group; exposed to every mode) spawns a
+The `new_task` tool (workflow group; exposed by the Code mode and the hidden
+orchestrator alias) spawns a
 sub-agent with an isolated context; only its summary returns. Full semantics
 in subsystems/orchestration.md §7. Parameters:
 

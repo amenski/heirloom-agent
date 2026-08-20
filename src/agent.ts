@@ -101,6 +101,8 @@ export interface AgentOptions {
   agentInstructions?: string;
   /** Precomputed session-stable repository-map snapshot (see buildRepoMap). */
   repomap?: string;
+  /** Process-start `git status --porcelain` snapshot for dirty-file tagging. */
+  dirtyBaseline?: string;
   /** Precomputed research-notes block (see loadProjectResearch). Plan-mode only. */
   research?: string;
   memory?: string;
@@ -188,6 +190,7 @@ export async function runAgent(
     agents: options.agents,
     agentInstructions: options.agentInstructions,
     repomap: options.repomap,
+    dirtyBaseline: options.dirtyBaseline,
     memory: options.memory,
     research: options.research,
     planMode: options.planMode,
